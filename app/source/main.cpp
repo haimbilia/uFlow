@@ -315,20 +315,19 @@ private:
         selected_ = visible_.empty() ? 0 : std::min(selected_, visible_.size() - 1);
     }
     void DrawBackground(Color accent) {
-        for (int y = 0; y < kHeight; ++y) {
-            SetColor(renderer_, Mix(Mix({7,13,25,255}, accent, .10f), {3,7,15,255}, static_cast<float>(y) / kHeight));
-            SDL_RenderDrawLine(renderer_, 0, y, kWidth, y);
-        }
+        SetColor(renderer_, Mix({5,10,20,255}, accent, .07f));
+        SDL_RenderClear(renderer_);
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
         const float phase = SDL_GetTicks() / 1800.0f;
-        for (int index = 0; index < 4; ++index) {
-            const int x = static_cast<int>(160 + index * 340 + std::sin(phase + index) * 50);
-            const int y = static_cast<int>(180 + std::cos(phase * .7f + index) * 70);
-            for (int radius = 150; radius > 0; radius -= 7) {
-                FillRoundedRect(renderer_, {x-radius,y-radius,radius*2,radius*2}, radius,
-                                {accent.r,accent.g,accent.b,static_cast<Uint8>(1+(150-radius)/24)});
-            }
-        }
+        const int drift = static_cast<int>(std::sin(phase) * 35.0f);
+        SetColor(renderer_, {accent.r,accent.g,accent.b,18});
+        SDL_Rect glowA = {-180+drift,115,720,250};
+        SDL_Rect glowB = {760-drift,360,700,230};
+        SDL_RenderFillRect(renderer_, &glowA);
+        SDL_RenderFillRect(renderer_, &glowB);
+        SetColor(renderer_, {255,255,255,5});
+        SDL_Rect horizon = {0,520,1280,2};
+        SDL_RenderFillRect(renderer_, &horizon);
     }
     void DrawHeader(Color accent) {
         FillRoundedRect(renderer_, {38,26,1204,74}, 22, {5,10,20,190});
