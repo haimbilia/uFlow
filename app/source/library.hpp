@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,9 @@ struct GameEntry {
     std::string contentRelative;
     std::string codeRelative;
     std::string saveRelative;
+    std::string storage;
+    std::uint64_t installedTitleId = 0;
+    bool installed = false;
     bool favorite = false;
 };
 
@@ -33,4 +37,3 @@ struct ScanResult {
 const char *PlatformName(Platform platform);
 ScanResult ScanLibrary();
 void SaveFavorites(const std::vector<GameEntry> &games);
-

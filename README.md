@@ -11,6 +11,7 @@ The first graphical build is usable as a library browser. It includes:
 - animated horizontal coverflow with Wii U, Wii, GameCube, and Favorites tabs;
 - local PNG/TGA artwork, title metadata, details, favorites, and fast scrolling;
 - scanning for Loadiine-format Wii U games, Wii `.wbfs`, and GameCube `.iso`;
+- listing and launching installed Wii U games from internal storage and Wii U USB;
 - the experimental Wii U loose-title adapter retained behind the new UI.
 
 Wii and GameCube launch adapters are not connected yet. The Wii U adapter is

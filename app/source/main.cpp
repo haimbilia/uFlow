@@ -5,6 +5,7 @@
 #include <coreinit/time.h>
 #include <png.h>
 #include <rpxloader/rpxloader.h>
+#include <sysapp/launch.h>
 #include <vpad/input.h>
 #include <whb/proc.h>
 #include <whb/sdcard.h>
@@ -426,6 +427,8 @@ private:
         DrawText(renderer_,PlatformName(game->platform),205,322,3,{235,241,250,255});
         DrawText(renderer_,"TITLE ID",560,290,2,{113,130,156,255});
         DrawText(renderer_,game->titleId.empty()?"NOT AVAILABLE":Ellipsize(game->titleId,28),560,322,3,{235,241,250,255});
+        DrawText(renderer_,"SOURCE",850,290,2,{113,130,156,255});
+        DrawText(renderer_,game->installed?(game->storage.empty()?"INSTALLED":Ellipsize(game->storage,12)):"FAT32",850,322,3,{235,241,250,255});
         DrawText(renderer_,"LOCATION",205,390,2,{113,130,156,255});
         DrawText(renderer_,Ellipsize(game->absolutePath,66),205,424,2,{202,212,226,255});
         DrawText(renderer_,"A  LAUNCH",205,530,2,{255,255,255,255});
@@ -512,7 +515,10 @@ int main(int, char **) {
                 dashboard.SetStatus("SCAN COMPLETE  "+std::to_string(games.size())+" GAMES");
             } else if((input.trigger&VPAD_BUTTON_A)&&dashboard.Selected()) {
                 const GameEntry &game=*dashboard.Selected();
-                if(game.platform!=Platform::WiiU) dashboard.SetStatus(std::string(PlatformName(game.platform))+" LAUNCH ADAPTER IS NEXT");
+                if(game.installed) {
+                    dashboard.SetStatus("LAUNCHING "+Ellipsize(game.name,38),10000); dashboard.Render(delta);
+                    SYSLaunchTitle(game.installedTitleId); launchRequested=true; break;
+                } else if(game.platform!=Platform::WiiU) dashboard.SetStatus(std::string(PlatformName(game.platform))+" LAUNCH ADAPTER IS NEXT");
                 else if(!launchLoose) dashboard.SetStatus("WII U LOADER MODULE IS NOT AVAILABLE",7000);
                 else {
                     dashboard.SetStatus("LAUNCHING "+Ellipsize(game.name,38),10000); dashboard.Render(delta);

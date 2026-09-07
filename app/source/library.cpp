@@ -1,10 +1,13 @@
 #include "library.hpp"
 
+#include <coreinit/mcp.h>
 #include <dirent.h>
+#include <malloc.h>
 #include <sys/stat.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <cstdio>
 #include <fstream>
 #include <set>
@@ -147,6 +150,60 @@ std::string FindCover(const std::string &base, const std::string &id, const std:
     return {};
 }
 
+std::string AsFsPath(std::string path) {
+    if (path.rfind("/vol/", 0) == 0) path.insert(0, "fs:");
+    return path;
+}
+
+std::string FormatTitleId(std::uint64_t titleId) {
+    char text[17]{};
+    std::snprintf(text, sizeof(text), "%08X%08X", static_cast<unsigned>(titleId >> 32),
+                  static_cast<unsigned>(titleId));
+    return Lower(text);
+}
+
+void ScanInstalledGames(ScanResult &result) {
+    const int32_t handle = static_cast<int32_t>(MCP_Open());
+    if (handle < 0) return;
+    const int32_t count = static_cast<int32_t>(MCP_TitleCount(handle));
+    if (count <= 0 || count > 4096) {
+        MCP_Close(handle);
+        return;
+    }
+    const std::size_t bytes = static_cast<std::size_t>(count) * sizeof(MCPTitleListType);
+    auto *titles = static_cast<MCPTitleListType *>(memalign(0x40, bytes));
+    if (!titles) {
+        MCP_Close(handle);
+        return;
+    }
+    std::memset(titles, 0, bytes);
+    uint32_t received = static_cast<uint32_t>(count);
+    const int32_t listResult = static_cast<int32_t>(MCP_TitleList(handle, &received, titles, bytes));
+    MCP_Close(handle);
+    if (listResult >= 0) {
+        for (uint32_t index = 0; index < received; ++index) {
+            const auto &title = titles[index];
+            if (title.appType != MCP_APP_TYPE_GAME || (title.titleId >> 32) != 0x00050000ULL) continue;
+            GameEntry game;
+            game.platform = Platform::WiiU;
+            game.installed = true;
+            game.installedTitleId = title.titleId;
+            game.titleId = FormatTitleId(title.titleId);
+            game.absolutePath = AsFsPath(std::string(title.path, strnlen(title.path, sizeof(title.path))));
+            game.storage = std::string(title.indexedDevice, strnlen(title.indexedDevice, sizeof(title.indexedDevice)));
+            const std::string metaPath = game.absolutePath + "/meta";
+            const std::string meta = ReadTextFile(metaPath + "/meta.xml");
+            game.name = XmlValue(meta, "longname_en");
+            if (game.name.empty()) game.name = XmlValue(meta, "shortname_en");
+            if (game.name.empty()) game.name = "INSTALLED TITLE " + game.titleId;
+            game.publisher = XmlValue(meta, "publisher_en");
+            game.coverPath = FindCover(metaPath, game.titleId, metaPath + "/iconTex.tga");
+            result.games.push_back(std::move(game));
+        }
+    }
+    free(titles);
+}
+
 void ScanWiiURoot(ScanResult &result, const std::string &relativeRoot) {
     const std::string absoluteRoot = std::string(kDevice) + "/" + relativeRoot;
     DIR *directory = opendir(absoluteRoot.c_str());
@@ -275,10 +332,17 @@ ScanResult ScanLibrary() {
     ScanResult result;
     EnsureDirectory(std::string(kDevice) + "/wiiu/raw-saves");
     EnsureDirectory(kAppDirectory);
+    ScanInstalledGames(result);
     ScanWiiURoot(result, "wiiu/raw-games");
     ScanWiiURoot(result, "wiiu/games");
     ScanWiiRoot(result);
     ScanGameCubeRoot(result);
+
+    std::set<std::string> installedIds;
+    for (const auto &game : result.games) if (game.installed && !game.titleId.empty()) installedIds.insert(game.titleId);
+    result.games.erase(std::remove_if(result.games.begin(), result.games.end(), [&](const GameEntry &game) {
+        return !game.installed && game.platform == Platform::WiiU && !game.titleId.empty() && installedIds.contains(game.titleId);
+    }), result.games.end());
 
     const auto favorites = LoadFavoriteKeys();
     for (auto &game : result.games) game.favorite = favorites.contains(FavoriteKey(game));
