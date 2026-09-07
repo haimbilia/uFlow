@@ -486,11 +486,12 @@ int main(int, char **) {
 
     ScanResult scan=mounted?ScanLibrary():ScanResult{};
     std::vector<GameEntry> games=std::move(scan.games);
+    bool launchRequested=false;
+    {
     Dashboard dashboard(renderer,games);
     dashboard.SetStatus(mounted?"LIBRARY READY  "+std::to_string(games.size())+" GAMES":"SOURCE DRIVE COULD NOT BE MOUNTED",mounted?3500:10000);
     const RPXLoaderStatus loaderStatus=mounted?RPXLoader_InitLibrary():RPX_LOADER_RESULT_NOT_AVAILABLE;
     LaunchLooseFn launchLoose=loaderStatus==RPX_LOADER_RESULT_SUCCESS?LoadLaunchFunction():nullptr;
-    bool launchRequested=false;
     Uint32 previousTicks=SDL_GetTicks();
 
     while (WHBProcIsRunning()) {
@@ -530,6 +531,7 @@ int main(int, char **) {
         }
         dashboard.Render(delta);
         OSSleepTicks(OSMillisecondsToTicks(4));
+    }
     }
     SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); SDL_Quit();
     if(!launchRequested&&mounted)WHBUnmountSdCard();
