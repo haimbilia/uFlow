@@ -26,6 +26,7 @@ namespace {
 
 constexpr int kWidth = 1280;
 constexpr int kHeight = 720;
+constexpr const char *kTracePath = "fs:/vol/external01/wiiu/apps/uFlow/uflow.log";
 constexpr std::array<const char *, 5> kTabNames = {"ALL", "WII U", "WII", "GAMECUBE", "FAVORITES"};
 
 using LaunchLooseFn = RPXLoaderStatus (*)(const char *, const char *, const char *, const char *,
@@ -34,6 +35,13 @@ using LaunchLooseFn = RPXLoaderStatus (*)(const char *, const char *, const char
 struct Color { Uint8 r, g, b, a; };
 struct TextureInfo { SDL_Texture *texture = nullptr; int width = 0; int height = 0; };
 struct CachedTexture { TextureInfo info; Uint32 lastUse = 0; };
+
+void Trace(const char *event) {
+    FILE *file = std::fopen(kTracePath, "ab");
+    if (!file) return;
+    std::fprintf(file, "ticks=%u event=%s\n", SDL_GetTicks(), event);
+    std::fclose(file);
+}
 
 void SetColor(SDL_Renderer *renderer, Color color) {
     SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
@@ -805,6 +813,7 @@ int main(int, char **) {
     WHBProcInit();
     const bool mounted=WHBMountSdCard()==1;
     if (SDL_Init(SDL_INIT_VIDEO)!=0) { if (mounted) WHBUnmountSdCard(); WHBProcShutdown(); return 1; }
+    Trace("startup");
     SDL_Window *window=SDL_CreateWindow("uFlow",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,kWidth,kHeight,SDL_WINDOW_SHOWN);
     SDL_Renderer *renderer=window?SDL_CreateRenderer(window,-1,SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC):nullptr;
     if (!renderer) { if(window)SDL_DestroyWindow(window); SDL_Quit(); if(mounted)WHBUnmountSdCard(); WHBProcShutdown(); return 2; }
@@ -812,6 +821,7 @@ int main(int, char **) {
     SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_BLEND);
 
     ScanResult scan=mounted?ScanLibrary():ScanResult{};
+    Trace("library-scan-complete");
     std::vector<GameEntry> games=std::move(scan.games);
     bool launchRequested=false;
     {
@@ -852,7 +862,15 @@ int main(int, char **) {
                     horizontalNext=ticks+interval;
                 }
             }
-            if (input.trigger&VPAD_BUTTON_B) { if(dashboard.OverlayOpen())dashboard.CloseOverlay(); else break; }
+            if (input.trigger&VPAD_BUTTON_B) {
+                if(dashboard.OverlayOpen()) dashboard.CloseOverlay();
+                else {
+                    dashboard.SetStatus("RETURNING TO WII U MENU",10000); dashboard.Render(delta);
+                    Trace("menu-launch-request");
+                    SYSLaunchMenu();
+                    launchRequested=true;
+                }
+            }
             else if(dashboard.SettingsOpen()) {
                 if(input.trigger&VPAD_BUTTON_PLUS)dashboard.CloseOverlay();
                 else if(input.trigger&VPAD_BUTTON_L)dashboard.SettingsChangeCategory(-1);
@@ -894,8 +912,12 @@ int main(int, char **) {
         dashboard.Render(delta);
         OSSleepTicks(OSMillisecondsToTicks(4));
     }
+    Trace("procui-stopped");
     }
-    SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); SDL_Quit();
+    Trace("dashboard-destroyed");
+    SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window);
+    Trace("renderer-destroyed");
+    SDL_Quit();
     if(!launchRequested&&mounted)WHBUnmountSdCard();
     WHBProcShutdown();
     return 0;
