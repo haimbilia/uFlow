@@ -630,7 +630,7 @@ int main(int, char **) {
         const Uint32 ticks=SDL_GetTicks();
         const float delta=std::min(.1f,(ticks-previousTicks)/1000.0f); previousTicks=ticks;
         VPADStatus input{}; VPADReadError error;
-        if (VPADRead(VPAD_CHAN_0,&input,1,&error)>0&&error==VPAD_READ_SUCCESS) {
+        if (!launchRequested && VPADRead(VPAD_CHAN_0,&input,1,&error)>0&&error==VPAD_READ_SUCCESS) {
             if (input.trigger&VPAD_BUTTON_B) { if(dashboard.OverlayOpen())dashboard.CloseOverlay(); else break; }
             else if(dashboard.SettingsOpen()) {
                 if(input.trigger&VPAD_BUTTON_PLUS)dashboard.CloseOverlay();
@@ -658,14 +658,15 @@ int main(int, char **) {
                 const GameEntry &game=*dashboard.Selected();
                 if(game.installed) {
                     dashboard.SetStatus("LAUNCHING "+Ellipsize(game.name,38),10000); dashboard.Render(delta);
-                    SYSLaunchTitle(game.installedTitleId); launchRequested=true; break;
+                    SYSLaunchTitle(game.installedTitleId);
+                    launchRequested=true;
                 } else if(game.platform!=Platform::WiiU) dashboard.SetStatus(std::string(PlatformName(game.platform))+" LAUNCH ADAPTER IS NEXT");
                 else if(!launchLoose) dashboard.SetStatus("WII U LOADER MODULE IS NOT AVAILABLE",7000);
                 else {
                     dashboard.SetStatus("LAUNCHING "+Ellipsize(game.name,38),10000); dashboard.Render(delta);
                     const RPXLoaderStatus result=launchLoose(game.rpxRelative.c_str(),game.contentRelative.c_str(),game.codeRelative.c_str(),
                             game.saveRelative.c_str(),game.name.c_str(),game.name.c_str(),game.publisher.c_str());
-                    if(result==RPX_LOADER_RESULT_SUCCESS){launchRequested=true;break;}
+                    if(result==RPX_LOADER_RESULT_SUCCESS)launchRequested=true;
                     dashboard.SetStatus(std::string("LAUNCH FAILED  ")+RPXLoader_GetStatusStr(result),10000);
                 }
             }
