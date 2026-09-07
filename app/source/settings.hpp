@@ -15,6 +15,7 @@ struct UserSettings {
     bool usePreviews = true;
     int animationSpeed = 1;
     int coverSpacing = 1;
+    int coverLayout = 0;
     int theme = 0;
     int startTab = 0;
 };

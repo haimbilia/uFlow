@@ -6,4 +6,5 @@
 dist/
 screenshots/
 .media-build/
+.model-work/
 .DS_Store

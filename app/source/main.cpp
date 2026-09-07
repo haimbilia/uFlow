@@ -1,5 +1,6 @@
 #include "library.hpp"
 #include "settings.hpp"
+#include "case_model.hpp"
 
 #include <SDL2/SDL.h>
 #include <coreinit/dynload.h>
@@ -136,6 +137,38 @@ void DrawText(SDL_Renderer *renderer, const std::string &text, int x, int y, int
         }
         x += 6 * scale;
     }
+}
+
+void DrawWrappedText(SDL_Renderer *renderer, const std::string &text, int x, int y, int scale,
+                     Color color, std::size_t charactersPerLine, int maximumLines) {
+    std::string line, word;
+    std::vector<std::string> lines;
+    const auto flushWord = [&]() {
+        if (word.empty()) return;
+        if (!line.empty() && line.size() + word.size() + 1 > charactersPerLine) {
+            lines.push_back(line);
+            line.clear();
+        }
+        if (!line.empty()) line += ' ';
+        line += word;
+        word.clear();
+    };
+    for (char character : text) {
+        if (character == ' ' || character == '\n') {
+            flushWord();
+            if (character == '\n' && !line.empty()) { lines.push_back(line); line.clear(); }
+        } else word += character;
+    }
+    flushWord();
+    if (!line.empty()) lines.push_back(line);
+    if (lines.empty()) lines.push_back("");
+    if (static_cast<int>(lines.size()) > maximumLines) {
+        lines.resize(maximumLines);
+        lines.back() = Ellipsize(lines.back(), charactersPerLine);
+    }
+    for (std::size_t index = 0; index < lines.size(); ++index)
+        DrawText(renderer, Ellipsize(lines[index], charactersPerLine), x,
+                 y + static_cast<int>(index) * (9 * scale), scale, color);
 }
 
 SDL_Surface *LoadPng(const std::string &path) {
@@ -329,9 +362,10 @@ public:
                               &preferences_.useLogos, &preferences_.usePreviews};
             *values[settingsRow_] = !*values[settingsRow_];
         } else if (settingsCategory_ == 3) {
-            if (settingsRow_ == 0) preferences_.animationSpeed = (preferences_.animationSpeed + amount + 3) % 3;
-            else if (settingsRow_ == 1) preferences_.coverSpacing = (preferences_.coverSpacing + amount + 3) % 3;
-            else if (settingsRow_ == 2) preferences_.backgroundMotion = !preferences_.backgroundMotion;
+            if (settingsRow_ == 0) preferences_.coverLayout = (preferences_.coverLayout + amount + 4) % 4;
+            else if (settingsRow_ == 1) preferences_.animationSpeed = (preferences_.animationSpeed + amount + 3) % 3;
+            else if (settingsRow_ == 2) preferences_.coverSpacing = (preferences_.coverSpacing + amount + 3) % 3;
+            else if (settingsRow_ == 3) preferences_.backgroundMotion = !preferences_.backgroundMotion;
             else preferences_.theme = (preferences_.theme + amount + 4) % 4;
         }
         SaveSettings(preferences_);
@@ -359,7 +393,7 @@ public:
 
 private:
     int SettingsRowCount() const {
-        static constexpr int counts[] = {2, 4, 4, 4, 0};
+        static constexpr int counts[] = {2, 4, 4, 5, 0};
         return counts[settingsCategory_];
     }
     void RebuildVisible() {
@@ -453,46 +487,91 @@ private:
         }
         if (game.favorite) DrawText(renderer_, "*", rect.x+rect.w-(selected?38:26), rect.y+13, selected?4:3, {255,210,66,255});
     }
-    void DrawBox(const GameEntry &game, SDL_Rect rect, float relative, bool selected, Color accent) {
-        const TextureInfo artwork=textures_.Get(game.coverPath);
-        if(!artwork.texture){DrawCover(game,rect,selected,accent);return;}
-        const float turn=std::clamp(relative,-1.0f,1.0f);
-        const float skew=std::abs(turn)*13.0f;
-        const float squash=std::abs(turn)*0.10f;
-        const float left=rect.x+rect.w*squash*.5f;
-        const float right=rect.x+rect.w*(1.0f-squash*.5f);
-        const float topLeft=rect.y+(turn<0?skew:0.0f);
-        const float topRight=rect.y+(turn>0?skew:0.0f);
-        const float bottomLeft=rect.y+rect.h-(turn<0?skew:0.0f);
-        const float bottomRight=rect.y+rect.h-(turn>0?skew:0.0f);
-        const float spine=std::max(5.0f,rect.w*.055f);
-        SDL_Vertex side[4]{};
-        const bool showLeft=turn>0;
-        const float edge=showLeft?left:right;
-        const float outer=showLeft?left-spine:right+spine;
-        side[0].position={outer,showLeft?topLeft+5.0f:topRight+5.0f};
-        side[1].position={edge,showLeft?topLeft:topRight};
-        side[2].position={edge,showLeft?bottomLeft:bottomRight};
-        side[3].position={outer,showLeft?bottomLeft-5.0f:bottomRight-5.0f};
-        for(auto &vertex:side)vertex.color={static_cast<Uint8>(accent.r*.42f),static_cast<Uint8>(accent.g*.42f),static_cast<Uint8>(accent.b*.42f),255};
-        const int indices[]={0,1,2,0,2,3};
-        SDL_RenderGeometry(renderer_,nullptr,side,4,indices,6);
-        SDL_Vertex front[4]{};
-        front[0].position={left,topLeft}; front[0].tex_coord={0,0};
-        front[1].position={right,topRight}; front[1].tex_coord={1,0};
-        front[2].position={right,bottomRight}; front[2].tex_coord={1,1};
-        front[3].position={left,bottomLeft}; front[3].tex_coord={0,1};
-        const Uint8 brightness=selected?255:static_cast<Uint8>(220-std::min(80.0f,std::abs(relative)*24.0f));
-        for(auto &vertex:front)vertex.color={brightness,brightness,brightness,255};
-        SDL_RenderGeometry(renderer_,artwork.texture,front,4,indices,6);
-        if(selected){
-            SetColor(renderer_,accent);
-            SDL_RenderDrawLine(renderer_,static_cast<int>(left),static_cast<int>(topLeft),static_cast<int>(right),static_cast<int>(topRight));
-            SDL_RenderDrawLine(renderer_,static_cast<int>(right),static_cast<int>(topRight),static_cast<int>(right),static_cast<int>(bottomRight));
-            SDL_RenderDrawLine(renderer_,static_cast<int>(right),static_cast<int>(bottomRight),static_cast<int>(left),static_cast<int>(bottomLeft));
-            SDL_RenderDrawLine(renderer_,static_cast<int>(left),static_cast<int>(bottomLeft),static_cast<int>(left),static_cast<int>(topLeft));
+    void DrawBox(const GameEntry &game, SDL_Rect rect, float relative, bool selected, Color accent,
+                 float turnScale = .82f) {
+        const TextureInfo artwork = textures_.Get(game.coverPath);
+        if (!artwork.texture) { DrawCover(game, rect, selected, accent); return; }
+
+        struct Transformed { SDL_FPoint point; float depth; };
+        struct Face { std::uint16_t a, b, c; float depth; };
+        constexpr float caseWidth = 13.5f / 19.0f;
+        constexpr float caseDepth = 1.4f / 19.0f;
+        const float turn = std::clamp(relative, -1.0f, 1.0f);
+        const float idle = selected ? std::sin(SDL_GetTicks() / 1250.0f) * .025f : 0.0f;
+        const float angle = -turn * turnScale + idle;
+        const float sine = std::sin(angle), cosine = std::cos(angle);
+        const float pixelScale = std::min(rect.w / caseWidth, rect.h / 1.023f);
+        const float centerX = rect.x + rect.w * .5f;
+        const float centerY = rect.y + rect.h * .5f;
+        constexpr float camera = 2.45f;
+        const auto transform = [&](float x, float y, float z) {
+            x *= caseWidth; z *= caseDepth;
+            const float rotatedX = x * cosine + z * sine;
+            const float rotatedZ = -x * sine + z * cosine;
+            const float perspective = camera / (camera - rotatedZ);
+            return Transformed{{centerX + rotatedX * pixelScale * perspective,
+                                centerY - y * pixelScale * perspective}, rotatedZ};
+        };
+
+        std::array<SDL_Vertex, CaseModel::kPositions.size()> vertices{};
+        std::array<float, CaseModel::kPositions.size()> depths{};
+        for (std::size_t index = 0; index < CaseModel::kPositions.size(); ++index) {
+            const auto &position = CaseModel::kPositions[index];
+            const auto projected = transform(position.x, position.y, position.z);
+            vertices[index].position = projected.point;
+            depths[index] = projected.depth;
+            const auto &normal = CaseModel::kNormals[index];
+            const float normalX = normal.x * cosine + normal.z * sine;
+            const float normalZ = -normal.x * sine + normal.z * cosine;
+            const float light = std::clamp(.38f + std::max(0.0f, normalX * -.25f + normal.y * -.18f + normalZ * .95f) * .62f,
+                                           .30f, 1.0f);
+            const Color plastic = Mix({15, 31, 50, 255}, accent, selected ? .68f : .48f);
+            vertices[index].color = {static_cast<Uint8>(plastic.r * light),
+                                     static_cast<Uint8>(plastic.g * light),
+                                     static_cast<Uint8>(plastic.b * light), 255};
         }
-        if(game.favorite)DrawText(renderer_,"*",rect.x+rect.w-32,rect.y+8,3,{255,210,66,255});
+
+        std::array<Face, CaseModel::kIndices.size() / 3> faces{};
+        for (std::size_t face = 0; face < faces.size(); ++face) {
+            const auto a = CaseModel::kIndices[face * 3];
+            const auto b = CaseModel::kIndices[face * 3 + 1];
+            const auto c = CaseModel::kIndices[face * 3 + 2];
+            faces[face] = {a, b, c, (depths[a] + depths[b] + depths[c]) / 3.0f};
+        }
+        std::sort(faces.begin(), faces.end(), [](const Face &left, const Face &right) {
+            return left.depth < right.depth;
+        });
+        std::array<int, CaseModel::kIndices.size()> sortedIndices{};
+        for (std::size_t face = 0; face < faces.size(); ++face) {
+            sortedIndices[face * 3] = faces[face].a;
+            sortedIndices[face * 3 + 1] = faces[face].b;
+            sortedIndices[face * 3 + 2] = faces[face].c;
+        }
+
+        SDL_Rect shadow = {rect.x + 15, rect.y + rect.h - 4, rect.w - 12, 20};
+        FillRoundedRect(renderer_, shadow, 9, {0, 0, 0, selected ? Uint8(115) : Uint8(70)});
+        SDL_RenderGeometry(renderer_, nullptr, vertices.data(), static_cast<int>(vertices.size()),
+                           sortedIndices.data(), static_cast<int>(sortedIndices.size()));
+
+        const auto topLeft = transform(-.478f, .482f, .515f);
+        const auto topRight = transform(.478f, .482f, .515f);
+        const auto bottomRight = transform(.478f, -.482f, .515f);
+        const auto bottomLeft = transform(-.478f, -.482f, .515f);
+        SDL_Vertex sleeve[4]{};
+        sleeve[0].position = topLeft.point; sleeve[0].tex_coord = {0, 0};
+        sleeve[1].position = topRight.point; sleeve[1].tex_coord = {1, 0};
+        sleeve[2].position = bottomRight.point; sleeve[2].tex_coord = {1, 1};
+        sleeve[3].position = bottomLeft.point; sleeve[3].tex_coord = {0, 1};
+        const Uint8 brightness = selected ? 255 : static_cast<Uint8>(225 - std::min(70.0f, std::abs(relative) * 22.0f));
+        for (auto &vertex : sleeve) vertex.color = {brightness, brightness, brightness, 255};
+        const int sleeveIndices[] = {0, 1, 2, 0, 2, 3};
+        SDL_RenderGeometry(renderer_, artwork.texture, sleeve, 4, sleeveIndices, 6);
+        if (selected) {
+            SetColor(renderer_, accent);
+            const SDL_FPoint outline[] = {topLeft.point, topRight.point, bottomRight.point, bottomLeft.point, topLeft.point};
+            SDL_RenderDrawLinesF(renderer_, outline, 5);
+        }
+        if (game.favorite) DrawText(renderer_, "*", rect.x + rect.w - 32, rect.y + 8, 3, {255,210,66,255});
     }
     void DrawCarousel(Color accent) {
         struct Card { int index; float relative; };
@@ -506,24 +585,37 @@ private:
             return std::abs(left.relative) > std::abs(right.relative);
         });
         const float spacingValues[] = {154.0f, 184.0f, 216.0f};
-        const float spacing = spacingValues[preferences_.coverSpacing];
+        float spacing = spacingValues[preferences_.coverSpacing];
+        if (preferences_.coverLayout == 1) spacing *= .86f;
+        else if (preferences_.coverLayout == 2) spacing *= 1.05f;
+        else if (preferences_.coverLayout == 3) spacing *= .48f;
         for (const Card &card : cards) {
             const GameEntry &game = games_[visible_[card.index]];
             const float distance = std::abs(card.relative);
             float focus = std::max(0.0f, 1.0f - distance);
             focus = focus * focus * (3.0f - 2.0f * focus);
-            const bool square = game.platform == Platform::WiiU;
-            const float sideWidth = square ? 148.0f : 126.0f;
-            const float sideHeight = square ? 148.0f : 180.0f;
-            const float focusWidth = square ? 272.0f : 220.0f;
-            const float focusHeight = square ? 272.0f : 314.0f;
+            float sideWidth = 126.0f;
+            float sideHeight = 180.0f;
+            const float focusWidth = 220.0f;
+            const float focusHeight = 314.0f;
+            float turnScale = .82f;
+            if (preferences_.coverLayout == 1) {
+                sideWidth = 112.0f; sideHeight = 160.0f; turnScale = .55f;
+            } else if (preferences_.coverLayout == 2) {
+                sideWidth = 135.0f; sideHeight = 193.0f; turnScale = 0.0f;
+            } else if (preferences_.coverLayout == 3) {
+                sideWidth = 150.0f; sideHeight = 214.0f; turnScale = .28f;
+            }
             const int width = static_cast<int>(sideWidth + (focusWidth - sideWidth) * focus);
             const int height = static_cast<int>(sideHeight + (focusHeight - sideHeight) * focus);
-            const float depthPush = std::min(4.0f, distance) * 9.0f;
+            float depthPush = std::min(4.0f, distance) * 9.0f;
+            if (preferences_.coverLayout == 1) depthPush = std::pow(std::min(4.0f, distance), 1.35f) * 18.0f;
+            else if (preferences_.coverLayout == 2) depthPush = std::min(4.0f, distance) * 3.0f;
+            else if (preferences_.coverLayout == 3) depthPush = std::min(4.0f, distance) * 5.0f;
             const int x = static_cast<int>(640.0f + tabSlide_ + card.relative * spacing - width / 2.0f);
             const int y = static_cast<int>(312.0f - height / 2.0f + depthPush);
             if(preferences_.useBoxArt)DrawBox(game, {x, y, width, height}, card.relative,
-                    card.index == static_cast<int>(selected_) && focus > .78f, accent);
+                    card.index == static_cast<int>(selected_) && focus > .78f, accent, turnScale);
             else DrawCover(game,{x,y,width,height},card.index==static_cast<int>(selected_)&&focus>.78f,accent);
         }
         const auto &game = games_[visible_[selected_]];
@@ -556,36 +648,60 @@ private:
         FillRoundedRect(renderer_,{x,92,8,536},4,accent);
     }
     void DrawDetails(Color accent, float progress) {
-        const GameEntry *game=Selected(); if (!game) return;
-        const int x = static_cast<int>(80 + (1.0f-progress)*1240.0f);
-        DrawPanelBase(accent,x,1120,progress);
-        DrawText(renderer_,"TITLE DETAILS",x+52,132,4,{248,250,255,255});
-        const bool square = game->platform == Platform::WiiU;
-        const SDL_Rect cover = square ? SDL_Rect{x+55,202,270,270} : SDL_Rect{x+78,170,220,314};
-        DrawCover(*game,cover,true,accent);
-        const int infoX=x+380;
-        DrawText(renderer_,Ellipsize(game->name,43),infoX,194,3,accent);
-        if(!game->publisher.empty())DrawText(renderer_,Ellipsize(game->publisher,49),infoX,232,2,{166,178,197,255});
-        DrawText(renderer_,"PLATFORM",infoX,286,1,{102,120,146,255});
-        DrawText(renderer_,PlatformName(game->platform),infoX,310,2,{235,241,250,255});
-        DrawText(renderer_,"MEDIA SOURCE",infoX+260,286,1,{102,120,146,255});
-        const std::string source=game->installed?(game->storage.empty()?"INSTALLED WII U":"INSTALLED  "+game->storage):"FAT32 SOURCE";
-        DrawText(renderer_,Ellipsize(source,30),infoX+260,310,2,{235,241,250,255});
-        DrawText(renderer_,"TITLE ID",infoX,362,1,{102,120,146,255});
-        DrawText(renderer_,game->titleId.empty()?"NOT AVAILABLE":Ellipsize(game->titleId,24),infoX,386,2,{235,241,250,255});
-        DrawText(renderer_,"FAVORITE",infoX+260,362,1,{102,120,146,255});
-        DrawText(renderer_,game->favorite?"YES":"NO",infoX+260,386,2,{235,241,250,255});
-        DrawText(renderer_,"GENRE",infoX,438,1,{102,120,146,255});
-        DrawText(renderer_,game->genre.empty()?"UNKNOWN":Ellipsize(game->genre,20),infoX,462,2,{235,241,250,255});
-        DrawText(renderer_,"YEAR",infoX+245,438,1,{102,120,146,255});
-        DrawText(renderer_,game->releaseYear.empty()?"----":game->releaseYear,infoX+245,462,2,{235,241,250,255});
-        DrawText(renderer_,"PLAYERS",infoX+390,438,1,{102,120,146,255});
-        DrawText(renderer_,game->players.empty()?"--":game->players,infoX+390,462,2,{235,241,250,255});
-        DrawText(renderer_,game->description.empty()?Ellipsize(game->absolutePath,64):Ellipsize(game->description,64),infoX,510,1,{150,164,185,255});
-        FillRoundedRect(renderer_,{x+38,548,1044,1},1,{accent.r,accent.g,accent.b,80});
-        DrawText(renderer_,"A  LAUNCH",x+58,579,2,{255,255,255,255});
-        DrawText(renderer_,game->favorite?"X  REMOVE FAVORITE":"X  ADD FAVORITE",x+270,579,2,{255,255,255,255});
-        DrawText(renderer_,"B  BACK",x+920,579,2,accent);
+        const GameEntry *game = Selected(); if (!game) return;
+        const int x = static_cast<int>(80 + (1.0f - progress) * 1240.0f);
+        DrawPanelBase(accent, x, 1120, progress);
+        DrawText(renderer_, "TITLE DETAILS", x + 48, 120, 2, {142,157,179,255});
+
+        const SDL_Rect cover = {x + 58, 166, 250, 357};
+        if (preferences_.useBoxArt) DrawBox(*game, cover, -.16f, true, accent, .38f);
+        else DrawCover(*game, cover, true, accent);
+
+        const int infoX = x + 365;
+        const TextureInfo logo = preferences_.useLogos ? textures_.Get(game->logoPath) : TextureInfo{};
+        if (logo.texture) {
+            const float ratio = static_cast<float>(logo.width) / std::max(1, logo.height);
+            SDL_Rect logoRect = {infoX, 120, 480, 78};
+            if (ratio > static_cast<float>(logoRect.w) / logoRect.h) {
+                logoRect.h = static_cast<int>(logoRect.w / ratio); logoRect.y += (78 - logoRect.h) / 2;
+            } else {
+                logoRect.w = static_cast<int>(logoRect.h * ratio);
+            }
+            SDL_RenderCopy(renderer_, logo.texture, nullptr, &logoRect);
+        } else DrawText(renderer_, Ellipsize(game->name, 38), infoX, 143, 4, {248,250,255,255});
+
+        const std::string creator = !game->developer.empty() ? game->developer : game->publisher;
+        if (!creator.empty()) DrawText(renderer_, Ellipsize(creator, 55), infoX, 217, 2, accent);
+        const std::string source = game->installed ? (game->storage.empty() ? "INSTALLED" : game->storage) : "FAT32";
+        DrawText(renderer_, Ellipsize(game->name, 56), infoX, 251, 2, {224,231,241,255});
+
+        const auto badge = [&](int offset, const char *label, const std::string &value) {
+            FillRoundedRect(renderer_, {infoX + offset, 285, 151, 58}, 12, {4,10,19,205});
+            DrawText(renderer_, label, infoX + offset + 12, 296, 1, {99,116,142,255});
+            DrawText(renderer_, Ellipsize(value.empty() ? "UNKNOWN" : value, 18), infoX + offset + 12, 316, 2,
+                     {235,241,250,255});
+        };
+        badge(0, "PLATFORM", PlatformName(game->platform));
+        badge(162, "YEAR", game->releaseYear.empty() ? "----" : game->releaseYear);
+        badge(324, "REGION", game->region);
+        badge(486, "PLAYERS", game->players.empty() ? "--" : game->players);
+
+        DrawText(renderer_, "OVERVIEW", infoX, 374, 2, accent);
+        const std::string description = game->description.empty()
+                                            ? "No synopsis is available for this title yet. Add one to its metadata file."
+                                            : game->description;
+        DrawWrappedText(renderer_, description, infoX, 405, 2, {174,186,204,255}, 55, 4);
+        std::string footer = (game->genre.empty() ? "GENRE UNKNOWN" : game->genre) + "  /  " + source;
+        if (!game->rating.empty()) footer += "  /  RATING " + game->rating;
+        DrawText(renderer_, Ellipsize(footer, 72), infoX, 493, 1, {111,130,157,255});
+        if (!game->titleId.empty()) DrawText(renderer_, "TITLE ID  " + Ellipsize(game->titleId, 24), infoX, 515, 1, {83,101,128,255});
+
+        FillRoundedRect(renderer_, {x + 38, 548, 1044, 1}, 1, {accent.r,accent.g,accent.b,110});
+        FillRoundedRect(renderer_, {x + 52, 568, 176, 42}, 14, accent);
+        DrawText(renderer_, "A  LAUNCH", x + 140, 582, 2, {4,12,22,255}, true);
+        DrawText(renderer_, game->favorite ? "X  REMOVE FAVORITE" : "X  ADD FAVORITE", x + 270, 582, 2, {225,232,242,255});
+        DrawText(renderer_, "Y  CLOSE", x + 720, 582, 2, {170,183,202,255});
+        DrawText(renderer_, "B  BACK", x + 930, 582, 2, accent);
     }
     void DrawSettings(Color accent, float progress) {
         static constexpr const char *categories[]={"GENERAL","LIBRARY","MEDIA","DISPLAY","ABOUT"};
@@ -628,13 +744,15 @@ private:
             DrawText(renderer_,"DIRECTORY",contentX,518,1,{91,109,135,255});
             DrawText(renderer_,paths[settingsRow_],contentX,542,2,accent);
         }else if(settingsCategory_==3){
+            static constexpr const char *layouts[]={"CLASSIC FLOW","CAROUSEL","FLAT ROW","STACKED"};
             static constexpr const char *speeds[]={"RELAXED","SMOOTH","FAST"};
             static constexpr const char *spacing[]={"COMPACT","BALANCED","WIDE"};
             static constexpr const char *themes[]={"PLATFORM","CYAN","VIOLET","AMBER"};
-            drawRow(0,"ANIMATION",speeds[preferences_.animationSpeed]);
-            drawRow(1,"COVER SPACING",spacing[preferences_.coverSpacing]);
-            drawRow(2,"BACKGROUND MOTION",OnOff(preferences_.backgroundMotion));
-            drawRow(3,"ACCENT THEME",themes[preferences_.theme]);
+            drawRow(0,"COVER LAYOUT",layouts[preferences_.coverLayout]);
+            drawRow(1,"ANIMATION",speeds[preferences_.animationSpeed]);
+            drawRow(2,"COVER SPACING",spacing[preferences_.coverSpacing]);
+            drawRow(3,"BACKGROUND MOTION",OnOff(preferences_.backgroundMotion));
+            drawRow(4,"ACCENT THEME",themes[preferences_.theme]);
         }else{
             DrawText(renderer_,"UFLOW",contentX,216,5,accent);
             DrawText(renderer_,"A UNIFIED WII U LIBRARY EXPERIENCE",contentX,284,2,{222,229,239,255});

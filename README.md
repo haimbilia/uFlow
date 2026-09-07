@@ -8,8 +8,10 @@ platform-specific launch adapters stay hidden behind a single **Launch** action.
 
 The first graphical build is usable as a library browser. It includes:
 
-- animated horizontal coverflow with Wii U, Wii, GameCube, and Favorites tabs;
-- local PNG/TGA artwork, title metadata, details, favorites, and fast scrolling;
+- four animated 3D layouts (Classic Flow, Carousel, Flat Row, and Stacked) with
+  Wii U, Wii, GameCube, and Favorites tabs;
+- a live case mesh with per-game artwork, media-rich title details, favorites,
+  analog navigation, and accelerated scrolling;
 - an Aurora-style settings dashboard with persistent source, motion, navigation,
   spacing, startup-view, and accent-theme options;
 - scanning for Loadiine-format Wii U games, Wii `.wbfs`, and GameCube `.iso`;
@@ -41,7 +43,7 @@ media pack without modifying its source files.
 
 | Input | Action |
 |---|---|
-| Left / Right | Move through the coverflow |
+| D-pad / left stick | Move through the coverflow; hold left/right to accelerate |
 | L / R | Change platform tab |
 | ZL / ZR | Jump ten games |
 | A | Launch |
@@ -69,6 +71,8 @@ frontend uses devkitPPC, WUT, SDL2, and libpng.
 ## Architecture
 
 - `app/` — WUHB frontend, library scanner, cover cache, and dashboard.
+- `tools/convert-case-model.mjs` — converts the optimized licensed glTF case
+  mesh into the compact renderer data included by the frontend.
 - launch adapters — isolated behind the frontend API and published once stable.
 
 The UI and scanners are intentionally independent from launch adapters so work
