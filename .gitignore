@@ -4,5 +4,5 @@
 **/*.wms
 **/*.wuhb
 dist/
+screenshots/
 .DS_Store
-

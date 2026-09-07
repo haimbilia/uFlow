@@ -1,4 +1,5 @@
 #include "library.hpp"
+#include "settings.hpp"
 
 #include <SDL2/SDL.h>
 #include <coreinit/dynload.h>
@@ -44,7 +45,10 @@ Color Mix(Color a, Color b, float amount) {
     return {channel(a.r, b.r), channel(a.g, b.g), channel(a.b, b.b), channel(a.a, b.a)};
 }
 
-Color AccentFor(Platform platform) {
+Color AccentFor(Platform platform, int theme = 0) {
+    if (theme == 1) return {0, 208, 230, 255};
+    if (theme == 2) return {168, 112, 255, 255};
+    if (theme == 3) return {255, 166, 58, 255};
     switch (platform) {
         case Platform::WiiU: return {0, 190, 236, 255};
         case Platform::Wii: return {80, 197, 236, 255};
@@ -258,7 +262,10 @@ private:
 class Dashboard {
 public:
     Dashboard(SDL_Renderer *renderer, std::vector<GameEntry> &games)
-        : renderer_(renderer), games_(games), textures_(renderer) { RebuildVisible(); }
+        : renderer_(renderer), games_(games), textures_(renderer), preferences_(LoadSettings()) {
+        tab_ = preferences_.startTab;
+        RebuildVisible();
+    }
 
     void ReplaceGames(std::vector<GameEntry> games) {
         textures_.Clear(); games_ = std::move(games); selected_ = 0; visualSelected_ = 0.0f; RebuildVisible();
@@ -269,12 +276,19 @@ public:
     const GameEntry *Selected() const { return visible_.empty() ? nullptr : &games_[visible_[selected_]]; }
     void Move(int amount) {
         if (visible_.empty()) return;
-        selected_ = static_cast<std::size_t>(std::clamp<int>(static_cast<int>(selected_) + amount, 0,
-                                                              static_cast<int>(visible_.size()) - 1));
+        int next = static_cast<int>(selected_) + amount;
+        if (preferences_.wrapNavigation && visible_.size() > 1) {
+            const int count = static_cast<int>(visible_.size());
+            next = (next % count + count) % count;
+            if (std::abs(next - static_cast<int>(selected_)) > count / 2) visualSelected_ = static_cast<float>(next);
+        } else {
+            next = std::clamp(next, 0, static_cast<int>(visible_.size()) - 1);
+        }
+        selected_ = static_cast<std::size_t>(next);
     }
     void ChangeTab(int amount) {
         tab_ = (tab_ + amount + static_cast<int>(kTabNames.size())) % static_cast<int>(kTabNames.size());
-        selected_ = 0; visualSelected_ = 0.0f; details_ = false; RebuildVisible();
+        selected_ = 0; visualSelected_ = 0.0f; tabSlide_ = amount * 150.0f; details_ = false; RebuildVisible();
     }
     void ToggleFavorite() {
         if (!Selected()) return;
@@ -287,27 +301,71 @@ public:
     void ToggleDetails() { if (Selected()) details_ = !details_; }
     void ToggleSettings() { settings_ = !settings_; details_ = false; }
     bool OverlayOpen() const { return details_ || settings_; }
+    bool SettingsOpen() const { return settings_; }
+    bool DetailsOpen() const { return details_; }
     void CloseOverlay() { details_ = settings_ = false; }
 
+    void SettingsChangeCategory(int amount) {
+        settingsCategory_ = (settingsCategory_ + amount + 4) % 4;
+        settingsRow_ = 0;
+    }
+    void SettingsMoveRow(int amount) {
+        const int rows = SettingsRowCount();
+        if (rows == 0) return;
+        settingsRow_ = (settingsRow_ + amount + rows) % rows;
+    }
+    void SettingsAdjust(int amount) {
+        if (amount == 0 || settingsCategory_ == 3) return;
+        if (settingsCategory_ == 0) {
+            if (settingsRow_ == 0) preferences_.startTab = (preferences_.startTab + amount + 5) % 5;
+            else preferences_.wrapNavigation = !preferences_.wrapNavigation;
+        } else if (settingsCategory_ == 1) {
+            bool *values[] = {&preferences_.showInstalled, &preferences_.showRawWiiU,
+                              &preferences_.showWii, &preferences_.showGameCube};
+            *values[settingsRow_] = !*values[settingsRow_];
+            RebuildVisible();
+        } else if (settingsCategory_ == 2) {
+            if (settingsRow_ == 0) preferences_.animationSpeed = (preferences_.animationSpeed + amount + 3) % 3;
+            else if (settingsRow_ == 1) preferences_.coverSpacing = (preferences_.coverSpacing + amount + 3) % 3;
+            else if (settingsRow_ == 2) preferences_.backgroundMotion = !preferences_.backgroundMotion;
+            else preferences_.theme = (preferences_.theme + amount + 4) % 4;
+        }
+        SaveSettings(preferences_);
+    }
+
     void Render(float deltaSeconds) {
-        visualSelected_ += (static_cast<float>(selected_) - visualSelected_) * std::min(1.0f, deltaSeconds * 11.0f);
+        const float response = preferences_.animationSpeed == 0 ? 6.5f : preferences_.animationSpeed == 1 ? 11.0f : 17.0f;
+        const float step = std::min(1.0f, deltaSeconds * response);
+        visualSelected_ += (static_cast<float>(selected_) - visualSelected_) * step;
+        tabSlide_ += (0.0f - tabSlide_) * step;
+        detailsProgress_ += ((details_ ? 1.0f : 0.0f) - detailsProgress_) * step;
+        settingsProgress_ += ((settings_ ? 1.0f : 0.0f) - settingsProgress_) * step;
         const GameEntry *selected = Selected();
-        const Color accent = selected ? AccentFor(selected->platform) : Color{0, 190, 236, 255};
+        const Color accent = selected ? AccentFor(selected->platform, preferences_.theme)
+                                      : AccentFor(Platform::WiiU, preferences_.theme);
         DrawBackground(accent); DrawHeader(accent);
         if (visible_.empty()) DrawEmpty(accent); else DrawCarousel(accent);
         DrawFooter(accent);
-        if (details_) DrawDetails(accent);
-        if (settings_) DrawSettings(accent);
+        if (detailsProgress_ > .01f) DrawDetails(accent, detailsProgress_);
+        if (settingsProgress_ > .01f) DrawSettings(accent, settingsProgress_);
         if (!status_.empty() && SDL_TICKS_PASSED(SDL_GetTicks(), statusUntil_)) status_.clear();
         if (!status_.empty()) DrawToast(accent);
         SDL_RenderPresent(renderer_);
     }
 
 private:
+    int SettingsRowCount() const {
+        static constexpr int counts[] = {2, 4, 4, 0};
+        return counts[settingsCategory_];
+    }
     void RebuildVisible() {
         visible_.clear();
         for (std::size_t index = 0; index < games_.size(); ++index) {
             const auto &game = games_[index];
+            if (game.installed && !preferences_.showInstalled) continue;
+            if (!game.installed && game.platform == Platform::WiiU && !preferences_.showRawWiiU) continue;
+            if (game.platform == Platform::Wii && !preferences_.showWii) continue;
+            if (game.platform == Platform::GameCube && !preferences_.showGameCube) continue;
             if (tab_ == 0 || (tab_ == 1 && game.platform == Platform::WiiU) ||
                 (tab_ == 2 && game.platform == Platform::Wii) ||
                 (tab_ == 3 && game.platform == Platform::GameCube) || (tab_ == 4 && game.favorite)) visible_.push_back(index);
@@ -318,8 +376,8 @@ private:
         SetColor(renderer_, Mix({5,10,20,255}, accent, .07f));
         SDL_RenderClear(renderer_);
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-        const float phase = SDL_GetTicks() / 1800.0f;
-        const int drift = static_cast<int>(std::sin(phase) * 35.0f);
+        const float phase = preferences_.backgroundMotion ? SDL_GetTicks() / 1800.0f : 0.0f;
+        const int drift = preferences_.backgroundMotion ? static_cast<int>(std::sin(phase) * 35.0f) : 0;
         SetColor(renderer_, {accent.r,accent.g,accent.b,18});
         SDL_Rect glowA = {-180+drift,115,720,250};
         SDL_Rect glowB = {760-drift,360,700,230};
@@ -367,7 +425,7 @@ private:
             else { destination.w = static_cast<int>(area.h*sourceRatio); destination.x += (area.w-destination.w)/2; }
             SDL_RenderCopy(renderer_, cover.texture, nullptr, &destination);
         } else {
-            const Color platformAccent = AccentFor(game.platform);
+            const Color platformAccent = AccentFor(game.platform, preferences_.theme);
             FillRoundedRect(renderer_, {inner.x+12,inner.y+12,inner.w-24,inner.h-24}, 12,
                             {platformAccent.r,platformAccent.g,platformAccent.b,selected ? Uint8(160) : Uint8(92)});
             DrawText(renderer_, PlatformName(game.platform), rect.x+rect.w/2, rect.y+rect.h/2-45,
@@ -382,68 +440,136 @@ private:
         if (game.favorite) DrawText(renderer_, "*", rect.x+rect.w-(selected?38:26), rect.y+13, selected?4:3, {255,210,66,255});
     }
     void DrawCarousel(Color accent) {
-        const int selectedIndex = static_cast<int>(selected_);
-        const float offset = visualSelected_ - selectedIndex;
-        for (int distance=4; distance>=1; --distance) for (int direction : {-1,1}) {
-            const int index=selectedIndex+distance*direction;
-            if (index<0 || index>=static_cast<int>(visible_.size())) continue;
-            const float relative=static_cast<float>(index)-visualSelected_;
-            const float depth=std::min(1.0f,std::abs(relative)/4.0f);
-            const int width=static_cast<int>(176-depth*34), height=static_cast<int>(250-depth*48);
-            DrawCover(games_[visible_[index]], {static_cast<int>(445+relative*165-width/2),204+static_cast<int>(depth*25),width,height}, false, accent);
+        struct Card { int index; float relative; };
+        std::vector<Card> cards;
+        const int center = static_cast<int>(std::round(visualSelected_));
+        for (int index = center - 5; index <= center + 5; ++index) {
+            if (index >= 0 && index < static_cast<int>(visible_.size()))
+                cards.push_back({index, static_cast<float>(index) - visualSelected_});
         }
-        const int centerX=static_cast<int>(445-offset*165);
-        DrawCover(games_[visible_[selectedIndex]], {centerX-127,144,254,362}, true, accent);
-        const auto &game=games_[visible_[selected_]];
-        DrawText(renderer_,Ellipsize(game.name,35),630,205,4,{246,249,255,255});
-        DrawText(renderer_,PlatformName(game.platform),632,254,2,accent);
-        if (!game.publisher.empty()) DrawText(renderer_,Ellipsize(game.publisher,38),632,292,2,{154,167,188,255});
-        if (!game.titleId.empty()) DrawText(renderer_,"ID  "+Ellipsize(game.titleId,24),632,328,2,{105,122,148,255});
-        FillRoundedRect(renderer_,{630,380,470,4},2,{accent.r,accent.g,accent.b,130});
-        DrawText(renderer_,std::to_string(selected_+1)+" / "+std::to_string(visible_.size()),632,407,2,{183,194,211,255});
-        DrawText(renderer_,"A  LAUNCH",632,453,2,{255,255,255,255});
-        DrawText(renderer_,"Y  DETAILS",790,453,2,{255,255,255,255});
-        DrawText(renderer_,game.favorite?"X  UNFAVORITE":"X  FAVORITE",948,453,2,{255,255,255,255});
+        std::sort(cards.begin(), cards.end(), [](const Card &left, const Card &right) {
+            return std::abs(left.relative) > std::abs(right.relative);
+        });
+        const float spacingValues[] = {154.0f, 184.0f, 216.0f};
+        const float spacing = spacingValues[preferences_.coverSpacing];
+        for (const Card &card : cards) {
+            const GameEntry &game = games_[visible_[card.index]];
+            const float distance = std::abs(card.relative);
+            float focus = std::max(0.0f, 1.0f - distance);
+            focus = focus * focus * (3.0f - 2.0f * focus);
+            const bool square = game.platform == Platform::WiiU;
+            const float sideWidth = square ? 148.0f : 126.0f;
+            const float sideHeight = square ? 148.0f : 180.0f;
+            const float focusWidth = square ? 272.0f : 220.0f;
+            const float focusHeight = square ? 272.0f : 314.0f;
+            const int width = static_cast<int>(sideWidth + (focusWidth - sideWidth) * focus);
+            const int height = static_cast<int>(sideHeight + (focusHeight - sideHeight) * focus);
+            const float depthPush = std::min(4.0f, distance) * 9.0f;
+            const int x = static_cast<int>(640.0f + tabSlide_ + card.relative * spacing - width / 2.0f);
+            const int y = static_cast<int>(312.0f - height / 2.0f + depthPush);
+            DrawCover(game, {x, y, width, height}, card.index == static_cast<int>(selected_) && focus > .78f, accent);
+        }
+        const auto &game = games_[visible_[selected_]];
+        FillRoundedRect(renderer_, {250,505,780,3}, 1, {accent.r,accent.g,accent.b,105});
+        DrawText(renderer_, Ellipsize(game.name,50), 640, 525, 3, {246,249,255,255}, true);
+        std::string summary = std::string(PlatformName(game.platform)) + "  /  " +
+                              (game.installed ? (game.storage.empty() ? "INSTALLED" : game.storage) : "FAT32") +
+                              "  /  " + std::to_string(selected_+1) + " OF " + std::to_string(visible_.size());
+        DrawText(renderer_, Ellipsize(summary,75), 640, 570, 2, accent, true);
     }
     void DrawFooter(Color accent) {
         FillRoundedRect(renderer_,{38,626,1204,64},20,{5,10,20,205});
-        DrawText(renderer_,"L/R  PLATFORM",65,648,2,{173,184,201,255});
-        DrawText(renderer_,"ZL/ZR  FAST",300,648,2,{173,184,201,255});
-        DrawText(renderer_,"-  RESCAN",520,648,2,{173,184,201,255});
-        DrawText(renderer_,"+  SETTINGS",700,648,2,{173,184,201,255});
-        DrawText(renderer_,"B  EXIT",1058,648,2,accent);
+        DrawText(renderer_,"A  LAUNCH",65,648,2,{235,241,250,255});
+        DrawText(renderer_,"Y  DETAILS",235,648,2,{173,184,201,255});
+        DrawText(renderer_,"X  FAVORITE",430,648,2,{173,184,201,255});
+        DrawText(renderer_,"L/R  FILTER",650,648,2,{173,184,201,255});
+        DrawText(renderer_,"+  SETTINGS",860,648,2,{173,184,201,255});
+        DrawText(renderer_,"B  EXIT",1083,648,2,accent);
     }
-    void DrawPanelBase(Color accent) {
-        SetColor(renderer_,{0,0,0,175}); SDL_RenderFillRect(renderer_,nullptr);
-        FillRoundedRect(renderer_,{155,105,970,510},28,{10,17,29,250});
-        FillRoundedRect(renderer_,{155,105,8,510},4,accent);
+    void DrawPanelBase(Color accent, int x, int width, float progress) {
+        SetColor(renderer_,{0,0,0,static_cast<Uint8>(190.0f*progress)}); SDL_RenderFillRect(renderer_,nullptr);
+        FillRoundedRect(renderer_,{x,92,width,536},28,{10,17,29,250});
+        FillRoundedRect(renderer_,{x,92,8,536},4,accent);
     }
-    void DrawDetails(Color accent) {
-        const GameEntry *game=Selected(); if (!game) return; DrawPanelBase(accent);
-        DrawText(renderer_,"GAME DETAILS",205,150,4,{248,250,255,255});
-        DrawText(renderer_,Ellipsize(game->name,48),205,218,3,accent);
-        DrawText(renderer_,"PLATFORM",205,290,2,{113,130,156,255});
-        DrawText(renderer_,PlatformName(game->platform),205,322,3,{235,241,250,255});
-        DrawText(renderer_,"TITLE ID",560,290,2,{113,130,156,255});
-        DrawText(renderer_,game->titleId.empty()?"NOT AVAILABLE":Ellipsize(game->titleId,28),560,322,3,{235,241,250,255});
-        DrawText(renderer_,"SOURCE",850,290,2,{113,130,156,255});
-        DrawText(renderer_,game->installed?(game->storage.empty()?"INSTALLED":Ellipsize(game->storage,12)):"FAT32",850,322,3,{235,241,250,255});
-        DrawText(renderer_,"LOCATION",205,390,2,{113,130,156,255});
-        DrawText(renderer_,Ellipsize(game->absolutePath,66),205,424,2,{202,212,226,255});
-        DrawText(renderer_,"A  LAUNCH",205,530,2,{255,255,255,255});
-        DrawText(renderer_,"X  FAVORITE",405,530,2,{255,255,255,255});
-        DrawText(renderer_,"B  BACK",930,530,2,accent);
+    void DrawDetails(Color accent, float progress) {
+        const GameEntry *game=Selected(); if (!game) return;
+        const int x = static_cast<int>(80 + (1.0f-progress)*1240.0f);
+        DrawPanelBase(accent,x,1120,progress);
+        DrawText(renderer_,"TITLE DETAILS",x+52,132,4,{248,250,255,255});
+        const bool square = game->platform == Platform::WiiU;
+        const SDL_Rect cover = square ? SDL_Rect{x+55,202,270,270} : SDL_Rect{x+78,170,220,314};
+        DrawCover(*game,cover,true,accent);
+        const int infoX=x+380;
+        DrawText(renderer_,Ellipsize(game->name,43),infoX,194,3,accent);
+        if(!game->publisher.empty())DrawText(renderer_,Ellipsize(game->publisher,49),infoX,232,2,{166,178,197,255});
+        DrawText(renderer_,"PLATFORM",infoX,286,1,{102,120,146,255});
+        DrawText(renderer_,PlatformName(game->platform),infoX,310,2,{235,241,250,255});
+        DrawText(renderer_,"MEDIA SOURCE",infoX+260,286,1,{102,120,146,255});
+        const std::string source=game->installed?(game->storage.empty()?"INSTALLED WII U":"INSTALLED  "+game->storage):"FAT32 SOURCE";
+        DrawText(renderer_,Ellipsize(source,30),infoX+260,310,2,{235,241,250,255});
+        DrawText(renderer_,"TITLE ID",infoX,362,1,{102,120,146,255});
+        DrawText(renderer_,game->titleId.empty()?"NOT AVAILABLE":Ellipsize(game->titleId,24),infoX,386,2,{235,241,250,255});
+        DrawText(renderer_,"FAVORITE",infoX+260,362,1,{102,120,146,255});
+        DrawText(renderer_,game->favorite?"YES":"NO",infoX+260,386,2,{235,241,250,255});
+        DrawText(renderer_,"LOCATION",infoX,438,1,{102,120,146,255});
+        DrawText(renderer_,Ellipsize(game->absolutePath,55),infoX,462,2,{190,202,220,255});
+        FillRoundedRect(renderer_,{x+38,548,1044,1},1,{accent.r,accent.g,accent.b,80});
+        DrawText(renderer_,"A  LAUNCH",x+58,579,2,{255,255,255,255});
+        DrawText(renderer_,game->favorite?"X  REMOVE FAVORITE":"X  ADD FAVORITE",x+270,579,2,{255,255,255,255});
+        DrawText(renderer_,"B  BACK",x+920,579,2,accent);
     }
-    void DrawSettings(Color accent) {
-        DrawPanelBase(accent);
-        DrawText(renderer_,"SETTINGS",205,150,4,{248,250,255,255});
-        DrawText(renderer_,"LIBRARY ROOTS",205,224,2,accent);
-        DrawText(renderer_,"WII U   /WIIU/RAW-GAMES  +  /WIIU/GAMES",205,262,2,{210,220,233,255});
-        DrawText(renderer_,"WII     /WBFS",205,300,2,{210,220,233,255});
-        DrawText(renderer_,"GC      /GAMES",205,338,2,{210,220,233,255});
-        DrawText(renderer_,"COVERS  /COVERS/GAMEID.PNG",205,390,2,{210,220,233,255});
-        DrawText(renderer_,"AUTOBOOT AND LAUNCH OPTIONS WILL LIVE HERE",205,458,2,{131,146,169,255});
-        DrawText(renderer_,"B  BACK",930,530,2,accent);
+    void DrawSettings(Color accent, float progress) {
+        static constexpr const char *categories[]={"GENERAL","SOURCES","DISPLAY","ABOUT"};
+        const int x=static_cast<int>(70+(1.0f-progress)*1260.0f);
+        DrawPanelBase(accent,x,1140,progress);
+        DrawText(renderer_,"SETTINGS",x+48,126,4,{248,250,255,255});
+        DrawText(renderer_,"UFLOW CONTROL CENTER",x+830,139,2,{116,133,158,255});
+        FillRoundedRect(renderer_,{x+38,182,240,390},18,{5,11,21,220});
+        for(int index=0;index<4;++index){
+            const int y=218+index*72;
+            if(index==settingsCategory_)FillRoundedRect(renderer_,{x+52,y-16,212,46},14,{accent.r,accent.g,accent.b,48});
+            DrawText(renderer_,categories[index],x+74,y,index==settingsCategory_?3:2,
+                     index==settingsCategory_?Color{255,255,255,255}:Color{128,143,166,255});
+        }
+        const int contentX=x+320;
+        const auto drawRow=[&](int row,const std::string &label,const std::string &value){
+            const int y=205+row*76;
+            if(row==settingsRow_)FillRoundedRect(renderer_,{contentX-18,y-18,760,57},14,{accent.r,accent.g,accent.b,42});
+            DrawText(renderer_,label,contentX,y,2,row==settingsRow_?Color{255,255,255,255}:Color{188,199,216,255});
+            DrawText(renderer_,"<  "+value+"  >",contentX+710,y,2,row==settingsRow_?accent:Color{126,142,166,255},true);
+        };
+        if(settingsCategory_==0){
+            drawRow(0,"START VIEW",kTabNames[preferences_.startTab]);
+            drawRow(1,"WRAP NAVIGATION",OnOff(preferences_.wrapNavigation));
+            DrawText(renderer_,"CHOOSE THE FIRST LIBRARY VIEW AND EDGE BEHAVIOR.",contentX,405,2,{107,125,150,255});
+        }else if(settingsCategory_==1){
+            drawRow(0,"INSTALLED WII U",OnOff(preferences_.showInstalled));
+            drawRow(1,"RAW WII U",OnOff(preferences_.showRawWiiU));
+            drawRow(2,"WII GAMES",OnOff(preferences_.showWii));
+            drawRow(3,"GAMECUBE GAMES",OnOff(preferences_.showGameCube));
+            const char *paths[]={"MLC + WII U USB STORAGE","/WIIU/RAW-GAMES + /WIIU/GAMES","/WBFS","/GAMES"};
+            DrawText(renderer_,"PATH",contentX,518,1,{91,109,135,255});
+            DrawText(renderer_,paths[settingsRow_],contentX,542,2,accent);
+        }else if(settingsCategory_==2){
+            static constexpr const char *speeds[]={"RELAXED","SMOOTH","FAST"};
+            static constexpr const char *spacing[]={"COMPACT","BALANCED","WIDE"};
+            static constexpr const char *themes[]={"PLATFORM","CYAN","VIOLET","AMBER"};
+            drawRow(0,"ANIMATION",speeds[preferences_.animationSpeed]);
+            drawRow(1,"COVER SPACING",spacing[preferences_.coverSpacing]);
+            drawRow(2,"BACKGROUND MOTION",OnOff(preferences_.backgroundMotion));
+            drawRow(3,"ACCENT THEME",themes[preferences_.theme]);
+        }else{
+            DrawText(renderer_,"UFLOW",contentX,216,5,accent);
+            DrawText(renderer_,"A UNIFIED WII U LIBRARY EXPERIENCE",contentX,284,2,{222,229,239,255});
+            DrawText(renderer_,"INSTALLED WII U + RAW WII U + WII + GAMECUBE",contentX,330,2,{145,160,182,255});
+            DrawText(renderer_,"SETTINGS ARE SAVED TO /WIIU/APPS/UFLOW/UFLOW.CFG",contentX,388,2,{145,160,182,255});
+            DrawText(renderer_,"BUILD 0.1 DEVELOPMENT",contentX,454,2,{102,120,146,255});
+        }
+        FillRoundedRect(renderer_,{x+38,582,1064,1},1,{accent.r,accent.g,accent.b,80});
+        DrawText(renderer_,"L/R  SECTION",x+56,600,2,{211,220,233,255});
+        DrawText(renderer_,"UP/DOWN  OPTION",x+295,600,2,{211,220,233,255});
+        DrawText(renderer_,"LEFT/RIGHT  CHANGE",x+590,600,2,{211,220,233,255});
+        DrawText(renderer_,"B  BACK",x+952,600,2,accent);
     }
     void DrawToast(Color accent) {
         const int width=std::min(820,TextWidth(status_,2)+64);
@@ -454,10 +580,16 @@ private:
     SDL_Renderer *renderer_;
     std::vector<GameEntry> &games_;
     TextureCache textures_;
+    UserSettings preferences_;
     std::vector<std::size_t> visible_;
     std::size_t selected_ = 0;
     float visualSelected_ = 0.0f;
+    float tabSlide_ = 0.0f;
+    float detailsProgress_ = 0.0f;
+    float settingsProgress_ = 0.0f;
     int tab_ = 0;
+    int settingsCategory_ = 0;
+    int settingsRow_ = 0;
     bool details_ = false, settings_ = false;
     std::string status_;
     Uint32 statusUntil_ = 0;
@@ -500,6 +632,15 @@ int main(int, char **) {
         VPADStatus input{}; VPADReadError error;
         if (VPADRead(VPAD_CHAN_0,&input,1,&error)>0&&error==VPAD_READ_SUCCESS) {
             if (input.trigger&VPAD_BUTTON_B) { if(dashboard.OverlayOpen())dashboard.CloseOverlay(); else break; }
+            else if(dashboard.SettingsOpen()) {
+                if(input.trigger&VPAD_BUTTON_PLUS)dashboard.CloseOverlay();
+                else if(input.trigger&VPAD_BUTTON_L)dashboard.SettingsChangeCategory(-1);
+                else if(input.trigger&VPAD_BUTTON_R)dashboard.SettingsChangeCategory(1);
+                else if(input.trigger&VPAD_BUTTON_UP)dashboard.SettingsMoveRow(-1);
+                else if(input.trigger&VPAD_BUTTON_DOWN)dashboard.SettingsMoveRow(1);
+                else if(input.trigger&VPAD_BUTTON_LEFT)dashboard.SettingsAdjust(-1);
+                else if((input.trigger&VPAD_BUTTON_RIGHT)||(input.trigger&VPAD_BUTTON_A))dashboard.SettingsAdjust(1);
+            }
             else if(input.trigger&VPAD_BUTTON_PLUS)dashboard.ToggleSettings();
             else if(input.trigger&VPAD_BUTTON_Y)dashboard.ToggleDetails();
             else if(input.trigger&VPAD_BUTTON_X)dashboard.ToggleFavorite();

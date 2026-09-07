@@ -10,6 +10,8 @@ The first graphical build is usable as a library browser. It includes:
 
 - animated horizontal coverflow with Wii U, Wii, GameCube, and Favorites tabs;
 - local PNG/TGA artwork, title metadata, details, favorites, and fast scrolling;
+- an Aurora-style settings dashboard with persistent source, motion, navigation,
+  spacing, startup-view, and accent-theme options;
 - scanning for Loadiine-format Wii U games, Wii `.wbfs`, and GameCube `.iso`;
 - listing and launching installed Wii U games from internal storage and Wii U USB;
 - the experimental Wii U loose-title adapter retained behind the new UI.
@@ -43,6 +45,10 @@ game folder overrides it. Favorites are stored beside the app.
 | Minus | Rescan |
 | Plus | Settings |
 | B | Back / exit |
+
+Inside Settings, use `L/R` to change section, the D-pad to select and change an
+option, and `B` to return. Settings are saved to
+`/wiiu/apps/uFlow/uflow.cfg` on the FAT32 device.
 
 ## Build
 
