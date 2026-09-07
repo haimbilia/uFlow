@@ -658,7 +658,9 @@ int main(int, char **) {
                 const GameEntry &game=*dashboard.Selected();
                 if(game.installed) {
                     dashboard.SetStatus("LAUNCHING "+Ellipsize(game.name,38),10000); dashboard.Render(delta);
-                    SYSLaunchTitle(game.installedTitleId);
+                    std::string launchPath=game.absolutePath;
+                    if(launchPath.rfind("fs:",0)==0)launchPath.erase(0,3);
+                    _SYSLaunchTitleByPathFromLauncher(launchPath.c_str(),static_cast<uint32_t>(launchPath.size()));
                     launchRequested=true;
                 } else if(game.platform!=Platform::WiiU) dashboard.SetStatus(std::string(PlatformName(game.platform))+" LAUNCH ADAPTER IS NEXT");
                 else if(!launchLoose) dashboard.SetStatus("WII U LOADER MODULE IS NOT AVAILABLE",7000);
