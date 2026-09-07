@@ -5,4 +5,5 @@
 **/*.wuhb
 dist/
 screenshots/
+.media-build/
 .DS_Store

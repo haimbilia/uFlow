@@ -19,6 +19,16 @@ struct GameEntry {
     std::string folder;
     std::string absolutePath;
     std::string coverPath;
+    std::string backgroundPath;
+    std::string logoPath;
+    std::string previewPath;
+    std::string description;
+    std::string developer;
+    std::string genre;
+    std::string region;
+    std::string rating;
+    std::string releaseYear;
+    std::string players;
     std::string rpxRelative;
     std::string contentRelative;
     std::string codeRelative;

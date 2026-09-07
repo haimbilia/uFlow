@@ -32,6 +32,11 @@ FAT32:/
 Wii U artwork is read from `meta/iconTex.tga`; a `cover.png` or `cover.tga` in a
 game folder overrides it. Favorites are stored beside the app.
 
+Enhanced media uses `/wiiu/apps/uFlow/media/{covers,backgrounds,logos,previews,metadata}`.
+Files may be named with a title ID or uFlow's normalized title name. Run
+`tools/prepare-media.ps1` to convert the artwork collection into an optimized
+media pack without modifying its source files.
+
 ## Controls
 
 | Input | Action |

@@ -9,6 +9,10 @@ struct UserSettings {
     bool showWii = true;
     bool showGameCube = true;
     bool backgroundMotion = true;
+    bool useBoxArt = true;
+    bool useBackgrounds = true;
+    bool useLogos = true;
+    bool usePreviews = true;
     int animationSpeed = 1;
     int coverSpacing = 1;
     int theme = 0;
@@ -18,4 +22,3 @@ struct UserSettings {
 UserSettings LoadSettings();
 void SaveSettings(const UserSettings &settings);
 const char *OnOff(bool value);
-

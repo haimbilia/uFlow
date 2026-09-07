@@ -306,7 +306,7 @@ public:
     void CloseOverlay() { details_ = settings_ = false; }
 
     void SettingsChangeCategory(int amount) {
-        settingsCategory_ = (settingsCategory_ + amount + 4) % 4;
+        settingsCategory_ = (settingsCategory_ + amount + 5) % 5;
         settingsRow_ = 0;
     }
     void SettingsMoveRow(int amount) {
@@ -315,7 +315,7 @@ public:
         settingsRow_ = (settingsRow_ + amount + rows) % rows;
     }
     void SettingsAdjust(int amount) {
-        if (amount == 0 || settingsCategory_ == 3) return;
+        if (amount == 0 || settingsCategory_ == 4) return;
         if (settingsCategory_ == 0) {
             if (settingsRow_ == 0) preferences_.startTab = (preferences_.startTab + amount + 5) % 5;
             else preferences_.wrapNavigation = !preferences_.wrapNavigation;
@@ -325,6 +325,10 @@ public:
             *values[settingsRow_] = !*values[settingsRow_];
             RebuildVisible();
         } else if (settingsCategory_ == 2) {
+            bool *values[] = {&preferences_.useBoxArt, &preferences_.useBackgrounds,
+                              &preferences_.useLogos, &preferences_.usePreviews};
+            *values[settingsRow_] = !*values[settingsRow_];
+        } else if (settingsCategory_ == 3) {
             if (settingsRow_ == 0) preferences_.animationSpeed = (preferences_.animationSpeed + amount + 3) % 3;
             else if (settingsRow_ == 1) preferences_.coverSpacing = (preferences_.coverSpacing + amount + 3) % 3;
             else if (settingsRow_ == 2) preferences_.backgroundMotion = !preferences_.backgroundMotion;
@@ -343,7 +347,7 @@ public:
         const GameEntry *selected = Selected();
         const Color accent = selected ? AccentFor(selected->platform, preferences_.theme)
                                       : AccentFor(Platform::WiiU, preferences_.theme);
-        DrawBackground(accent); DrawHeader(accent);
+        DrawBackground(accent, selected); DrawHeader(accent);
         if (visible_.empty()) DrawEmpty(accent); else DrawCarousel(accent);
         DrawFooter(accent);
         if (detailsProgress_ > .01f) DrawDetails(accent, detailsProgress_);
@@ -355,7 +359,7 @@ public:
 
 private:
     int SettingsRowCount() const {
-        static constexpr int counts[] = {2, 4, 4, 0};
+        static constexpr int counts[] = {2, 4, 4, 4, 0};
         return counts[settingsCategory_];
     }
     void RebuildVisible() {
@@ -372,10 +376,20 @@ private:
         }
         selected_ = visible_.empty() ? 0 : std::min(selected_, visible_.size() - 1);
     }
-    void DrawBackground(Color accent) {
+    void DrawBackground(Color accent, const GameEntry *game) {
         SetColor(renderer_, Mix({5,10,20,255}, accent, .07f));
         SDL_RenderClear(renderer_);
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+        if(preferences_.useBackgrounds&&game&&!game->backgroundPath.empty()){
+            const TextureInfo background=textures_.Get(game->backgroundPath);
+            if(background.texture){
+                SDL_SetTextureAlphaMod(background.texture,72);
+                SDL_Rect destination={0,0,kWidth,kHeight};
+                SDL_RenderCopy(renderer_,background.texture,nullptr,&destination);
+                SDL_SetTextureAlphaMod(background.texture,255);
+                SetColor(renderer_,{3,7,14,118}); SDL_RenderFillRect(renderer_,nullptr);
+            }
+        }
         const float phase = preferences_.backgroundMotion ? SDL_GetTicks() / 1800.0f : 0.0f;
         const int drift = preferences_.backgroundMotion ? static_cast<int>(std::sin(phase) * 35.0f) : 0;
         SetColor(renderer_, {accent.r,accent.g,accent.b,18});
@@ -439,6 +453,47 @@ private:
         }
         if (game.favorite) DrawText(renderer_, "*", rect.x+rect.w-(selected?38:26), rect.y+13, selected?4:3, {255,210,66,255});
     }
+    void DrawBox(const GameEntry &game, SDL_Rect rect, float relative, bool selected, Color accent) {
+        const TextureInfo artwork=textures_.Get(game.coverPath);
+        if(!artwork.texture){DrawCover(game,rect,selected,accent);return;}
+        const float turn=std::clamp(relative,-1.0f,1.0f);
+        const float skew=std::abs(turn)*13.0f;
+        const float squash=std::abs(turn)*0.10f;
+        const float left=rect.x+rect.w*squash*.5f;
+        const float right=rect.x+rect.w*(1.0f-squash*.5f);
+        const float topLeft=rect.y+(turn<0?skew:0.0f);
+        const float topRight=rect.y+(turn>0?skew:0.0f);
+        const float bottomLeft=rect.y+rect.h-(turn<0?skew:0.0f);
+        const float bottomRight=rect.y+rect.h-(turn>0?skew:0.0f);
+        const float spine=std::max(5.0f,rect.w*.055f);
+        SDL_Vertex side[4]{};
+        const bool showLeft=turn>0;
+        const float edge=showLeft?left:right;
+        const float outer=showLeft?left-spine:right+spine;
+        side[0].position={outer,showLeft?topLeft+5.0f:topRight+5.0f};
+        side[1].position={edge,showLeft?topLeft:topRight};
+        side[2].position={edge,showLeft?bottomLeft:bottomRight};
+        side[3].position={outer,showLeft?bottomLeft-5.0f:bottomRight-5.0f};
+        for(auto &vertex:side)vertex.color={static_cast<Uint8>(accent.r*.42f),static_cast<Uint8>(accent.g*.42f),static_cast<Uint8>(accent.b*.42f),255};
+        const int indices[]={0,1,2,0,2,3};
+        SDL_RenderGeometry(renderer_,nullptr,side,4,indices,6);
+        SDL_Vertex front[4]{};
+        front[0].position={left,topLeft}; front[0].tex_coord={0,0};
+        front[1].position={right,topRight}; front[1].tex_coord={1,0};
+        front[2].position={right,bottomRight}; front[2].tex_coord={1,1};
+        front[3].position={left,bottomLeft}; front[3].tex_coord={0,1};
+        const Uint8 brightness=selected?255:static_cast<Uint8>(220-std::min(80.0f,std::abs(relative)*24.0f));
+        for(auto &vertex:front)vertex.color={brightness,brightness,brightness,255};
+        SDL_RenderGeometry(renderer_,artwork.texture,front,4,indices,6);
+        if(selected){
+            SetColor(renderer_,accent);
+            SDL_RenderDrawLine(renderer_,static_cast<int>(left),static_cast<int>(topLeft),static_cast<int>(right),static_cast<int>(topRight));
+            SDL_RenderDrawLine(renderer_,static_cast<int>(right),static_cast<int>(topRight),static_cast<int>(right),static_cast<int>(bottomRight));
+            SDL_RenderDrawLine(renderer_,static_cast<int>(right),static_cast<int>(bottomRight),static_cast<int>(left),static_cast<int>(bottomLeft));
+            SDL_RenderDrawLine(renderer_,static_cast<int>(left),static_cast<int>(bottomLeft),static_cast<int>(left),static_cast<int>(topLeft));
+        }
+        if(game.favorite)DrawText(renderer_,"*",rect.x+rect.w-32,rect.y+8,3,{255,210,66,255});
+    }
     void DrawCarousel(Color accent) {
         struct Card { int index; float relative; };
         std::vector<Card> cards;
@@ -467,11 +522,20 @@ private:
             const float depthPush = std::min(4.0f, distance) * 9.0f;
             const int x = static_cast<int>(640.0f + tabSlide_ + card.relative * spacing - width / 2.0f);
             const int y = static_cast<int>(312.0f - height / 2.0f + depthPush);
-            DrawCover(game, {x, y, width, height}, card.index == static_cast<int>(selected_) && focus > .78f, accent);
+            if(preferences_.useBoxArt)DrawBox(game, {x, y, width, height}, card.relative,
+                    card.index == static_cast<int>(selected_) && focus > .78f, accent);
+            else DrawCover(game,{x,y,width,height},card.index==static_cast<int>(selected_)&&focus>.78f,accent);
         }
         const auto &game = games_[visible_[selected_]];
         FillRoundedRect(renderer_, {250,505,780,3}, 1, {accent.r,accent.g,accent.b,105});
-        DrawText(renderer_, Ellipsize(game.name,50), 640, 525, 3, {246,249,255,255}, true);
+        const TextureInfo logo=preferences_.useLogos?textures_.Get(game.logoPath):TextureInfo{};
+        if(logo.texture){
+            const float ratio=static_cast<float>(logo.width)/std::max(1,logo.height);
+            SDL_Rect logoRect={490,516,300,54};
+            if(ratio>static_cast<float>(logoRect.w)/logoRect.h){logoRect.h=static_cast<int>(logoRect.w/ratio);logoRect.y+=(54-logoRect.h)/2;}
+            else{logoRect.w=static_cast<int>(logoRect.h*ratio);logoRect.x+=(300-logoRect.w)/2;}
+            SDL_RenderCopy(renderer_,logo.texture,nullptr,&logoRect);
+        }else DrawText(renderer_, Ellipsize(game.name,50), 640, 525, 3, {246,249,255,255}, true);
         std::string summary = std::string(PlatformName(game.platform)) + "  /  " +
                               (game.installed ? (game.storage.empty() ? "INSTALLED" : game.storage) : "FAT32") +
                               "  /  " + std::to_string(selected_+1) + " OF " + std::to_string(visible_.size());
@@ -511,22 +575,27 @@ private:
         DrawText(renderer_,game->titleId.empty()?"NOT AVAILABLE":Ellipsize(game->titleId,24),infoX,386,2,{235,241,250,255});
         DrawText(renderer_,"FAVORITE",infoX+260,362,1,{102,120,146,255});
         DrawText(renderer_,game->favorite?"YES":"NO",infoX+260,386,2,{235,241,250,255});
-        DrawText(renderer_,"LOCATION",infoX,438,1,{102,120,146,255});
-        DrawText(renderer_,Ellipsize(game->absolutePath,55),infoX,462,2,{190,202,220,255});
+        DrawText(renderer_,"GENRE",infoX,438,1,{102,120,146,255});
+        DrawText(renderer_,game->genre.empty()?"UNKNOWN":Ellipsize(game->genre,20),infoX,462,2,{235,241,250,255});
+        DrawText(renderer_,"YEAR",infoX+245,438,1,{102,120,146,255});
+        DrawText(renderer_,game->releaseYear.empty()?"----":game->releaseYear,infoX+245,462,2,{235,241,250,255});
+        DrawText(renderer_,"PLAYERS",infoX+390,438,1,{102,120,146,255});
+        DrawText(renderer_,game->players.empty()?"--":game->players,infoX+390,462,2,{235,241,250,255});
+        DrawText(renderer_,game->description.empty()?Ellipsize(game->absolutePath,64):Ellipsize(game->description,64),infoX,510,1,{150,164,185,255});
         FillRoundedRect(renderer_,{x+38,548,1044,1},1,{accent.r,accent.g,accent.b,80});
         DrawText(renderer_,"A  LAUNCH",x+58,579,2,{255,255,255,255});
         DrawText(renderer_,game->favorite?"X  REMOVE FAVORITE":"X  ADD FAVORITE",x+270,579,2,{255,255,255,255});
         DrawText(renderer_,"B  BACK",x+920,579,2,accent);
     }
     void DrawSettings(Color accent, float progress) {
-        static constexpr const char *categories[]={"GENERAL","SOURCES","DISPLAY","ABOUT"};
+        static constexpr const char *categories[]={"GENERAL","LIBRARY","MEDIA","DISPLAY","ABOUT"};
         const int x=static_cast<int>(70+(1.0f-progress)*1260.0f);
         DrawPanelBase(accent,x,1140,progress);
         DrawText(renderer_,"SETTINGS",x+48,126,4,{248,250,255,255});
         DrawText(renderer_,"UFLOW CONTROL CENTER",x+830,139,2,{116,133,158,255});
         FillRoundedRect(renderer_,{x+38,182,240,390},18,{5,11,21,220});
-        for(int index=0;index<4;++index){
-            const int y=218+index*72;
+        for(int index=0;index<5;++index){
+            const int y=208+index*61;
             if(index==settingsCategory_)FillRoundedRect(renderer_,{x+52,y-16,212,46},14,{accent.r,accent.g,accent.b,48});
             DrawText(renderer_,categories[index],x+74,y,index==settingsCategory_?3:2,
                      index==settingsCategory_?Color{255,255,255,255}:Color{128,143,166,255});
@@ -551,6 +620,14 @@ private:
             DrawText(renderer_,"PATH",contentX,518,1,{91,109,135,255});
             DrawText(renderer_,paths[settingsRow_],contentX,542,2,accent);
         }else if(settingsCategory_==2){
+            drawRow(0,"3D BOX ART",OnOff(preferences_.useBoxArt));
+            drawRow(1,"BACKGROUNDS",OnOff(preferences_.useBackgrounds));
+            drawRow(2,"TITLE LOGOS",OnOff(preferences_.useLogos));
+            drawRow(3,"GAMEPLAY PREVIEWS",OnOff(preferences_.usePreviews));
+            const char *paths[]={"/MEDIA/COVERS","/MEDIA/BACKGROUNDS","/MEDIA/LOGOS","/MEDIA/PREVIEWS"};
+            DrawText(renderer_,"DIRECTORY",contentX,518,1,{91,109,135,255});
+            DrawText(renderer_,paths[settingsRow_],contentX,542,2,accent);
+        }else if(settingsCategory_==3){
             static constexpr const char *speeds[]={"RELAXED","SMOOTH","FAST"};
             static constexpr const char *spacing[]={"COMPACT","BALANCED","WIDE"};
             static constexpr const char *themes[]={"PLATFORM","CYAN","VIOLET","AMBER"};
@@ -625,29 +702,52 @@ int main(int, char **) {
     const RPXLoaderStatus loaderStatus=mounted?RPXLoader_InitLibrary():RPX_LOADER_RESULT_NOT_AVAILABLE;
     LaunchLooseFn launchLoose=loaderStatus==RPX_LOADER_RESULT_SUCCESS?LoadLaunchFunction():nullptr;
     Uint32 previousTicks=SDL_GetTicks();
+    int heldHorizontal=0;
+    int heldVertical=0;
+    Uint32 horizontalStarted=0;
+    Uint32 horizontalNext=0;
 
     while (WHBProcIsRunning()) {
         const Uint32 ticks=SDL_GetTicks();
         const float delta=std::min(.1f,(ticks-previousTicks)/1000.0f); previousTicks=ticks;
         VPADStatus input{}; VPADReadError error;
         if (!launchRequested && VPADRead(VPAD_CHAN_0,&input,1,&error)>0&&error==VPAD_READ_SUCCESS) {
+            const int horizontal=((input.hold&VPAD_BUTTON_LEFT)||input.leftStick.x<-.42f)?-1:
+                                 ((input.hold&VPAD_BUTTON_RIGHT)||input.leftStick.x>.42f)?1:0;
+            const int vertical=((input.hold&VPAD_BUTTON_UP)||input.leftStick.y>.48f)?-1:
+                               ((input.hold&VPAD_BUTTON_DOWN)||input.leftStick.y<-.48f)?1:0;
+            const bool horizontalEdge=horizontal!=heldHorizontal;
+            const bool verticalEdge=vertical!=heldVertical;
+            if(horizontalEdge){
+                heldHorizontal=horizontal;
+                horizontalStarted=ticks;
+                horizontalNext=ticks+330;
+            }
+            if(verticalEdge)heldVertical=vertical;
+            if(!dashboard.OverlayOpen()&&horizontal!=0){
+                if(horizontalEdge)dashboard.Move(horizontal);
+                else if(SDL_TICKS_PASSED(ticks,horizontalNext)){
+                    const Uint32 elapsed=ticks-horizontalStarted;
+                    const int stride=elapsed>2600?4:elapsed>1500?2:1;
+                    dashboard.Move(horizontal*stride);
+                    const Uint32 interval=elapsed>2600?38:elapsed>1500?62:105;
+                    horizontalNext=ticks+interval;
+                }
+            }
             if (input.trigger&VPAD_BUTTON_B) { if(dashboard.OverlayOpen())dashboard.CloseOverlay(); else break; }
             else if(dashboard.SettingsOpen()) {
                 if(input.trigger&VPAD_BUTTON_PLUS)dashboard.CloseOverlay();
                 else if(input.trigger&VPAD_BUTTON_L)dashboard.SettingsChangeCategory(-1);
                 else if(input.trigger&VPAD_BUTTON_R)dashboard.SettingsChangeCategory(1);
-                else if(input.trigger&VPAD_BUTTON_UP)dashboard.SettingsMoveRow(-1);
-                else if(input.trigger&VPAD_BUTTON_DOWN)dashboard.SettingsMoveRow(1);
-                else if(input.trigger&VPAD_BUTTON_LEFT)dashboard.SettingsAdjust(-1);
-                else if((input.trigger&VPAD_BUTTON_RIGHT)||(input.trigger&VPAD_BUTTON_A))dashboard.SettingsAdjust(1);
+                else if(verticalEdge&&vertical)dashboard.SettingsMoveRow(vertical);
+                else if(horizontalEdge&&horizontal)dashboard.SettingsAdjust(horizontal);
+                else if(input.trigger&VPAD_BUTTON_A)dashboard.SettingsAdjust(1);
             }
             else if(input.trigger&VPAD_BUTTON_PLUS)dashboard.ToggleSettings();
             else if(input.trigger&VPAD_BUTTON_Y)dashboard.ToggleDetails();
             else if(input.trigger&VPAD_BUTTON_X)dashboard.ToggleFavorite();
             else if(input.trigger&VPAD_BUTTON_L)dashboard.ChangeTab(-1);
             else if(input.trigger&VPAD_BUTTON_R)dashboard.ChangeTab(1);
-            else if(!dashboard.OverlayOpen()&&(input.trigger&VPAD_BUTTON_LEFT))dashboard.Move(-1);
-            else if(!dashboard.OverlayOpen()&&(input.trigger&VPAD_BUTTON_RIGHT))dashboard.Move(1);
             else if(!dashboard.OverlayOpen()&&(input.trigger&VPAD_BUTTON_ZL))dashboard.Move(-10);
             else if(!dashboard.OverlayOpen()&&(input.trigger&VPAD_BUTTON_ZR))dashboard.Move(10);
             else if(!dashboard.OverlayOpen()&&(input.trigger&VPAD_BUTTON_MINUS)) {

@@ -24,6 +24,10 @@ void SetValue(UserSettings &settings, const std::string &key, int value) {
     else if (key == "show_wii") settings.showWii = enabled;
     else if (key == "show_gamecube") settings.showGameCube = enabled;
     else if (key == "background_motion") settings.backgroundMotion = enabled;
+    else if (key == "use_box_art") settings.useBoxArt = enabled;
+    else if (key == "use_backgrounds") settings.useBackgrounds = enabled;
+    else if (key == "use_logos") settings.useLogos = enabled;
+    else if (key == "use_previews") settings.usePreviews = enabled;
     else if (key == "animation_speed") settings.animationSpeed = std::clamp(value, 0, 2);
     else if (key == "cover_spacing") settings.coverSpacing = std::clamp(value, 0, 2);
     else if (key == "theme") settings.theme = std::clamp(value, 0, 3);
@@ -56,6 +60,10 @@ void SaveSettings(const UserSettings &settings) {
     output << "show_wii=" << settings.showWii << '\n';
     output << "show_gamecube=" << settings.showGameCube << '\n';
     output << "background_motion=" << settings.backgroundMotion << '\n';
+    output << "use_box_art=" << settings.useBoxArt << '\n';
+    output << "use_backgrounds=" << settings.useBackgrounds << '\n';
+    output << "use_logos=" << settings.useLogos << '\n';
+    output << "use_previews=" << settings.usePreviews << '\n';
     output << "animation_speed=" << settings.animationSpeed << '\n';
     output << "cover_spacing=" << settings.coverSpacing << '\n';
     output << "theme=" << settings.theme << '\n';
@@ -65,4 +73,3 @@ void SaveSettings(const UserSettings &settings) {
 const char *OnOff(bool value) {
     return value ? "ON" : "OFF";
 }
-

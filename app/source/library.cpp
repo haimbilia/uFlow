@@ -20,6 +20,7 @@ namespace {
 constexpr const char *kDevice = "fs:/vol/external01";
 constexpr const char *kAppDirectory = "fs:/vol/external01/wiiu/apps/uFlow";
 constexpr const char *kFavoritesFile = "fs:/vol/external01/wiiu/apps/uFlow/favorites.txt";
+constexpr const char *kMediaDirectory = "fs:/vol/external01/wiiu/apps/uFlow/media";
 
 bool IsDirectory(const std::string &path) {
     struct stat info {};
@@ -38,6 +39,20 @@ bool EnsureDirectory(const std::string &path) {
     return mkdir(path.c_str(), 0777) == 0 || IsDirectory(path);
 }
 
+std::string CacheInstalledIcon(const std::string &sourcePath, const std::string &titleId) {
+    const std::string directory = std::string(kAppDirectory) + "/cache/icons";
+    if (!EnsureDirectory(directory)) return {};
+    const std::string destination = directory + "/" + titleId + ".tga";
+    if (IsFile(destination)) return destination;
+    std::ifstream input(sourcePath, std::ios::binary);
+    if (!input) return {};
+    std::ofstream output(destination, std::ios::binary | std::ios::trunc);
+    if (!output) return {};
+    output << input.rdbuf();
+    output.close();
+    return IsFile(destination) ? destination : std::string();
+}
+
 std::string ReadTextFile(const std::string &path, std::size_t maximum = 256 * 1024) {
     std::ifstream input(path, std::ios::binary);
     if (!input) return {};
@@ -52,6 +67,71 @@ std::string Lower(std::string value) {
         return static_cast<char>(std::tolower(c));
     });
     return value;
+}
+
+std::string Trim(std::string value);
+
+std::string MediaKey(std::string value) {
+    value = Lower(value);
+    const auto region = value.find_last_of('(');
+    if (region != std::string::npos && value.back() == ')') value.resize(region);
+    std::string key;
+    bool separator = false;
+    for (unsigned char c : value) {
+        if (std::isalnum(c)) {
+            key.push_back(static_cast<char>(c));
+            separator = false;
+        } else if (!key.empty() && !separator) {
+            key.push_back('_');
+            separator = true;
+        }
+    }
+    while (!key.empty() && key.back() == '_') key.pop_back();
+    return key.empty() ? "unknown" : key;
+}
+
+std::string FindMediaAsset(const std::string &kind, const GameEntry &game,
+                           const std::vector<std::string> &extensions) {
+    const std::string key = MediaKey(game.name);
+    for (const auto &candidate : {game.titleId, key}) {
+        if (candidate.empty()) continue;
+        for (const auto &extension : extensions) {
+            const std::string path = std::string(kMediaDirectory) + "/" + kind + "/" + candidate + extension;
+            if (IsFile(path)) return path;
+        }
+    }
+    return {};
+}
+
+void LoadExtendedMetadata(GameEntry &game) {
+    const std::string path = FindMediaAsset("metadata", game, {".ini"});
+    std::ifstream input(path);
+    std::string line;
+    while (std::getline(input, line)) {
+        const auto separator = line.find('=');
+        if (separator == std::string::npos) continue;
+        const std::string key = Lower(Trim(line.substr(0, separator)));
+        const std::string value = Trim(line.substr(separator + 1));
+        if (key == "title" && game.name.empty()) game.name = value;
+        else if (key == "publisher" && game.publisher.empty()) game.publisher = value;
+        else if (key == "developer") game.developer = value;
+        else if (key == "description") game.description = value;
+        else if (key == "genre") game.genre = value;
+        else if (key == "region") game.region = value;
+        else if (key == "rating") game.rating = value;
+        else if (key == "year") game.releaseYear = value;
+        else if (key == "players") game.players = value;
+    }
+}
+
+void EnrichMedia(GameEntry &game) {
+    const std::string box = FindMediaAsset("covers", game, {".png", ".tga"});
+    if (!box.empty()) game.coverPath = box;
+    const std::string background = FindMediaAsset("backgrounds", game, {".png", ".tga"});
+    if (!background.empty()) game.backgroundPath = background;
+    game.logoPath = FindMediaAsset("logos", game, {".png", ".tga"});
+    game.previewPath = FindMediaAsset("previews", game, {".mp4", ".avi", ".mov"});
+    LoadExtendedMetadata(game);
 }
 
 std::string Trim(std::string value) {
@@ -197,7 +277,8 @@ void ScanInstalledGames(ScanResult &result) {
             if (game.name.empty()) game.name = XmlValue(meta, "shortname_en");
             if (game.name.empty()) game.name = "INSTALLED TITLE " + game.titleId;
             game.publisher = XmlValue(meta, "publisher_en");
-            game.coverPath = FindCover(metaPath, game.titleId, metaPath + "/iconTex.tga");
+            game.coverPath = FindCover(metaPath, game.titleId);
+            if (game.coverPath.empty()) game.coverPath = CacheInstalledIcon(metaPath + "/iconTex.tga", game.titleId);
             result.games.push_back(std::move(game));
         }
     }
@@ -345,7 +426,10 @@ ScanResult ScanLibrary() {
     }), result.games.end());
 
     const auto favorites = LoadFavoriteKeys();
-    for (auto &game : result.games) game.favorite = favorites.contains(FavoriteKey(game));
+    for (auto &game : result.games) {
+        game.favorite = favorites.contains(FavoriteKey(game));
+        EnrichMedia(game);
+    }
     std::sort(result.games.begin(), result.games.end(), [](const GameEntry &left, const GameEntry &right) {
         const std::string leftName = Lower(left.name);
         const std::string rightName = Lower(right.name);
