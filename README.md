@@ -10,6 +10,8 @@ The first graphical build is usable as a library browser. It includes:
 
 - four animated 3D layouts (Classic Flow, Carousel, Flat Row, and Stacked) with
   Wii U, Wii, GameCube, and Favorites tabs;
+- two switchable skins: the original `Pixel Deck` and Wii U-inspired
+  `GlassFlow`, with smooth type, translucent panels, and Aurora-style details;
 - a live case mesh with per-game artwork, media-rich title details, favorites,
   analog navigation, and accelerated scrolling;
 - an Aurora-style settings dashboard with persistent source, motion, navigation,

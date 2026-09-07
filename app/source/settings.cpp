@@ -31,6 +31,7 @@ void SetValue(UserSettings &settings, const std::string &key, int value) {
     else if (key == "animation_speed") settings.animationSpeed = std::clamp(value, 0, 2);
     else if (key == "cover_spacing") settings.coverSpacing = std::clamp(value, 0, 2);
     else if (key == "cover_layout") settings.coverLayout = std::clamp(value, 0, 3);
+    else if (key == "skin") settings.skin = std::clamp(value, 0, 1);
     else if (key == "theme") settings.theme = std::clamp(value, 0, 3);
     else if (key == "start_tab") settings.startTab = std::clamp(value, 0, 4);
 }
@@ -68,6 +69,7 @@ void SaveSettings(const UserSettings &settings) {
     output << "animation_speed=" << settings.animationSpeed << '\n';
     output << "cover_spacing=" << settings.coverSpacing << '\n';
     output << "cover_layout=" << settings.coverLayout << '\n';
+    output << "skin=" << settings.skin << '\n';
     output << "theme=" << settings.theme << '\n';
     output << "start_tab=" << settings.startTab << '\n';
 }

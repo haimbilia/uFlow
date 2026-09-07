@@ -1,8 +1,10 @@
 #include "library.hpp"
 #include "settings.hpp"
 #include "case_model.hpp"
+#include "glass_ttf.h"
 
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_ttf.h>
 #include <coreinit/dynload.h>
 #include <coreinit/time.h>
 #include <png.h>
@@ -35,6 +37,29 @@ using LaunchLooseFn = RPXLoaderStatus (*)(const char *, const char *, const char
 struct Color { Uint8 r, g, b, a; };
 struct TextureInfo { SDL_Texture *texture = nullptr; int width = 0; int height = 0; };
 struct CachedTexture { TextureInfo info; Uint32 lastUse = 0; };
+
+struct SmoothTextEntry { SDL_Texture *texture = nullptr; int width = 0; int height = 0; Uint32 lastUse = 0; };
+std::array<TTF_Font *, 6> gSmoothFonts{};
+std::unordered_map<std::string, SmoothTextEntry> gSmoothTextCache;
+bool gSmoothText = false;
+
+bool InitSmoothFonts() {
+    if (TTF_Init() != 0) return false;
+    constexpr int sizes[] = {0, 14, 18, 25, 33, 42};
+    const int fontSize = static_cast<int>(glass_ttf_size);
+    for (int index = 1; index <= 5; ++index) {
+        SDL_RWops *stream = SDL_RWFromConstMem(glass_ttf, fontSize);
+        gSmoothFonts[index] = stream ? TTF_OpenFontRW(stream, 1, sizes[index]) : nullptr;
+    }
+    return gSmoothFonts[1] != nullptr;
+}
+
+void ShutdownSmoothFonts() {
+    for (auto &[unused, entry] : gSmoothTextCache) if (entry.texture) SDL_DestroyTexture(entry.texture);
+    gSmoothTextCache.clear();
+    for (TTF_Font *&font : gSmoothFonts) { if (font) TTF_CloseFont(font); font = nullptr; }
+    TTF_Quit();
+}
 
 void Trace(const char *event) {
     FILE *file = std::fopen(kTracePath, "ab");
@@ -119,6 +144,11 @@ std::array<Uint8, 7> Glyph(char input) {
 }
 
 int TextWidth(const std::string &text, int scale) {
+    if (gSmoothText && scale >= 1 && scale <= 5 && gSmoothFonts[scale]) {
+        int width = 0;
+        TTF_SizeUTF8(gSmoothFonts[scale], text.c_str(), &width, nullptr);
+        return width;
+    }
     return text.empty() ? 0 : static_cast<int>(text.size()) * 6 * scale - scale;
 }
 
@@ -131,6 +161,38 @@ std::string Ellipsize(std::string text, std::size_t maximum) {
 
 void DrawText(SDL_Renderer *renderer, const std::string &text, int x, int y, int scale, Color color,
               bool centered = false) {
+    if (gSmoothText && scale >= 1 && scale <= 5 && gSmoothFonts[scale]) {
+        const std::string key = std::to_string(scale) + ":" + std::to_string(color.r) + ":" +
+                                std::to_string(color.g) + ":" + std::to_string(color.b) + ":" + text;
+        auto found = gSmoothTextCache.find(key);
+        if (found == gSmoothTextCache.end()) {
+            if (gSmoothTextCache.size() >= 256) {
+                auto oldest = std::min_element(gSmoothTextCache.begin(), gSmoothTextCache.end(),
+                    [](const auto &left, const auto &right) { return left.second.lastUse < right.second.lastUse; });
+                if (oldest != gSmoothTextCache.end()) {
+                    if (oldest->second.texture) SDL_DestroyTexture(oldest->second.texture);
+                    gSmoothTextCache.erase(oldest);
+                }
+            }
+            SDL_Surface *surface = TTF_RenderUTF8_Blended(gSmoothFonts[scale], text.c_str(),
+                                                          SDL_Color{color.r,color.g,color.b,color.a});
+            SmoothTextEntry entry;
+            if (surface) {
+                entry.width = surface->w; entry.height = surface->h;
+                entry.texture = SDL_CreateTextureFromSurface(renderer, surface);
+                SDL_FreeSurface(surface);
+            }
+            entry.lastUse = SDL_GetTicks();
+            found = gSmoothTextCache.emplace(key, entry).first;
+        }
+        found->second.lastUse = SDL_GetTicks();
+        if (found->second.texture) {
+            if (centered) x -= found->second.width / 2;
+            SDL_Rect destination = {x, y, found->second.width, found->second.height};
+            SDL_RenderCopy(renderer, found->second.texture, nullptr, &destination);
+        }
+        return;
+    }
     if (centered) x -= TextWidth(text, scale) / 2;
     SetColor(renderer, color);
     for (char c : text) {
@@ -358,7 +420,8 @@ public:
     void SettingsAdjust(int amount) {
         if (amount == 0 || settingsCategory_ == 4) return;
         if (settingsCategory_ == 0) {
-            if (settingsRow_ == 0) preferences_.startTab = (preferences_.startTab + amount + 5) % 5;
+            if (settingsRow_ == 0) preferences_.skin = (preferences_.skin + amount + 2) % 2;
+            else if (settingsRow_ == 1) preferences_.startTab = (preferences_.startTab + amount + 5) % 5;
             else preferences_.wrapNavigation = !preferences_.wrapNavigation;
         } else if (settingsCategory_ == 1) {
             bool *values[] = {&preferences_.showInstalled, &preferences_.showRawWiiU,
@@ -380,6 +443,7 @@ public:
     }
 
     void Render(float deltaSeconds) {
+        gSmoothText = preferences_.skin == 1;
         const float response = preferences_.animationSpeed == 0 ? 6.5f : preferences_.animationSpeed == 1 ? 11.0f : 17.0f;
         const float step = std::min(1.0f, deltaSeconds * response);
         visualSelected_ += (static_cast<float>(selected_) - visualSelected_) * step;
@@ -387,8 +451,9 @@ public:
         detailsProgress_ += ((details_ ? 1.0f : 0.0f) - detailsProgress_) * step;
         settingsProgress_ += ((settings_ ? 1.0f : 0.0f) - settingsProgress_) * step;
         const GameEntry *selected = Selected();
-        const Color accent = selected ? AccentFor(selected->platform, preferences_.theme)
-                                      : AccentFor(Platform::WiiU, preferences_.theme);
+        Color accent = selected ? AccentFor(selected->platform, preferences_.theme)
+                                : AccentFor(Platform::WiiU, preferences_.theme);
+        if (preferences_.skin == 1) accent = {45, 174, 222, 255};
         DrawBackground(accent, selected); DrawHeader(accent);
         if (visible_.empty()) DrawEmpty(accent); else DrawCarousel(accent);
         DrawFooter(accent);
@@ -401,7 +466,7 @@ public:
 
 private:
     int SettingsRowCount() const {
-        static constexpr int counts[] = {2, 4, 4, 5, 0};
+        static constexpr int counts[] = {3, 4, 4, 5, 0};
         return counts[settingsCategory_];
     }
     void RebuildVisible() {
@@ -419,6 +484,28 @@ private:
         selected_ = visible_.empty() ? 0 : std::min(selected_, visible_.size() - 1);
     }
     void DrawBackground(Color accent, const GameEntry *game) {
+        if (preferences_.skin == 1) {
+            SetColor(renderer_, {225,230,234,255});
+            SDL_RenderClear(renderer_);
+            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+            if (preferences_.useBackgrounds && game && !game->backgroundPath.empty()) {
+                const TextureInfo background = textures_.Get(game->backgroundPath);
+                if (background.texture) {
+                    SDL_SetTextureAlphaMod(background.texture, 105);
+                    SDL_Rect destination = {0,0,kWidth,kHeight};
+                    SDL_RenderCopy(renderer_, background.texture, nullptr, &destination);
+                    SDL_SetTextureAlphaMod(background.texture, 255);
+                }
+            }
+            SetColor(renderer_, {245,248,250,142}); SDL_RenderFillRect(renderer_, nullptr);
+            const float phase = preferences_.backgroundMotion ? SDL_GetTicks() / 2200.0f : 0.0f;
+            const int drift = preferences_.backgroundMotion ? static_cast<int>(std::sin(phase) * 42.0f) : 0;
+            FillRoundedRect(renderer_, {-130 + drift,90,620,250}, 110, {255,255,255,55});
+            FillRoundedRect(renderer_, {790 - drift,330,650,250}, 110, {185,199,210,34});
+            SetColor(renderer_, {255,255,255,120});
+            SDL_Rect sheen = {0,0,kWidth,86}; SDL_RenderFillRect(renderer_, &sheen);
+            return;
+        }
         SetColor(renderer_, Mix({5,10,20,255}, accent, .07f));
         SDL_RenderClear(renderer_);
         SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
@@ -444,6 +531,23 @@ private:
         SDL_RenderFillRect(renderer_, &horizon);
     }
     void DrawHeader(Color accent) {
+        if (preferences_.skin == 1) {
+            FillRoundedRect(renderer_, {28,22,1224,70}, 26, {248,250,252,205});
+            SetColor(renderer_, {255,255,255,205}); SDL_Rect shine={43,28,1194,2}; SDL_RenderFillRect(renderer_,&shine);
+            DrawText(renderer_, "uFlow", 58, 38, 4, {46,55,63,255});
+            DrawText(renderer_, "GLASSFLOW", 165, 52, 1, {104,117,127,255});
+            int x = 430;
+            for (int index = 0; index < static_cast<int>(kTabNames.size()); ++index) {
+                const int width = TextWidth(kTabNames[index], 2) + 32;
+                if (index == tab_) FillRoundedRect(renderer_, {x-16,39,width,38}, 18, {255,255,255,235});
+                DrawText(renderer_, kTabNames[index], x, 48, 2,
+                         index == tab_ ? Color{43,54,63,255} : Color{117,129,138,255});
+                x += width + 10;
+            }
+            FillRoundedRect(renderer_, {1188,42,34,34}, 17, {accent.r,accent.g,accent.b,215});
+            DrawText(renderer_, std::to_string(visible_.size()), 1205, 49, 1, {255,255,255,255}, true);
+            return;
+        }
         FillRoundedRect(renderer_, {38,26,1204,74}, 22, {5,10,20,190});
         DrawText(renderer_, "UFLOW", 66, 46, 4, {245,249,255,255});
         DrawText(renderer_, "LIBRARY", 198, 55, 2, accent);
@@ -459,9 +563,10 @@ private:
         DrawText(renderer_, std::to_string(visible_.size()), 1173, 82, 1, {170,181,199,255}, true);
     }
     void DrawEmpty(Color accent) {
-        DrawText(renderer_, tab_ == 4 ? "NO FAVORITES YET" : "NO GAMES FOUND", 640, 300, 5, {235,241,250,255}, true);
+        DrawText(renderer_, tab_ == 4 ? "NO FAVORITES YET" : "NO GAMES FOUND", 640, 300, 5,
+                 preferences_.skin==1?Color{54,64,72,255}:Color{235,241,250,255}, true);
         DrawText(renderer_, tab_ == 4 ? "MARK A GAME WITH X" : "PRESS MINUS TO RESCAN THE DRIVE",
-                 640, 365, 2, accent, true);
+                 640, 365, 2, preferences_.skin==1?Color{105,118,128,255}:accent, true);
     }
     void DrawCover(const GameEntry &game, SDL_Rect rect, bool selected, Color accent) {
         SDL_Rect shadow = {rect.x+12,rect.y+15,rect.w,rect.h};
@@ -496,7 +601,7 @@ private:
         if (game.favorite) DrawText(renderer_, "*", rect.x+rect.w-(selected?38:26), rect.y+13, selected?4:3, {255,210,66,255});
     }
     void DrawBox(const GameEntry &game, SDL_Rect rect, float relative, bool selected, Color accent,
-                 float turnScale = .82f) {
+                 float turnScale = .82f, float tilt = 0.0f) {
         const TextureInfo artwork = textures_.Get(game.coverPath);
         if (!artwork.texture) { DrawCover(game, rect, selected, accent); return; }
 
@@ -508,17 +613,20 @@ private:
         const float idle = selected ? std::sin(SDL_GetTicks() / 1250.0f) * .025f : 0.0f;
         const float angle = -turn * turnScale + idle;
         const float sine = std::sin(angle), cosine = std::cos(angle);
+        const float tiltSine = std::sin(tilt), tiltCosine = std::cos(tilt);
         const float pixelScale = std::min(rect.w / caseWidth, rect.h / 1.023f);
         const float centerX = rect.x + rect.w * .5f;
         const float centerY = rect.y + rect.h * .5f;
         constexpr float camera = 2.45f;
         const auto transform = [&](float x, float y, float z) {
             x *= caseWidth; z *= caseDepth;
-            const float rotatedX = x * cosine + z * sine;
-            const float rotatedZ = -x * sine + z * cosine;
+            const float tiltedX = x * tiltCosine - y * tiltSine;
+            const float tiltedY = x * tiltSine + y * tiltCosine;
+            const float rotatedX = tiltedX * cosine + z * sine;
+            const float rotatedZ = -tiltedX * sine + z * cosine;
             const float perspective = camera / (camera - rotatedZ);
             return Transformed{{centerX + rotatedX * pixelScale * perspective,
-                                centerY - y * pixelScale * perspective}, rotatedZ};
+                                centerY - tiltedY * pixelScale * perspective}, rotatedZ};
         };
 
         std::array<SDL_Vertex, CaseModel::kPositions.size()> vertices{};
@@ -529,11 +637,15 @@ private:
             vertices[index].position = projected.point;
             depths[index] = projected.depth;
             const auto &normal = CaseModel::kNormals[index];
-            const float normalX = normal.x * cosine + normal.z * sine;
-            const float normalZ = -normal.x * sine + normal.z * cosine;
-            const float light = std::clamp(.38f + std::max(0.0f, normalX * -.25f + normal.y * -.18f + normalZ * .95f) * .62f,
+            const float tiltedNormalX = normal.x * tiltCosine - normal.y * tiltSine;
+            const float tiltedNormalY = normal.x * tiltSine + normal.y * tiltCosine;
+            const float normalX = tiltedNormalX * cosine + normal.z * sine;
+            const float normalZ = -tiltedNormalX * sine + normal.z * cosine;
+            const float light = std::clamp(.38f + std::max(0.0f, normalX * -.25f + tiltedNormalY * -.18f + normalZ * .95f) * .62f,
                                            .30f, 1.0f);
-            const Color plastic = Mix({15, 31, 50, 255}, accent, selected ? .68f : .48f);
+            const Color plastic = preferences_.skin == 1
+                                      ? Mix({190,202,211,255}, accent, selected ? .34f : .18f)
+                                      : Mix({15,31,50,255}, accent, selected ? .68f : .48f);
             vertices[index].color = {static_cast<Uint8>(plastic.r * light),
                                      static_cast<Uint8>(plastic.g * light),
                                      static_cast<Uint8>(plastic.b * light), 255};
@@ -598,6 +710,7 @@ private:
         else if (preferences_.coverLayout == 2) spacing *= 1.05f;
         else if (preferences_.coverLayout == 3) spacing *= .48f;
         for (const Card &card : cards) {
+            if (card.index == static_cast<int>(selected_) && detailsProgress_ > .015f) continue;
             const GameEntry &game = games_[visible_[card.index]];
             const float distance = std::abs(card.relative);
             float focus = std::max(0.0f, 1.0f - distance);
@@ -627,7 +740,7 @@ private:
             else DrawCover(game,{x,y,width,height},card.index==static_cast<int>(selected_)&&focus>.78f,accent);
         }
         const auto &game = games_[visible_[selected_]];
-        FillRoundedRect(renderer_, {250,505,780,3}, 1, {accent.r,accent.g,accent.b,105});
+        FillRoundedRect(renderer_, {250,505,780,3}, 1, {accent.r,accent.g,accent.b,preferences_.skin==1?Uint8(72):Uint8(105)});
         const TextureInfo logo=preferences_.useLogos?textures_.Get(game.logoPath):TextureInfo{};
         if(logo.texture){
             const float ratio=static_cast<float>(logo.width)/std::max(1,logo.height);
@@ -635,13 +748,30 @@ private:
             if(ratio>static_cast<float>(logoRect.w)/logoRect.h){logoRect.h=static_cast<int>(logoRect.w/ratio);logoRect.y+=(54-logoRect.h)/2;}
             else{logoRect.w=static_cast<int>(logoRect.h*ratio);logoRect.x+=(300-logoRect.w)/2;}
             SDL_RenderCopy(renderer_,logo.texture,nullptr,&logoRect);
-        }else DrawText(renderer_, Ellipsize(game.name,50), 640, 525, 3, {246,249,255,255}, true);
+        }else DrawText(renderer_, Ellipsize(game.name,50), 640, 525, 3,
+                       preferences_.skin==1?Color{48,58,66,255}:Color{246,249,255,255}, true);
         std::string summary = std::string(PlatformName(game.platform)) + "  /  " +
                               (game.installed ? (game.storage.empty() ? "INSTALLED" : game.storage) : "FAT32") +
                               "  /  " + std::to_string(selected_+1) + " OF " + std::to_string(visible_.size());
-        DrawText(renderer_, Ellipsize(summary,75), 640, 570, 2, accent, true);
+        DrawText(renderer_, Ellipsize(summary,75), 640, 570, 2,
+                 preferences_.skin==1?Color{95,108,118,255}:accent, true);
     }
     void DrawFooter(Color accent) {
+        if (preferences_.skin == 1) {
+            FillRoundedRect(renderer_, {28,638,1224,54}, 24, {247,249,251,218});
+            DrawText(renderer_, "A", 58, 653, 2, accent);
+            DrawText(renderer_, "LAUNCH", 82, 653, 2, {68,78,87,255});
+            DrawText(renderer_, "Y", 250, 653, 2, accent);
+            DrawText(renderer_, "DETAILS", 274, 653, 2, {104,115,124,255});
+            DrawText(renderer_, "X", 464, 653, 2, accent);
+            DrawText(renderer_, "FAVORITE", 489, 653, 2, {104,115,124,255});
+            DrawText(renderer_, "L/R", 704, 653, 2, accent);
+            DrawText(renderer_, "FILTER", 751, 653, 2, {104,115,124,255});
+            DrawText(renderer_, "+", 922, 653, 2, accent);
+            DrawText(renderer_, "SETTINGS", 946, 653, 2, {104,115,124,255});
+            DrawText(renderer_, "B  EXIT", 1135, 653, 2, {68,78,87,255});
+            return;
+        }
         FillRoundedRect(renderer_,{38,626,1204,64},20,{5,10,20,205});
         DrawText(renderer_,"A  LAUNCH",65,648,2,{235,241,250,255});
         DrawText(renderer_,"Y  DETAILS",235,648,2,{173,184,201,255});
@@ -651,12 +781,87 @@ private:
         DrawText(renderer_,"B  EXIT",1083,648,2,accent);
     }
     void DrawPanelBase(Color accent, int x, int width, float progress) {
+        if (preferences_.skin == 1) {
+            SetColor(renderer_,{225,231,235,static_cast<Uint8>(135.0f*progress)}); SDL_RenderFillRect(renderer_,nullptr);
+            FillRoundedRect(renderer_,{x,92,width,536},30,{244,247,249,225});
+            FillRoundedRect(renderer_,{x+1,93,width-2,3},2,{255,255,255,225});
+            FillRoundedRect(renderer_,{x,92,7,536},4,{accent.r,accent.g,accent.b,190});
+            return;
+        }
         SetColor(renderer_,{0,0,0,static_cast<Uint8>(190.0f*progress)}); SDL_RenderFillRect(renderer_,nullptr);
         FillRoundedRect(renderer_,{x,92,width,536},28,{10,17,29,250});
         FillRoundedRect(renderer_,{x,92,8,536},4,accent);
     }
+    void DrawGlassDetails(const GameEntry &game, Color accent, float progress) {
+        const float eased = progress * progress * (3.0f - 2.0f * progress);
+        SetColor(renderer_, {232,237,240,static_cast<Uint8>(150.0f*eased)}); SDL_RenderFillRect(renderer_,nullptr);
+
+        const auto interpolate = [eased](int from, int to) {
+            return static_cast<int>(from + (to - from) * eased);
+        };
+        const SDL_Rect movingCase = {interpolate(530,55), interpolate(155,128),
+                                     interpolate(220,298), interpolate(314,426)};
+        DrawBox(game, movingCase, -.58f * eased, true, accent, .54f, -.075f * eased);
+
+        const int shift = static_cast<int>((1.0f - eased) * 760.0f);
+        const int panelX = 382 + shift;
+        FillRoundedRect(renderer_, {panelX,104,838,508}, 28, {247,249,250,220});
+        FillRoundedRect(renderer_, {panelX+2,106,834,3}, 2, {255,255,255,230});
+        SetColor(renderer_, {151,164,174,45}); SDL_Rect divider={panelX+99,126,1,450}; SDL_RenderFillRect(renderer_,&divider);
+
+        const auto action = [&](int row, const char *symbol, bool active) {
+            const int y = 133 + row * 70;
+            FillRoundedRect(renderer_, {panelX+20,y,60,58}, 16,
+                            active ? Color{accent.r,accent.g,accent.b,235} : Color{255,255,255,205});
+            DrawText(renderer_, symbol, panelX+50, y+16, 2,
+                     active ? Color{255,255,255,255} : Color{83,96,106,255}, true);
+        };
+        action(0,"FAV",game.favorite);
+        action(1,"PLAY",true);
+        action(2,"GAME",false);
+        action(3,"WEB",false);
+        action(4,"MEDIA",false);
+        action(5,"INFO",false);
+
+        const int contentX = panelX + 130;
+        const TextureInfo logo = preferences_.useLogos ? textures_.Get(game.logoPath) : TextureInfo{};
+        if (logo.texture) {
+            const float ratio = static_cast<float>(logo.width) / std::max(1,logo.height);
+            SDL_Rect logoRect={contentX,126,520,72};
+            if(ratio>static_cast<float>(logoRect.w)/logoRect.h){logoRect.h=static_cast<int>(logoRect.w/ratio);logoRect.y+=(72-logoRect.h)/2;}
+            else logoRect.w=static_cast<int>(logoRect.h*ratio);
+            SDL_RenderCopy(renderer_,logo.texture,nullptr,&logoRect);
+        } else DrawText(renderer_,Ellipsize(game.name,36),contentX,139,4,{48,58,66,255});
+        const std::string creator=!game.developer.empty()?game.developer:game.publisher;
+        DrawText(renderer_,creator.empty()?"LAST PLAYED  NEVER":Ellipsize(creator,52),contentX,204,2,{105,117,127,255});
+
+        DrawText(renderer_,"Synopsis",contentX,242,3,{49,59,67,255});
+        const std::string synopsis=game.description.empty()
+            ? "No synopsis is available yet. Add a description to this title's metadata file."
+            : game.description;
+        DrawWrappedText(renderer_,synopsis,contentX,282,2,{73,84,93,255},58,6);
+
+        DrawText(renderer_,"Rating",contentX,420,2,{92,104,114,255});
+        DrawText(renderer_,"*  *  *  *  *",contentX,447,3,{235,177,42,255});
+        const std::string rating=game.rating.empty()?"NOT RATED":game.rating;
+        DrawText(renderer_,rating,contentX+205,452,2,{110,122,132,255});
+
+        const auto chip=[&](int offset,const std::string &text){
+            FillRoundedRect(renderer_,{contentX+offset,494,145,38},15,{225,231,235,210});
+            DrawText(renderer_,Ellipsize(text,16),contentX+offset+72,504,1,{67,79,88,255},true);
+        };
+        chip(0,PlatformName(game.platform));
+        chip(157,game.genre.empty()?"GENRE UNKNOWN":game.genre);
+        chip(314,game.releaseYear.empty()?"YEAR ----":game.releaseYear);
+        chip(471,game.players.empty()?"PLAYERS --":"PLAYERS "+game.players);
+
+        DrawText(renderer_,"A",panelX+134,567,2,accent); DrawText(renderer_,"LAUNCH",panelX+160,567,2,{66,77,86,255});
+        DrawText(renderer_,"B",panelX+355,567,2,accent); DrawText(renderer_,"BACK",panelX+381,567,2,{66,77,86,255});
+        DrawText(renderer_,"+",panelX+545,567,2,accent); DrawText(renderer_,"MORE",panelX+571,567,2,{66,77,86,255});
+    }
     void DrawDetails(Color accent, float progress) {
         const GameEntry *game = Selected(); if (!game) return;
+        if (preferences_.skin == 1) { DrawGlassDetails(*game,accent,progress); return; }
         const int x = static_cast<int>(80 + (1.0f - progress) * 1240.0f);
         DrawPanelBase(accent, x, 1120, progress);
         DrawText(renderer_, "TITLE DETAILS", x + 48, 120, 2, {142,157,179,255});
@@ -715,25 +920,33 @@ private:
         static constexpr const char *categories[]={"GENERAL","LIBRARY","MEDIA","DISPLAY","ABOUT"};
         const int x=static_cast<int>(70+(1.0f-progress)*1260.0f);
         DrawPanelBase(accent,x,1140,progress);
-        DrawText(renderer_,"SETTINGS",x+48,126,4,{248,250,255,255});
-        DrawText(renderer_,"UFLOW CONTROL CENTER",x+830,139,2,{116,133,158,255});
-        FillRoundedRect(renderer_,{x+38,182,240,390},18,{5,11,21,220});
+        const bool glass=preferences_.skin==1;
+        DrawText(renderer_,"SETTINGS",x+48,126,4,glass?Color{48,58,66,255}:Color{248,250,255,255});
+        DrawText(renderer_,"UFLOW CONTROL CENTER",x+830,139,2,glass?Color{112,124,134,255}:Color{116,133,158,255});
+        FillRoundedRect(renderer_,{x+38,182,240,390},18,glass?Color{226,232,236,205}:Color{5,11,21,220});
         for(int index=0;index<5;++index){
             const int y=208+index*61;
-            if(index==settingsCategory_)FillRoundedRect(renderer_,{x+52,y-16,212,46},14,{accent.r,accent.g,accent.b,48});
+            if(index==settingsCategory_)FillRoundedRect(renderer_,{x+52,y-16,212,46},14,
+                                                        glass?Color{255,255,255,230}:Color{accent.r,accent.g,accent.b,48});
             DrawText(renderer_,categories[index],x+74,y,index==settingsCategory_?3:2,
-                     index==settingsCategory_?Color{255,255,255,255}:Color{128,143,166,255});
+                     index==settingsCategory_?(glass?Color{50,61,69,255}:Color{255,255,255,255}):
+                                              (glass?Color{112,124,134,255}:Color{128,143,166,255}));
         }
         const int contentX=x+320;
         const auto drawRow=[&](int row,const std::string &label,const std::string &value){
             const int y=205+row*76;
-            if(row==settingsRow_)FillRoundedRect(renderer_,{contentX-18,y-18,760,57},14,{accent.r,accent.g,accent.b,42});
-            DrawText(renderer_,label,contentX,y,2,row==settingsRow_?Color{255,255,255,255}:Color{188,199,216,255});
-            DrawText(renderer_,"<  "+value+"  >",contentX+710,y,2,row==settingsRow_?accent:Color{126,142,166,255},true);
+            if(row==settingsRow_)FillRoundedRect(renderer_,{contentX-18,y-18,760,57},14,
+                                                 glass?Color{255,255,255,225}:Color{accent.r,accent.g,accent.b,42});
+            DrawText(renderer_,label,contentX,y,2,row==settingsRow_?(glass?Color{45,56,64,255}:Color{255,255,255,255}):
+                                                                (glass?Color{103,115,125,255}:Color{188,199,216,255}));
+            DrawText(renderer_,"<  "+value+"  >",contentX+710,y,2,row==settingsRow_?accent:
+                     (glass?Color{113,126,136,255}:Color{126,142,166,255}),true);
         };
         if(settingsCategory_==0){
-            drawRow(0,"START VIEW",kTabNames[preferences_.startTab]);
-            drawRow(1,"WRAP NAVIGATION",OnOff(preferences_.wrapNavigation));
+            static constexpr const char *skins[]={"PIXEL DECK","GLASSFLOW"};
+            drawRow(0,"SKIN",skins[preferences_.skin]);
+            drawRow(1,"START VIEW",kTabNames[preferences_.startTab]);
+            drawRow(2,"WRAP NAVIGATION",OnOff(preferences_.wrapNavigation));
             DrawText(renderer_,"CHOOSE THE FIRST LIBRARY VIEW AND EDGE BEHAVIOR.",contentX,405,2,{107,125,150,255});
         }else if(settingsCategory_==1){
             drawRow(0,"INSTALLED WII U",OnOff(preferences_.showInstalled));
@@ -763,15 +976,20 @@ private:
             drawRow(4,"ACCENT THEME",themes[preferences_.theme]);
         }else{
             DrawText(renderer_,"UFLOW",contentX,216,5,accent);
-            DrawText(renderer_,"A UNIFIED WII U LIBRARY EXPERIENCE",contentX,284,2,{222,229,239,255});
-            DrawText(renderer_,"INSTALLED WII U + RAW WII U + WII + GAMECUBE",contentX,330,2,{145,160,182,255});
-            DrawText(renderer_,"SETTINGS ARE SAVED TO /WIIU/APPS/UFLOW/UFLOW.CFG",contentX,388,2,{145,160,182,255});
-            DrawText(renderer_,"BUILD 0.1 DEVELOPMENT",contentX,454,2,{102,120,146,255});
+            DrawText(renderer_,"A UNIFIED WII U LIBRARY EXPERIENCE",contentX,284,2,
+                     glass?Color{62,73,82,255}:Color{222,229,239,255});
+            DrawText(renderer_,"INSTALLED WII U + RAW WII U + WII + GAMECUBE",contentX,330,2,
+                     glass?Color{105,117,127,255}:Color{145,160,182,255});
+            DrawText(renderer_,"SETTINGS ARE SAVED TO /WIIU/APPS/UFLOW/UFLOW.CFG",contentX,388,2,
+                     glass?Color{105,117,127,255}:Color{145,160,182,255});
+            DrawText(renderer_,"BUILD 0.1 DEVELOPMENT",contentX,454,2,
+                     glass?Color{121,133,142,255}:Color{102,120,146,255});
         }
         FillRoundedRect(renderer_,{x+38,582,1064,1},1,{accent.r,accent.g,accent.b,80});
-        DrawText(renderer_,"L/R  SECTION",x+56,600,2,{211,220,233,255});
-        DrawText(renderer_,"UP/DOWN  OPTION",x+295,600,2,{211,220,233,255});
-        DrawText(renderer_,"LEFT/RIGHT  CHANGE",x+590,600,2,{211,220,233,255});
+        const Color help=glass?Color{82,94,103,255}:Color{211,220,233,255};
+        DrawText(renderer_,"L/R  SECTION",x+56,600,2,help);
+        DrawText(renderer_,"UP/DOWN  OPTION",x+295,600,2,help);
+        DrawText(renderer_,"LEFT/RIGHT  CHANGE",x+590,600,2,help);
         DrawText(renderer_,"B  BACK",x+952,600,2,accent);
     }
     void DrawToast(Color accent) {
@@ -819,6 +1037,8 @@ int main(int, char **) {
     if (!renderer) { if(window)SDL_DestroyWindow(window); SDL_Quit(); if(mounted)WHBUnmountSdCard(); WHBProcShutdown(); return 2; }
     SDL_RenderSetLogicalSize(renderer,kWidth,kHeight);
     SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_BLEND);
+    InitSmoothFonts();
+    Trace("fonts-ready");
 
     ScanResult scan=mounted?ScanLibrary():ScanResult{};
     Trace("library-scan-complete");
@@ -915,6 +1135,7 @@ int main(int, char **) {
     Trace("procui-stopped");
     }
     Trace("dashboard-destroyed");
+    ShutdownSmoothFonts();
     SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window);
     Trace("renderer-destroyed");
     SDL_Quit();

@@ -16,7 +16,7 @@ WUMS_ROOT := $(DEVKITPRO)/wums
 TARGET := uFlow
 BUILD := build
 SOURCES := source
-DATA :=
+DATA := data
 INCLUDES :=
 
 CFLAGS := -g -Wall -Wextra -O2 -ffunction-sections $(MACHDEP)
@@ -24,16 +24,21 @@ CFLAGS += $(INCLUDE) -D__WIIU__ -D__WUT__
 CXXFLAGS := $(CFLAGS) -std=c++20
 ASFLAGS := -g $(ARCH)
 LDFLAGS = -g $(ARCH) $(RPXSPECS) -Wl,-Map,$(notdir $*.map)
-LIBS := -lrpxloader -lSDL2 -lpng -lz -lm -lwut
+LIBS := -lrpxloader -lSDL2_ttf -lSDL2 -lharfbuzz -lfreetype -lbrotlidec -lbrotlicommon -lbz2 -lpng -lz -lm -lwut
 LIBDIRS := $(PORTLIBS) $(WUT_ROOT) $(WUMS_ROOT)
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 export OUTPUT := $(CURDIR)/$(TARGET)
 export TOPDIR := $(CURDIR)
-export VPATH := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir))
+export VPATH := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
+                $(foreach dir,$(DATA),$(CURDIR)/$(dir))
 export DEPSDIR := $(CURDIR)/$(BUILD)
 CPPFILES := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
-export OFILES := $(CPPFILES:.cpp=.o)
+BINFILES := glass.ttf
+export OFILES_BIN := $(addsuffix .o,$(BINFILES))
+export OFILES_SOURCES := $(CPPFILES:.cpp=.o)
+export OFILES := $(OFILES_BIN) $(OFILES_SOURCES)
+export HFILES := $(addsuffix .h,$(subst .,_,$(BINFILES)))
 export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
                   $(foreach dir,$(LIBDIRS),-I$(dir)/include) \
                   -I$(CURDIR)/$(BUILD)
@@ -55,5 +60,9 @@ all: $(OUTPUT).wuhb
 $(OUTPUT).wuhb: $(OUTPUT).rpx
 $(OUTPUT).rpx: $(OUTPUT).elf
 $(OUTPUT).elf: $(OFILES)
+$(OFILES_SOURCES): $(HFILES)
+%.ttf.o %_ttf.h: %.ttf
+	@echo $(notdir $<)
+	$(bin2o)
 -include $(DEPENDS)
 endif

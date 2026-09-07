@@ -16,6 +16,7 @@ struct UserSettings {
     int animationSpeed = 1;
     int coverSpacing = 1;
     int coverLayout = 0;
+    int skin = 0;
     int theme = 0;
     int startTab = 0;
 };
