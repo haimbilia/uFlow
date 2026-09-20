@@ -1,4 +1,5 @@
 #include "library.hpp"
+#include "browser_path.hpp"
 #include "case_profiles.hpp"
 #include "wii_request.hpp"
 #include "saved_file.hpp"
@@ -620,7 +621,7 @@ std::vector<std::string> ListDirectories(const std::string &path) {
     while (dirent *entry = readdir(directory)) {
         const std::string name = entry->d_name;
         if (name == "." || name == "..") continue;
-        if (IsDirectory(path + "/" + name)) directories.push_back(name);
+        if (IsDirectory(BrowserPath::Child(path,name))) directories.push_back(name);
     }
     closedir(directory);
     std::sort(directories.begin(), directories.end(), [](const std::string &left, const std::string &right) {

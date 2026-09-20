@@ -1,4 +1,5 @@
 #include "library.hpp"
+#include "browser_path.hpp"
 #include "vc_launch.hpp"
 #include "injection_dialog.hpp"
 #include "update_model.hpp"
@@ -2047,6 +2048,23 @@ public:
         if(!Render(0,path+"-error.png")||UpdateInput(0,false,true)!=-1)return false;
         std::puts("PASS: update prompt, default No, accept, busy input, success and failure dialogs");return true;
     }
+    bool CheckBrowserNavigation(const std::string &path){
+        VisualPreview("directories");directoryBrowser_=true;defaultFileBrowser_=false;
+        browserPath_="fs:/vol/external01";RefreshBrowser();
+        if(browserDirectories_.empty()||browserDirectories_[0]!="../")return false;
+        BrowserOpenSelected();if(browserPath_!="fs:/vol"||!directoryBrowser_)return false;
+        BrowserBack();if(browserPath_!="fs:/"||!directoryBrowser_)return false;
+        BrowserBack();if(browserPath_!="fs:/"||!directoryBrowser_)return false;
+        const auto before=DraftPath();BrowserSelectCurrent();if(!directoryBrowser_||DraftPath()!=before)return false;
+        browserPath_="fs:/vol";browserDirectories_={"../","external01","external02"};browserRow_=2;
+        BrowserOpenSelected();if(browserPath_!="fs:/vol/external02"||!directoryBrowser_)return false;
+        if(!Render(0,path+"-parent.png"))return false;
+        defaultFileBrowser_=true;draftMediaSource_.type=MediaType::FullCover;draftMediaSource_.defaultFile="keep.png";RefreshBrowser();
+        BrowserOpenSelected();if(browserPath_!="fs:/vol"||draftMediaSource_.defaultFile!="keep.png"||!directoryBrowser_)return false;
+        browserRow_=1;BrowserOpenSelected();if(directoryBrowser_||!draftMediaSource_.defaultFile.empty())return false;
+        directoryBrowser_=true;BrowserCancel();if(directoryBrowser_)return false;
+        std::puts("PASS: parent entry, Back at volume/root, sibling drive, root selection guard, default-file selection, cancel");return true;
+    }
     bool SettingsOpen() const { return settings_; }
     bool ButtonPressed(ControlAction action, std::uint32_t trigger) const {
         if(libraryFadePhase_ && action!=ControlAction::PreviousLibrary && action!=ControlAction::NextLibrary)return false;
@@ -2999,7 +3017,8 @@ public:
                 const auto slash=file.find_last_of('/');
                 if(slash!=std::string::npos && DirectoryExists(file.substr(0,slash))) browserPath_=file.substr(0,slash);
             }
-            if (browserPath_.rfind("fs:/vol", 0) != 0) browserPath_ = "fs:/vol";
+            if (browserPath_.rfind("fs:/", 0) != 0) browserPath_ = "fs:/vol";
+            browserPath_=BrowserPath::Normalize(browserPath_);
             RefreshBrowser();
             directoryBrowser_ = true;
         } else if(sourceEditorRow_==SourceEditorCount()-2) SaveDraftSource();
@@ -3038,29 +3057,28 @@ public:
     void BrowserOpenSelected() {
         if (browserDirectories_.empty()) return;
         const auto &name=browserDirectories_[browserRow_];
+        if(name=="../"){BrowserBack();return;}
         if(defaultFileBrowser_) {
-            if(browserRow_==0) { draftMediaSource_.defaultFile.clear(); defaultFileChosen_=true; BrowserCancel(); return; }
+            if(name=="AUTO (DEFAULT.PNG)"||name=="NONE (NO DEFAULT)") { draftMediaSource_.defaultFile.clear(); defaultFileChosen_=true; BrowserCancel(); return; }
             if(name.back()!='/') {
-                draftMediaSource_.defaultFile=browserPath_+"/"+name;
+                draftMediaSource_.defaultFile=BrowserPath::Child(browserPath_,name);
                 defaultFileChosen_=true;
                 BrowserCancel(); return;
             }
         }
-        browserPath_ += "/" + (defaultFileBrowser_?name.substr(0,name.size()-1):name);
+        browserPath_ = BrowserPath::Child(browserPath_,defaultFileBrowser_?name.substr(0,name.size()-1):name);
         RefreshBrowser();
     }
     void BrowserSelectCurrent() {
         if(defaultFileBrowser_) { BrowserOpenSelected(); return; }
+        if(BrowserPath::Container(browserPath_)){SetStatus("OPEN A DRIVE OR FOLDER FIRST");return;}
         DraftPath() = browserPath_;
         AutoSelectDraftDefault();
         directoryBrowser_ = false;
     }
     void BrowserCancel() { directoryBrowser_ = false; }
     void BrowserBack() {
-        if (browserPath_ == "fs:/vol") { directoryBrowser_ = false; return; }
-        const auto slash = browserPath_.find_last_of('/');
-        browserPath_ = slash == std::string::npos || browserPath_.substr(0, slash).size() < 7 ?
-                       "fs:/vol" : browserPath_.substr(0, slash);
+        browserPath_=BrowserPath::Parent(browserPath_);
         RefreshBrowser();
     }
 
@@ -3296,6 +3314,7 @@ private:
     void RefreshBrowser() {
         browserDirectories_ = defaultFileBrowser_ ? ListMediaFiles(browserPath_,draftMediaSource_.type) : ListDirectories(browserPath_);
         if(defaultFileBrowser_) browserDirectories_.insert(browserDirectories_.begin(),IsCoverMedia(draftMediaSource_.type)?"AUTO (DEFAULT.PNG)":"NONE (NO DEFAULT)");
+        if(BrowserPath::Normalize(browserPath_)!="fs:/")browserDirectories_.insert(browserDirectories_.begin(),"../");
         browserRow_ = 0;
     }
     void RebuildVisible() {
@@ -5079,6 +5098,7 @@ int main(int argc, char **argv) {
       else if(std::string(argv[1])=="coverfacechecks")ok=dashboard.CheckCoverFaces(argv[2]);
       else if(std::string(argv[1])=="firstrunchecks")ok=dashboard.CheckFirstRun(argv[2]);
       else if(std::string(argv[1])=="updatechecks")ok=dashboard.CheckUpdateDialog(argv[2]);
+      else if(std::string(argv[1])=="browserchecks")ok=dashboard.CheckBrowserNavigation(argv[2]);
       else
       // Warm the backdrop first, then capture the reuse path as well as live UI.
       ok = std::string(argv[1]) == "injectionchecks" ? dashboard.CheckInjectionDialog(argv[2]) : std::string(argv[1]) == "artworkchecks" ? dashboard.CheckArtworkPolish(argv[2]) : std::string(argv[1]) == "casechecks" ? dashboard.CheckCaseRendering(argv[2]) : std::string(argv[1]) == "mediadefaultchecks" ? dashboard.CheckMediaDefaults(argv[2]) : std::string(argv[1]) == "mediagroupchecks" ? dashboard.CheckMediaAccordion(argv[2]) : std::string(argv[1]) == "videochecks" ? dashboard.CheckVideoSettings(argv[2]) : std::string(argv[1]) == "hintchecks" ? dashboard.CheckControlHints(argv[2]) : std::string(argv[1]) == "fadechecks" ? dashboard.CheckLibraryFade() : std::string(argv[1]) == "detailschecks" ? dashboard.CheckDetails() : std::string(argv[1]) == "launcherchecks" ? dashboard.CheckLauncherSettings() : std::string(argv[1]) == "checks" ? dashboard.CheckScrolling() :

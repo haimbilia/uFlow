@@ -1,0 +1,4 @@
+Added ../ entries to library and media directory browsers.
+Back now navigates above the SD and volume list instead of closing the browser.
+Use X / Cancel to leave the browser; choose a mounted drive or folder with Y.
+This fixes navigation; it does not add support for new drive filesystems.

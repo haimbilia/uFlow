@@ -175,3 +175,9 @@ face rendered last; Pixel Deck and non-popup styling are unchanged. Run the host
 `updatechecks` preview (including Pixel Deck and scope-restoration checks), rebuild
 the app and native installer, and publish the signed software-only OTA. Do not
 replace the installed app on SD when the requested test is the OTA path itself.
+
+Test5 (sequence 2026092005) adds explicit ../ entries to library/media browsers.
+Back traverses to fs:/ and stays there; X/Cancel exits. Container roots cannot be
+saved as library folders. Default-file selection remains independent of the
+parent row. Run browser_path and browserchecks plus mediadefaultchecks before
+release. This is navigation only, not new USB filesystem or mounting support.

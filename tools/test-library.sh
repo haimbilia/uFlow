@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 # Mount project read-only at /project; all fixtures/binaries stay in fresh /tmp.
-for test in ${UFLOW_LIBRARY_TESTS:-injection_dialog library library_no_replace media rom_art launcher_overrides media_groups case_sleeve cover_faces cover_transition}; do
+for test in ${UFLOW_LIBRARY_TESTS:-browser_path injection_dialog library library_no_replace media rom_art launcher_overrides media_groups case_sleeve cover_faces cover_transition}; do
     testdir=$(mktemp -d /tmp/uflow-scan-test.XXXXXX)
     source=$test
     extra=''

@@ -1,4 +1,5 @@
 #include "library.hpp"
+#include "browser_path.hpp"
 #include "rom_art.hpp"
 #include <algorithm>
 #include <array>
@@ -121,7 +122,7 @@ std::vector<std::string> ListMediaFiles(const std::string &path,MediaType type) 
         const std::string name=entry->d_name;
         if(name=="." || name=="..") continue;
         struct stat info{};
-        if(stat((path+"/"+name).c_str(),&info)) continue;
+        if(stat(BrowserPath::Child(path,name).c_str(),&info)) continue;
         if(S_ISDIR(info.st_mode)) directories.push_back(name+"/");
         else if(S_ISREG(info.st_mode) && MediaFileMatches(type,name)) files.push_back(name);
     }
