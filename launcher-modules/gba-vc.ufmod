@@ -1,0 +1,7 @@
+UFLOW-MODULE-1
+id=gba-vc
+name=Game Boy Advance - VC injector
+version=0.1.0
+system=Game Boy Advance
+extensions=.gba
+protocol=vc-gba-v1

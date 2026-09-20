@@ -1,0 +1,7 @@
+UFLOW-MODULE-1
+id=snes-vc
+name=SNES - VC injector
+version=0.1.0
+system=SNES
+extensions=.sfc,.smc
+protocol=vc-snes-v1

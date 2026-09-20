@@ -1,0 +1,8 @@
+{
+  "service": "uFlow updates",
+  "schema": 1,
+  "base_url": "https://karotech.io/updates/uFlow/",
+  "channels": ["stable", "testing"],
+  "published_release": null,
+  "client_available": false
+}

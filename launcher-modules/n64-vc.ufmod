@@ -1,0 +1,7 @@
+UFLOW-MODULE-1
+id=n64-vc
+name=Nintendo 64 - VC injector
+version=0.1.0
+system=Nintendo 64
+extensions=.z64,.v64,.n64
+protocol=vc-n64-v1

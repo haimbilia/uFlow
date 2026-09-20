@@ -1,0 +1,7 @@
+UFLOW-MODULE-1
+id=pce-vc
+name=TurboGrafx-16 / PC Engine - VC injector
+version=0.1.0
+system=TurboGrafx-16 / PC Engine
+extensions=.pce
+protocol=vc-pce-v1

@@ -1,0 +1,7 @@
+UFLOW-MODULE-1
+id=nes-vc
+name=NES - VC injector
+version=0.1.0
+system=NES
+extensions=.nes,.unf,.unif,.zip
+protocol=vc-nes-v1

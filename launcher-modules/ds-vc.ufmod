@@ -1,0 +1,7 @@
+UFLOW-MODULE-1
+id=ds-vc
+name=Nintendo DS - VC injector
+version=0.2.0
+system=Nintendo DS
+extensions=.nds,.srl
+protocol=vc-ds-v1

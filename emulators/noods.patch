@@ -1,0 +1,198 @@
+diff --git a/Makefile.wiiu b/Makefile.wiiu
+index 7dc866a..09968bf 100644
+--- a/Makefile.wiiu
++++ b/Makefile.wiiu
+@@ -13,8 +13,8 @@ NAME := noods
+ BUILD := build-wiiu
+ SRCS := src src/core src/core/arm src/core/gpu src/core/hle src/core/io src/core/memory src/ui src/ui/console
+ DATA := src/ui/console/images src/ui/console/shaders
+-LIBS := -lwut -lSDL2
+-INCS := $(PORTLIBS) $(WUT_ROOT)
++LIBS := -lrpxloader -lwut -lSDL2
++INCS := $(PORTLIBS) $(WUT_ROOT) $(DEVKITPRO)/wums
+ 
+ CXXFLAGS := -g -Ofast -flto -ffunction-sections $(MACHDEP) $(INCLUDE) \
+     -D__WIIU__ -D__WUT__ -DENDIAN_BIG -DNO_FDOPEN -DLOG_LEVEL=0
+@@ -28,6 +28,7 @@ export DEPSDIR := $(CURDIR)/$(BUILD)
+ export LIBPATHS := $(foreach dir,$(INCS),-L$(dir)/lib)
+ export VPATH := $(foreach dir,$(SRCS),$(CURDIR)/$(dir)) $(foreach dir,$(DATA),$(CURDIR)/$(dir))
+ export INCLUDE := $(foreach dir,$(SRCS),-I$(CURDIR)/$(dir)) $(foreach dir,$(INCS),-I$(dir)/include)
++export INCLUDE += -I$(CURDIR)/../../launcher-modules/sdk
+ 
+ CPPFILES := $(foreach dir,$(SRCS),$(notdir $(wildcard $(dir)/*.cpp)))
+ BMPFILES := $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.bmp)))
+diff --git a/src/core/defines.h b/src/core/defines.h
+index 215d3a5..3f19c18 100644
+--- a/src/core/defines.h
++++ b/src/core/defines.h
+@@ -20,6 +20,9 @@
+ #pragma once
+ 
+ #include <cstdio>
++#ifdef __WIIU__
++#include <unistd.h> // Declare newlib functions before the fallback macros below.
++#endif
+ 
+ // Control how many cycles of 3D GPU commands are batched
+ #define GPU3D_BATCH 32
+diff --git a/src/ui/console/console_ui.cpp b/src/ui/console/console_ui.cpp
+index 08962b1..82e6112 100644
+--- a/src/ui/console/console_ui.cpp
++++ b/src/ui/console/console_ui.cpp
+@@ -18,6 +18,7 @@
+ */
+ 
+ #include <algorithm>
++#include <cctype>
+ #include <chrono>
+ #include <dirent.h>
+ #include <sys/stat.h>
+@@ -336,8 +337,10 @@ void ConsoleUI::mainLoop(MenuTouch (*specialTouch)(), ScreenLayout *touchLayout)
+ }
+ 
+ int ConsoleUI::setPath(std::string path) {
++    std::string extension = path.size() >= 4 ? path.substr(path.size() - 4) : "";
++    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return std::tolower(c); });
+     // Set the ROM path if the extension matches
+-    if (path.find(".nds", path.length() - 4) != std::string::npos) { // NDS ROM
++    if (extension == ".nds") { // NDS ROM
+         // If a GBA path is set, allow clearing it
+         if (gbaPath != "") {
+             if (!message("Loading NDS ROM", "Load the previous GBA ROM alongside this ROM?", 1))
+@@ -357,7 +360,7 @@ int ConsoleUI::setPath(std::string path) {
+         ndsPath = "";
+         return 1;
+     }
+-    else if (path.find(".gba", path.length() - 4) != std::string::npos) { // GBA ROM
++    else if (extension == ".gba") { // GBA ROM
+         // If an NDS path is set, allow clearing it
+         if (ndsPath != "") {
+             if (!message("Loading GBA ROM", "Load the previous NDS ROM alongside this ROM?", 1))
+@@ -1103,6 +1106,7 @@ bool ConsoleUI::createCore() {
+     try {
+         // Attempt to create the core
+         if (core) delete core;
++        core = nullptr; // HOME from a load-error dialog must not see a deleted core.
+         core = new Core(ndsPath, gbaPath);
+         return true;
+     }
+@@ -1173,6 +1177,17 @@ void ConsoleUI::stopCore() {
+     delete saveThread;
+ }
+ 
++void ConsoleUI::shutdownForLauncher() {
++    // Join the emulation/save workers before leaving. The caller stops the audio
++    // callback first, so it cannot read the core while we flush persistent state.
++    stopCore();
++    if (core) {
++        core->cartridgeNds.writeSave();
++        core->cartridgeGba.writeSave();
++    }
++    Settings::save();
++}
++
+ void ConsoleUI::runCore() {
+     // Run the emulator
+     while (running)
+diff --git a/src/ui/console/console_ui.h b/src/ui/console/console_ui.h
+index 0a8df4f..dd6dac5 100644
+--- a/src/ui/console/console_ui.h
++++ b/src/ui/console/console_ui.h
+@@ -105,6 +105,7 @@ public:
+     static void mainLoop(MenuTouch (*specialTouch)() = nullptr, ScreenLayout *touchLayout = nullptr);
+     static int setPath(std::string path);
+     static void fileBrowser();
++    static void shutdownForLauncher();
+ 
+ private:
+     static void *fileTextures[2];
+diff --git a/src/ui/console/main_wiiu.cpp b/src/ui/console/main_wiiu.cpp
+index ac58c8f..b060304 100644
+--- a/src/ui/console/main_wiiu.cpp
++++ b/src/ui/console/main_wiiu.cpp
+@@ -32,8 +32,11 @@
+ #include <whb/sdcard.h>
+ #include <whb/gfx.h>
+ #include <SDL2/SDL.h>
++#include <rpxloader/rpxloader.h>
++#include <coreinit/debug.h>
+ 
+ #include "console_ui.h"
++#include "rom_request.hpp"
+ #include "../core/settings.h"
+ 
+ #define MAX_DRAWS 1024
+@@ -48,6 +51,7 @@ bool firstScreen;
+ VPADStatus vpad;
+ VPADTouchData touch;
+ bool scanned;
++struct ReturnToUFlow {};
+ 
+ WHBGfxShaderGroup group;
+ GX2RBuffer posBuffer, texBuffer, colBuffer;
+@@ -72,6 +76,9 @@ const char *ConsoleUI::keyNames[] {
+ };
+ 
+ void ConsoleUI::startFrame(uint32_t color) {
++    // Poll before opening a GX2 frame, so HOME can unwind any nested menu
++    // without abandoning an in-progress render. HOME is not a remappable DS key.
++    if (getInputHeld() & VPAD_BUTTON_HOME) throw ReturnToUFlow{};
+     // Convert the clear color to floats
+     float r = float(color & 0xFF) / 0xFF;
+     float g = float((color >> 8) & 0xFF) / 0xFF;
+@@ -238,7 +245,9 @@ void ConsoleUI::drawTexture(void *texture, float tx, float ty, float tw, float t
+ uint32_t ConsoleUI::getInputHeld() {
+     // Scan for input once per frame
+     if (!scanned) {
+-        VPADRead(VPAD_CHAN_0, &vpad, 1, nullptr);
++        VPADReadError error;
++        if (VPADRead(VPAD_CHAN_0, &vpad, 1, &error) <= 0 || error != VPAD_READ_SUCCESS)
++            vpad = {};
+         VPADGetTPCalibratedPoint(VPAD_CHAN_0, &touch, &vpad.tpNormal);
+         scanned = true;
+     }
+@@ -250,9 +259,7 @@ uint32_t ConsoleUI::getInputHeld() {
+ MenuTouch ConsoleUI::getInputTouch() {
+     // Scan for input once per frame and read touch data
+     if (!scanned) {
+-        VPADRead(VPAD_CHAN_0, &vpad, 1, nullptr);
+-        VPADGetTPCalibratedPoint(VPAD_CHAN_0, &touch, &vpad.tpNormal);
+-        scanned = true;
++        getInputHeld();
+     }
+     return MenuTouch(touch.touched, touch.x, touch.y);
+ }
+@@ -358,12 +365,31 @@ int main() {
+ 
+     // Initialize the UI and open the file browser
+     std::string base = WHBGetSdCardMountPath();
++    try {
+     ConsoleUI::initialize(tvWidth, tvHeight, base, base + "/wiiu/apps/noods/");
+-    ConsoleUI::fileBrowser();
++    std::string requestedRom;
++    const bool requested = UFlowRom::Consume(base + "/wiiu/apps/noods/uflow-launch.req", base, requestedRom);
++    if (!requested || ConsoleUI::setPath(requestedRom) != 2)
++        ConsoleUI::fileBrowser();
+ 
+     // Run the emulator until it exits
+     ConsoleUI::mainLoop(nullptr, &gpLayout);
+-    SYSLaunchMenu();
++    } catch (const ReturnToUFlow &) {
++        OSReport("NooDS: HOME return to uFlow\n");
++    }
++    SDL_PauseAudioDevice(id, 1);
++    SDL_CloseAudioDevice(id);
++    ConsoleUI::shutdownForLauncher();
++    SDL_QuitSubSystem(SDL_INIT_AUDIO);
++
++    // Use Aroma's homebrew wrapper, not a console reboot or a global autoboot
++    // change. If uFlow is absent/unavailable, retain the Wii U Menu fallback.
++    bool returning = false;
++    if (UFlowRom::File(base + "/wiiu/apps/uFlow/uFlow.wuhb") &&
++        RPXLoader_InitLibrary() == RPX_LOADER_RESULT_SUCCESS) {
++        returning = RPXLoader_LaunchHomebrew("wiiu/apps/uFlow/uFlow.wuhb") == RPX_LOADER_RESULT_SUCCESS;
++    }
++    if (!returning) SYSLaunchMenu();
+ 
+     // Respond to system messages appropriately to allow exiting
+     while (true) {

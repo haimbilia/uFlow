@@ -1,0 +1,11 @@
+{
+  "base_url": "https://karotech.io/updates/uFlow/",
+  "remote_root": "/var/www/karotech.io/updates/uFlow",
+  "ssh_host": "82.25.101.144",
+  "ssh_user": "root",
+  "channels": ["stable", "testing"],
+  "default_channel": "stable",
+  "manifest_schema": 1,
+  "signature": "Ed25519",
+  "digest": "SHA-256"
+}

@@ -1,0 +1,4 @@
+Added automatic update checks when uFlow starts.
+Added a Yes/No update prompt, download progress and installation status.
+Updates are verified before installation, with recovery for interrupted installs.
+Added this version-changes popup after a successful update.

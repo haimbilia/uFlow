@@ -1,0 +1,11 @@
+UFLOW-MODULE-1
+id=noods
+name=NooDS
+version=1.0.0
+system=Nintendo DS
+extensions=.nds
+executable=wiiu/apps/noods/noods.wuhb
+protocol=rom-request-v1
+request=wiiu/apps/noods/uflow-launch.req
+dependency=wiiu/apps/noods/uflow-api.txt
+capability=UFLOW-ROM-1

@@ -6,22 +6,37 @@ platform-specific launch adapters stay hidden behind a single **Launch** action.
 
 ## Current status
 
-The first graphical build is usable as a library browser. It includes:
+This is an active hardware-tested development project, not a finished universal
+emulator. It includes:
 
 - four animated 3D layouts (Classic Flow, Carousel, Flat Row, and Stacked) with
   Wii U, Wii, GameCube, and Favorites tabs;
 - two switchable skins: the original `Pixel Deck` and Wii U-inspired
-  `GlassFlow`, with smooth type, translucent panels, and Aurora-style details;
-- a live case mesh with per-game artwork, media-rich title details, favorites,
+  `GlassFlow`, with futuristic type, layered glass, and Aurora-style details;
+- a live case mesh with three-axis transitions, per-game artwork, optional
+  projected reflections, soft shadows, media-rich title details, favorites,
   analog navigation, and accelerated scrolling;
-- an Aurora-style settings dashboard with persistent source, motion, navigation,
-  spacing, startup-view, and accent-theme options;
+- an Aurora-style settings dashboard with a directory browser, multiple
+  content and media paths, per-directory type/depth options, manual rescan,
+  and persistent view options;
 - scanning for Loadiine-format Wii U games, Wii `.wbfs`, and GameCube `.iso`;
 - listing and launching installed Wii U games from internal storage and Wii U USB;
 - the experimental Wii U loose-title adapter retained behind the new UI.
 
-Wii and GameCube launch adapters are not connected yet. The Wii U adapter is
-experimental and is still being debugged on real hardware.
+Wii and GameCube launch through separate WiiFlow/Nintendont backends. DS, NES,
+SNES, GBA, N64, TurboGrafx-16/PC Engine and MSX have VC injection adapters;
+compatibility depends on the ROM and supplied VC base. NooDS is an additional
+DS backend. ROMs, Nintendo VC bases and console keys are not in this repository.
+
+GlassFlow is the default skin. Media directories are grouped by content type;
+system-specific case proportions and independent front/back/spine artwork fall
+back to default sleeves. MP4/AVI previews support background playback and
+adjustable foreground opacity. Installed Wii U titles are discovered automatically.
+
+The in-app updater checks on startup, offers Yes/No, shows progress and version
+changes, and verifies signed releases before replacing the app. Version 1 updates
+the uFlow app only, not Aroma modules or emulator backends. See
+[update service](updates/README.md) for publishing and recovery tests.
 
 ## Storage layout
 
@@ -36,28 +51,72 @@ FAT32:/
 Wii U artwork is read from `meta/iconTex.tga`; a `cover.png` or `cover.tga` in a
 game folder overrides it. Favorites are stored beside the app.
 
-Enhanced media uses `/wiiu/apps/uFlow/media/{covers,backgrounds,logos,previews,metadata}`.
+Enhanced media defaults to `/wiiu/apps/uFlow/media/{covers,fullcovers,backgrounds,logos,previews,metadata}`.
+Change these paths and their library scope in Settings > Media.
 Files may be named with a title ID or uFlow's normalized title name. Run
 `tools/prepare-media.ps1` to convert the artwork collection into an optimized
 media pack without modifying its source files.
+See [Content and media setup](docs/CONTENT_AND_MEDIA.md) for naming, formats,
+scan depth, and metadata examples. MP4/AVI video previews play after an adjustable
+idle delay on the main library screen only. Select Gameplay Videos on a media
+directory to set the delay (default 1 second), foreground/background layer and
+volume. Settings, Details and ordinary controller/touch activity suppress playback.
+Cover inspection keeps background videos running; it suppresses foreground videos. B dismisses
+a preview until the highlighted game changes (or closes an open cover inspection).
 
 ## Controls
 
+These are the default library bindings. Settings > Controls lets you remap them;
+the main-screen hints, empty Favorites prompt, and cover-inspection hints follow
+the active mappings immediately. Settings and Details keep their menu navigation
+controls: A selects/activates, B goes back, and Plus opens Settings from Details.
+
 | Input | Action |
 |---|---|
-| D-pad / left stick | Move through the coverflow; hold left/right to accelerate |
+| D-pad / left stick | Move through the coverflow; hold left/right to accelerate; hold up/down to inspect the cover |
 | L / R | Change platform tab |
 | ZL / ZR | Jump ten games |
 | A | Launch |
 | Y | Details |
 | X | Toggle favorite |
-| Minus | Rescan |
+| Minus | No action |
 | Plus | Settings |
-| B | Back / exit |
+| B | Back / close panels; never exits uFlow |
+| HOME | System menu / exit uFlow |
 
-Inside Settings, use `L/R` to change section, the D-pad to select and change an
-option, and `B` to return. Settings are saved to
-`/wiiu/apps/uFlow/uflow.cfg` on the FAT32 device.
+Inside Settings, use D-pad/left stick **left/right** to move focus between the
+section sidebar and main panel, and **up/down** to navigate the focused area.
+**A** opens an action or enters selector edit mode (highlighted value). While editing,
+**left/right** changes the value; **B** finishes editing without leaving the page,
+and **up/down** finishes editing and moves to the adjacent row. Outside edit mode,
+left/right moves between the sidebar and panel; **B** returns.
+GamePad touch supports section/row taps, value arrows, footer actions, and vertical
+swipes through directory lists. Bumpers no longer change settings sections.
+**Library** lists all content directories together;
+open a path to set its platform, depth, and enabled state, or remove it.
+**Media** works the same way, with media type and library scope (All, Wii U,
+Wii, or GameCube) inside each path. Use **Scan Now** from these settings lists
+to apply changes; startup scanning remains automatic. In the
+directory browser, `A` opens a folder and `Y` selects the current folder.
+Source lists, editors, and directory browsing share the main Settings pane;
+`B` goes up a directory/back, and `X` cancels directory selection. A successful
+scan is saved as a catalog beside uFlow, so later starts show the last known
+library immediately. Use **Scan Now** after adding/removing content or changing
+media; changing a source or content type automatically invalidates that catalog.
+Settings and source paths are saved beside uFlow on the FAT32 device.
+
+**General → Audio** selects looping menu music, on/off, and volume. Put MP3, OGG Vorbis,
+or WAV tracks (up to 32 MiB each) in `/wiiu/apps/uFlow/music/`, choose **Reload
+Music List**, then select a track and enable music. No tracks are bundled.
+Only the selected file is retained in memory; playback does not keep reading
+the drive. Music pauses in the background and stops before game launch/exit.
+If a track is missing or playback fails, the switch returns to OFF and Audio
+shows the error. B returns from Audio to General in the same settings window.
+
+Wii U raw scanning uses `code/app.xml` to distinguish base games from updates
+and DLC. Updates are not separate launch entries; their metadata can fill in
+missing base-game names/icons. This does not apply update or DLC game data.
+Raw launch requires the experimental backend, not just the WUHB frontend.
 
 ## Build
 
@@ -67,12 +126,21 @@ Docker Desktop is the only host dependency:
 .\build.ps1
 ```
 
-The app itself can be built from `app/` with its Dockerfile and `make`. The
-frontend uses devkitPPC, WUT, SDL2, and libpng.
+The frontend uses devkitPPC, WUT, SDL2, FFmpeg and libcurl. Use the video builder
+described in [VIDEO_BUILD.md](docs/VIDEO_BUILD.md), not just the base image.
+See [external dependencies](emulators/README.md) for pinned checkouts and patches.
+The optional personal GlassFlow background video is not committed; without it
+the skin uses its built-in background. Native installation is built using
+`tools/build-native-installer.ps1` after preparing locally supplied dependencies;
+follow [the release workflow](docs/native-installer-release.md). The personal
+installer embeds Nintendo VC bases and must not be publicly redistributed.
+
+GlassFlow embeds the Oxanium typeface under the SIL Open Font License; its
+license is included at `app/data/OFL.txt`.
 
 ## Architecture
 
-- `app/` — WUHB frontend, library scanner, cover cache, and dashboard.
+- `app/` — WUHB frontend, persisted library scanner, bounded artwork cache, and dashboard.
 - `tools/convert-case-model.mjs` — converts the optimized licensed glTF case
   mesh into the compact renderer data included by the frontend.
 - launch adapters — isolated behind the frontend API and published once stable.

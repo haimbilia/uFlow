@@ -1,0 +1,7 @@
+UFLOW-MODULE-1
+id=msx-vc
+name=MSX - VC injector
+version=0.1.0
+system=MSX
+extensions=.rom,.mx1,.mx2
+protocol=vc-msx-v1
