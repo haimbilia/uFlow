@@ -1,7 +1,7 @@
-uFlow 2026.09.20-test4 - personal console test build
+uFlow 2026.09.20-test5 - personal console test build
 
 Matching uFlow source, local patches, build recipes and tests:
-https://github.com/haimbilia/uFlow/tree/bbec0b0
+https://github.com/haimbilia/uFlow/tree/b06d430
 
 This test package contains uFlow and its embedded update helper. It does not contain
 Nintendo VC bases, user ROMs, saved games, console tickets or private keys.

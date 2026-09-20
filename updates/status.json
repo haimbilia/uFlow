@@ -3,7 +3,7 @@
   "schema": 1,
   "base_url": "https://karotech.io/updates/uFlow/",
   "channels": ["stable", "testing"],
-  "published_release": "2026.09.20-test4",
+  "published_release": "2026.09.20-test5",
   "client_available": true,
-  "hardware_validation": "OTA install confirmed on test3; test4 appearance pending"
+  "hardware_validation": "OTA install confirmed on test3; test5 browser navigation pending"
 }
