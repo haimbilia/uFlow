@@ -26,6 +26,7 @@
 #include "visual_check.hpp"
 #include "glass_material.hpp"
 #include "cover_transition.hpp"
+#include "artwork_worker.hpp"
 #include "music.hpp"
 #include "video.hpp"
 #include "glass_background.hpp"
@@ -59,6 +60,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <malloc.h>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -831,8 +833,19 @@ SDL_Surface *LoadJpeg(const std::string &path) {
 
 class TextureCache {
 public:
-    explicit TextureCache(SDL_Renderer *renderer) : renderer_(renderer) {}
-    ~TextureCache() { Clear(); }
+#ifdef UFLOW_HOST_PREVIEW
+    static constexpr bool DefaultAsync = false;
+#else
+    static constexpr bool DefaultAsync = true;
+#endif
+    explicit TextureCache(SDL_Renderer *renderer, bool asynchronous = DefaultAsync) : renderer_(renderer) {
+        if (asynchronous) {
+        worker_ = std::make_unique<ArtworkWorker>(Decode);
+        if (!worker_->Available()) SDL_Log("Artwork worker unavailable; retaining placeholders: %s", SDL_GetError());
+        }
+    }
+    ~TextureCache() { worker_.reset(); Clear(); }
+    void BeginFrame() { pending_.clear(); }
     std::size_t Count() const { return textures_.size(); }
     std::size_t Bytes() const { return bytes_; }
     std::size_t Pending() const { return pending_.size(); }
@@ -847,30 +860,25 @@ public:
             found->second.lastUse = SDL_GetTicks();
             return found->second.info;
         }
- #ifdef UFLOW_HOST_PREVIEW
-        return Load(path);
- #else
+        if (!worker_) return Load(path);
         Queue(path);
         return {};
- #endif
     }
     void Prefetch(const std::string &path) {
         if (path.empty() || textures_.contains(path)) return;
-#ifdef UFLOW_HOST_PREVIEW
-        Load(path);
-#else
-        Queue(path);
-#endif
+        if (!worker_) Load(path); else Queue(path);
     }
     void PumpOne() {
-#ifndef UFLOW_HOST_PREVIEW
-        if (pending_.empty()) return;
-        const std::string path = std::move(pending_.front());
-        pending_.erase(pending_.begin());
-        if (!textures_.contains(path)) Load(path);
-#endif
+        if (!worker_) return;
+        worker_->Request(pending_);
+        auto ready = worker_->Take();
+        if (ready.available) {
+            if (!textures_.contains(ready.path)) Upload(ready.path, ready.surface);
+            else if (ready.surface) SDL_FreeSurface(ready.surface);
+        }
     }
     void Clear() {
+        if (worker_) worker_->Reset();
         for (auto &[unused, cached] : textures_) if (cached.info.texture) SDL_DestroyTexture(cached.info.texture);
         textures_.clear();
         pending_.clear();
@@ -898,7 +906,7 @@ private:
     void MakeRoom(std::size_t needed) {
         while (!textures_.empty() && (textures_.size() >= kMaxEntries || bytes_ + needed > kMaxBytes)) RemoveOldest();
     }
-    TextureInfo Load(const std::string &path) {
+    static SDL_Surface *Decode(const std::string &path) {
         SDL_Surface *surface = nullptr;
         const auto dot = path.find_last_of('.');
         std::string extension = dot == std::string::npos ? std::string() : path.substr(dot + 1);
@@ -908,6 +916,10 @@ private:
         if (extension == "png") surface = LoadPng(path);
         else if (extension == "tga") surface = LoadTga(path);
         else if (extension == "jpg" || extension == "jpeg") surface = LoadJpeg(path);
+        return surface;
+    }
+    TextureInfo Load(const std::string &path) { return Upload(path, Decode(path)); }
+    TextureInfo Upload(const std::string &path, SDL_Surface *surface) {
         TextureInfo result;
         std::size_t bytes = 0;
         if (surface) {
@@ -929,6 +941,7 @@ private:
         return result;
     }
     SDL_Renderer *renderer_;
+    std::unique_ptr<ArtworkWorker> worker_;
     std::unordered_map<std::string, CachedTexture> textures_;
     std::vector<std::string> pending_;
     std::size_t bytes_ = 0;
@@ -1123,6 +1136,27 @@ public:
         return result;
     }
 #ifdef UFLOW_HOST_PREVIEW
+    bool CheckAsyncArtwork(const std::string &output) {
+        png_image image{}; image.version = PNG_IMAGE_VERSION;
+        image.width = 8; image.height = 8; image.format = PNG_FORMAT_RGBA;
+        std::array<unsigned char,8*8*4> pixels{}; pixels.fill(255);
+        const std::string path = output + "-worker.png";
+        if (!png_image_write_to_file(&image,path.c_str(),0,pixels.data(),0,nullptr)) return false;
+        TextureCache cache(renderer_,true);
+        if (cache.Get(path).texture) return false; // first request never decodes inline
+        const auto deadline = SDL_GetTicks() + 3000;
+        while (!cache.Known(path) && !SDL_TICKS_PASSED(SDL_GetTicks(),deadline)) {
+            cache.BeginFrame(); cache.Prefetch(path); cache.PumpOne(); SDL_Delay(1);
+        }
+        if (!cache.Get(path).texture || cache.Bytes() != 8*8*4) return false;
+        const auto count = cache.Count();
+        for (int i=0;i<60;++i) { cache.BeginFrame(); cache.Get(path); cache.PumpOne(); }
+        if (cache.Count()!=count || cache.Pending()!=0) return false;
+        cache.Clear();
+        if (cache.Count() || cache.Bytes()) return false;
+        SDL_Log("Async texture cache PASS: actual PNG decode, main-thread upload, cached hits, reset");
+        return true;
+    }
     bool CheckArtworkPolish(const std::string &output) {
         if(ArtworkDivisor(3260,1370)!=2 || ArtworkDivisor(9000,20)!=0 || ArtworkDivisor(8192,8192)!=0) return false;
         // Verify streamed PNG sampling exactly, including Adam7 and odd sizes.
@@ -3091,6 +3125,7 @@ public:
 
     bool Render(float deltaSeconds, const std::string &capturePath = {}) {
         const Uint64 performanceStart=SDL_GetPerformanceCounter();
+        textures_.BeginFrame();
         if (preview_) deltaSeconds = 0; // deterministic transition samples, not performance measurements
         gSmoothText = preferences_.skin == 1;
         gGlassOverVideo=false;
@@ -3242,14 +3277,13 @@ public:
         // copy while the display is still presenting it. Only rendered in foreground.
         GX2WaitForFlip();
 #endif
+        FlushSettingsSave(false);
+        // Only upload a completed CPU decode here; storage and decompression
+        // run on the artwork worker. Include upload time in frame statistics.
+        if (!video_.Active()&&!InjectionDialogOpen()) textures_.PumpOne();
         const double elapsedMs=1000.0*(SDL_GetPerformanceCounter()-performanceStart)/SDL_GetPerformanceFrequency();
         ++performanceFrames_; performanceTotalMs_+=elapsedMs;
         performanceMaxMs_=std::max(performanceMaxMs_,elapsedMs);
-        FlushSettingsSave(false);
-        // Decode/upload at most one requested asset after the submitted frame.
-        // Render itself only requests assets, so first-use artwork cannot turn
-        // one carousel frame into an SD/decode/upload stall.
-        if (!video_.Active()&&!InjectionDialogOpen()) textures_.PumpOne();
         return captured;
     }
 
@@ -3347,7 +3381,7 @@ private:
     }
     void PrefetchArtwork() {
         if (visible_.empty()) return;
-        const auto queueGame = [&](const GameEntry &game) {
+        const auto queueGame = [&](const GameEntry &game, bool selected) {
             textures_.Prefetch(game.fullCoverPath);
             if(game.fullCoverPath.empty() || (textures_.Known(game.fullCoverPath) && !textures_.HasTexture(game.fullCoverPath))) {
                 textures_.Prefetch(game.coverPath);
@@ -3355,16 +3389,18 @@ private:
                 textures_.Prefetch(game.spinePath);
                 if(game.coverPath.empty() || game.backCoverPath.empty() || game.spinePath.empty())textures_.Prefetch(game.defaultSleevePath);
             }
-            textures_.Prefetch(game.backgroundPath);
-            if (preferences_.useLogos) textures_.Prefetch(game.logoPath);
+            if (selected) {
+                textures_.Prefetch(game.backgroundPath);
+                if (preferences_.useLogos) textures_.Prefetch(game.logoPath);
+            }
         };
-        queueGame(games_[visible_[selected_]]);
+        queueGame(games_[visible_[selected_]],true);
         // The centre cover is followed by the cards that can enter view next.
         for (int distance = 1; distance <= 3; ++distance) {
             const int before = static_cast<int>(selected_) - distance;
             const int after = static_cast<int>(selected_) + distance;
-            if (before >= 0) queueGame(games_[visible_[before]]);
-            if (after < static_cast<int>(visible_.size())) queueGame(games_[visible_[after]]);
+            if (before >= 0) queueGame(games_[visible_[before]],false);
+            if (after < static_cast<int>(visible_.size())) queueGame(games_[visible_[after]],false);
         }
     }
     const std::vector<std::string> &LibraryTabs() const { return libraryTabs_; }
@@ -5103,7 +5139,8 @@ int main(int argc, char **argv) {
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND); InitSmoothFonts();
     bool ok;
     { std::vector<GameEntry> games; Dashboard dashboard(renderer, games);
-      if(std::string(argv[1])=="glassbackgroundchecks")ok=dashboard.CheckGlassBackground(argv[2]);
+      if(std::string(argv[1])=="asyncartworkchecks")ok=dashboard.CheckAsyncArtwork(argv[2]);
+      else if(std::string(argv[1])=="glassbackgroundchecks")ok=dashboard.CheckGlassBackground(argv[2]);
       else if(std::string(argv[1])=="coverfacechecks")ok=dashboard.CheckCoverFaces(argv[2]);
       else if(std::string(argv[1])=="firstrunchecks")ok=dashboard.CheckFirstRun(argv[2]);
       else if(std::string(argv[1])=="updatechecks")ok=dashboard.CheckUpdateDialog(argv[2]);

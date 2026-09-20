@@ -265,3 +265,15 @@ and fully rebooting, the user confirmed both USB-game exit and explicit uFlow
 exit work. This resolves the tested Menu-exit regression. The refreshed native
 installer already embeds this exact payload and passed the actual-bundle install
 and idempotent-rerun tests; do not revert it to the earlier formatter-based build.
+
+Cover-browsing test9 (sequence 2026092009) moves artwork reads/decompression to
+a low-priority CPU worker. Each frame replaces its bounded queue with currently
+wanted covers; obsolete results are discarded. Only the UI thread uploads textures,
+at most one completed image per frame. Neighbour prefetch no longer decodes their
+unused backgrounds/logos. Cache reset invalidates in-flight results, and shutdown
+joins the worker before renderer/storage teardown. Run tools/test-artwork-worker.ps1
+(production worker under ASan/UBSan) and GPU host previews asyncartworkchecks,
+artworkchecks, casechecks, coverfacechecks. Rebuild the app and native installer;
+the hardware-confirmed USB payload/module must remain unchanged. V-sync/flip waits
+and cover geometry are unchanged. Hardware checks still required: fast scrolling,
+direction reversals, cover inspection, video transitions, and app/game exit.
