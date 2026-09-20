@@ -1,5 +1,6 @@
 #include "library.hpp"
 #include "browser_path.hpp"
+#include "directory_entry.hpp"
 #include "case_profiles.hpp"
 #include "wii_request.hpp"
 #include "saved_file.hpp"
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -614,23 +616,31 @@ bool SaveContentSources(const std::vector<ContentSource> &sources) {
     return saved;
 }
 
-std::vector<std::string> ListDirectories(const std::string &path) {
+std::vector<std::string> ListDirectories(const std::string &path, const BrowserCancelled &cancelled, std::string *error) {
     std::vector<std::string> directories;
-    const auto canOpen=[](const std::string &candidate){
+    if(error)error->clear();
+    const auto canOpen=[&](const std::string &candidate){
+        if(cancelled && cancelled())return false;
         DIR *dir=opendir(candidate.c_str());if(!dir)return false;
         closedir(dir);return true;
     };
     BrowserPath::AddNamespaceEntries(path,directories,canOpen);
+    if(cancelled && cancelled())return {};
     DIR *directory = opendir(path.c_str());
+    if(!directory && !BrowserPath::Container(path) && error)*error="CANNOT OPEN FOLDER";
     if (directory) {
-    while (dirent *entry = readdir(directory)) {
+    while (!cancelled || !cancelled()) {
+        errno=0;
+        dirent *entry=readdir(directory);
+        if(!entry){if(errno && errno!=ENOENT && error)*error="FOLDER READ FAILED";break;}
         const std::string name = entry->d_name;
         if (name == "." || name == "..") continue;
         const auto child=BrowserPath::Child(path,name);
-        if (IsDirectory(child)||(BrowserPath::Container(path)&&canOpen(child))) directories.push_back(name);
+        if (S_ISDIR(DirectoryEntryMode(*entry,child))||(BrowserPath::Container(path)&&canOpen(child))) directories.push_back(name);
     }
     closedir(directory);
     }
+    if(cancelled && cancelled())return {};
     std::sort(directories.begin(), directories.end(), [](const std::string &left, const std::string &right) {
         return Lower(left) < Lower(right);
     });

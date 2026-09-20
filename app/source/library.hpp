@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -109,7 +110,9 @@ struct MediaSource {
 };
 bool MediaFileMatches(MediaType type, const std::string &path);
 // Browser entries: directories end in '/', files are filtered by media type.
-std::vector<std::string> ListMediaFiles(const std::string &path, MediaType type);
+using BrowserCancelled = std::function<bool()>;
+std::vector<std::string> ListMediaFiles(const std::string &path, MediaType type,
+    const BrowserCancelled &cancelled = {}, std::string *error = nullptr);
 std::string FindDefaultMediaFile(const MediaSource &source);
 const char *MediaTypeName(MediaType type);
 const char *MediaLibraryName(int library);
@@ -134,6 +137,7 @@ std::vector<ContentSource> LoadContentSources();
 bool SaveContentSources(const std::vector<ContentSource> &sources);
 std::vector<LibraryDefinition> LoadLibraries();
 bool SaveLibraries(const std::vector<LibraryDefinition> &libraries);
-std::vector<std::string> ListDirectories(const std::string &path);
+std::vector<std::string> ListDirectories(const std::string &path,
+    const BrowserCancelled &cancelled = {}, std::string *error = nullptr);
 bool DirectoryExists(const std::string &path);
 void SaveFavorites(const std::vector<GameEntry> &games);

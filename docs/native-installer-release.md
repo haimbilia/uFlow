@@ -277,3 +277,15 @@ artworkchecks, casechecks, coverfacechecks. Rebuild the app and native installer
 the hardware-confirmed USB payload/module must remain unchanged. V-sync/flip waits
 and cover geometry are unchanged. Hardware checks still required: fast scrolling,
 direction reversals, cover inspection, video transitions, and app/game exit.
+
+Large-folder browser correction (sequence 2026092101): directory and default-file
+pickers enumerate on a cancellable CPU worker, not the render/input thread.
+Parent, Cancel and Use Folder remain usable during enumeration; obsolete listings
+cannot replace a newer path. devkitPPC's readdir stat/type metadata is reused to
+avoid a second FAT name lookup for every entry; unknown types retain stat fallback.
+Show loading and read-error status. Cancel/join workers before storage teardown.
+Run tools/test-browser-worker.ps1 (10,000-file fixture and ASan/UBSan lifecycle),
+browser_path/library/media tests, and asyncbrowserchecks/browserchecks/
+mediadefaultchecks host previews. Rebuild app and native installer; keep the tested
+USB module and Mocha unchanged. Hardware retest target: usb1:/Decrypted; host tests
+do not establish responsiveness of a failing physical disk or firmware I/O call.

@@ -27,6 +27,7 @@
 #include "glass_material.hpp"
 #include "cover_transition.hpp"
 #include "artwork_worker.hpp"
+#include "browser_worker.hpp"
 #include "music.hpp"
 #include "video.hpp"
 #include "glass_background.hpp"
@@ -1004,6 +1005,7 @@ public:
 #endif
     }
     ~Dashboard() {
+        browserWorker_.reset(); // join directory I/O before storage teardown
         video_.Stop();
         glassBackground_.Stop();
         FlushSettingsSave(true);
@@ -1136,6 +1138,27 @@ public:
         return result;
     }
 #ifdef UFLOW_HOST_PREVIEW
+    bool CheckAsyncBrowser(const std::string &output) {
+        VisualPreview("directories");
+        browserWorker_=std::make_unique<BrowserWorker>();
+        browserPath_="fs:/vol/external01/browser-large-test";
+        std::filesystem::create_directories(browserPath_+"/Child");
+        for(int i=0;i<1000;++i)std::ofstream(browserPath_+"/Game-"+std::to_string(i)+".nes").put('x');
+        RefreshBrowser();
+        if(!browserLoading_ || browserDirectories_!=std::vector<std::string>{"../"})return false;
+        Render(0,output+"-loading.png");
+        auto wait=[&]{const auto start=SDL_GetTicks();while(browserLoading_ && SDL_GetTicks()-start<3000){PumpBrowser();SDL_Delay(1);}return !browserLoading_;};
+        if(!wait() || !browserError_.empty() || browserDirectories_!=std::vector<std::string>{"../","Child"})return false;
+        Render(0,output+"-ready.png");
+        browserRow_=1;BrowserOpenSelected();if(!browserLoading_)return false;
+        BrowserBack();if(!wait() || browserDirectories_.size()!=2)return false;
+        RefreshBrowser();BrowserCancel();SDL_Delay(5);PumpBrowser();
+        if(browserLoading_ || directoryBrowser_)return false;
+        directoryBrowser_=true;browserPath_+="/missing";RefreshBrowser();
+        if(!wait() || browserError_.empty())return false;
+        Render(0,output+"-error.png");BrowserCancel();
+        SDL_Log("PASS: asynchronous browser UI, 1,000 files, parent/cancel while loading, errors");return true;
+    }
     bool CheckAsyncArtwork(const std::string &output) {
         png_image image{}; image.version = PNG_IMAGE_VERSION;
         image.width = 8; image.height = 8; image.format = PNG_FORMAT_RGBA;
@@ -3115,9 +3138,12 @@ public:
         if(BrowserPath::Container(browserPath_)){SetStatus("OPEN A DRIVE OR FOLDER FIRST");return;}
         DraftPath() = browserPath_;
         AutoSelectDraftDefault();
-        directoryBrowser_ = false;
+        BrowserCancel();
     }
-    void BrowserCancel() { directoryBrowser_ = false; }
+    void BrowserCancel() {
+        if(browserWorker_)browserWorker_->Cancel();
+        browserLoading_=false;directoryBrowser_=false;
+    }
     void BrowserBack() {
         browserPath_=BrowserPath::Parent(browserPath_);
         RefreshBrowser();
@@ -3126,6 +3152,7 @@ public:
     bool Render(float deltaSeconds, const std::string &capturePath = {}) {
         const Uint64 performanceStart=SDL_GetPerformanceCounter();
         textures_.BeginFrame();
+        PumpBrowser();
         if (preview_) deltaSeconds = 0; // deterministic transition samples, not performance measurements
         gSmoothText = preferences_.skin == 1;
         gGlassOverVideo=false;
@@ -3353,10 +3380,31 @@ private:
         return counts[settingsCategory_];
     }
     void RefreshBrowser() {
-        browserDirectories_ = defaultFileBrowser_ ? ListMediaFiles(browserPath_,draftMediaSource_.type) : ListDirectories(browserPath_);
+        browserError_.clear();
+#ifdef UFLOW_HOST_PREVIEW
+        // Existing visual fixtures are deterministic; CheckAsyncBrowser exercises
+        // the production asynchronous route explicitly.
+        if(!browserWorker_){
+            browserDirectories_=defaultFileBrowser_?ListMediaFiles(browserPath_,draftMediaSource_.type):ListDirectories(browserPath_);
+            AddBrowserActions();browserRow_=0;return;
+        }
+#endif
+        if(!browserWorker_)browserWorker_=std::make_unique<BrowserWorker>();
+        browserDirectories_.clear();AddBrowserActions();browserRow_=0;
+        browserLoading_=browserWorker_->Available();
+        if(browserLoading_)browserWorker_->Start({browserPath_,defaultFileBrowser_,draftMediaSource_.type});
+        else browserError_="FOLDER READER UNAVAILABLE";
+    }
+    void AddBrowserActions() {
         if(defaultFileBrowser_) browserDirectories_.insert(browserDirectories_.begin(),IsCoverMedia(draftMediaSource_.type)?"AUTO (DEFAULT.PNG)":"NONE (NO DEFAULT)");
         if(BrowserPath::Normalize(browserPath_)!="fs:/")browserDirectories_.insert(browserDirectories_.begin(),"../");
-        browserRow_ = 0;
+    }
+    void PumpBrowser() {
+        if(!directoryBrowser_ || !browserLoading_ || !browserWorker_)return;
+        auto result=browserWorker_->Take();if(!result.available)return;
+        browserLoading_=false;browserError_=std::move(result.error);
+        browserDirectories_=std::move(result.entries);AddBrowserActions();
+        browserRow_=std::clamp(browserRow_,0,std::max(0,static_cast<int>(browserDirectories_.size())-1));
     }
     void RebuildVisible() {
         detailsBackdropReady_ = false;
@@ -4421,7 +4469,9 @@ private:
                          row == browserRow_ ? text : muted);
             }
         }
-        DrawText(renderer_,"SWIPE UP/DOWN TO SCROLL",x,560,1,muted);
+        const std::string browserStatus=browserLoading_?"READING FOLDER"+std::string((SDL_GetTicks()/300)%4,'.'):
+            !browserError_.empty()?browserError_:"SWIPE UP/DOWN TO SCROLL";
+        DrawFittedText(renderer_,browserStatus,x,560,730,1,muted);
         DrawSettingsActions(x,accent,{defaultFileBrowser_?"A  OPEN / SELECT":"A  OPEN",defaultFileBrowser_?"Y  SELECT":"Y  USE FOLDER","B  PARENT","X  CANCEL"});
     }
     void DrawSettingsActions(int x,Color accent,const std::array<const char *,4> &labels) {
@@ -4617,6 +4667,9 @@ private:
     ContentSource draftSource_;
     std::string browserPath_ = "fs:/vol";
     std::vector<std::string> browserDirectories_;
+    std::unique_ptr<BrowserWorker> browserWorker_;
+    bool browserLoading_=false;
+    std::string browserError_;
     int browserRow_ = 0;
     bool details_ = false, settings_ = false;
     bool coverInspectOpen_ = false, coverInspectBack_ = false;
@@ -5139,7 +5192,8 @@ int main(int argc, char **argv) {
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND); InitSmoothFonts();
     bool ok;
     { std::vector<GameEntry> games; Dashboard dashboard(renderer, games);
-      if(std::string(argv[1])=="asyncartworkchecks")ok=dashboard.CheckAsyncArtwork(argv[2]);
+      if(std::string(argv[1])=="asyncbrowserchecks")ok=dashboard.CheckAsyncBrowser(argv[2]);
+      else if(std::string(argv[1])=="asyncartworkchecks")ok=dashboard.CheckAsyncArtwork(argv[2]);
       else if(std::string(argv[1])=="glassbackgroundchecks")ok=dashboard.CheckGlassBackground(argv[2]);
       else if(std::string(argv[1])=="coverfacechecks")ok=dashboard.CheckCoverFaces(argv[2]);
       else if(std::string(argv[1])=="firstrunchecks")ok=dashboard.CheckFirstRun(argv[2]);

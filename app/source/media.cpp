@@ -1,5 +1,7 @@
 #include "library.hpp"
 #include "browser_path.hpp"
+#include "directory_entry.hpp"
+#include <cerrno>
 #include "rom_art.hpp"
 #include <algorithm>
 #include <array>
@@ -114,24 +116,29 @@ bool MediaFileMatches(MediaType type,const std::string &path) {
     const auto dot=path.find_last_of('.');
     return dot!=std::string::npos && ExtensionMatches(type,Lower(path.substr(dot+1)));
 }
-std::vector<std::string> ListMediaFiles(const std::string &path,MediaType type) {
+std::vector<std::string> ListMediaFiles(const std::string &path,MediaType type,const BrowserCancelled &cancelled,std::string *error) {
+    if(error)error->clear();
+    if(cancelled && cancelled())return {};
     if(BrowserPath::Container(path)){
-        auto directories=ListDirectories(path);
+        auto directories=ListDirectories(path,cancelled,error);
         for(auto &name:directories)if(name.back()!='/')name+="/";
         return directories;
     }
     std::vector<std::string> directories,files;
     DIR *dir=opendir(path.c_str());
-    if(!dir) return {};
-    while(auto *entry=readdir(dir)) {
+    if(!dir){if(error)*error="CANNOT OPEN FOLDER";return {};}
+    while(!cancelled || !cancelled()) {
+        errno=0;
+        auto *entry=readdir(dir);
+        if(!entry){if(errno && errno!=ENOENT && error)*error="FOLDER READ FAILED";break;}
         const std::string name=entry->d_name;
         if(name=="." || name=="..") continue;
-        struct stat info{};
-        if(stat(BrowserPath::Child(path,name).c_str(),&info)) continue;
-        if(S_ISDIR(info.st_mode)) directories.push_back(name+"/");
-        else if(S_ISREG(info.st_mode) && MediaFileMatches(type,name)) files.push_back(name);
+        const auto mode=DirectoryEntryMode(*entry,BrowserPath::Child(path,name));
+        if(S_ISDIR(mode)) directories.push_back(name+"/");
+        else if(S_ISREG(mode) && MediaFileMatches(type,name)) files.push_back(name);
     }
     closedir(dir);
+    if(cancelled && cancelled())return {};
     std::sort(directories.begin(),directories.end());
     std::sort(files.begin(),files.end());
     directories.insert(directories.end(),files.begin(),files.end());
