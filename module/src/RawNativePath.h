@@ -33,7 +33,9 @@ inline bool RawNativeReadPath(char *out, size_t capacity, bool active,
         root = codeRoot;
         tail = path + 10;
     } else return false;
-    if (!root || !*root) return false;
+    // Only SD-relative roots have a native Cafe FS path. USB roots must retain
+    // /vol/content or /vol/code so ContentRedirection uses its FatFs device.
+    if (!root || !*root || *root == '/' || std::strchr(root, ':')) return false;
     constexpr char prefix[] = "/vol/external01/";
     const size_t rootLen = std::strlen(root), tailLen = std::strlen(tail);
     const size_t prefixLen = sizeof(prefix) - 1;

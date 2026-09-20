@@ -225,3 +225,12 @@ setup/00_mocha.rpx together and fully reboot into Aroma. Host tests do not prove
 retail USB launch compatibility; test executable startup, content reads, HOME,
 return-to-uFlow, and an SD raw launch on hardware. Do not publish an app-only OTA
 as a complete direct-USB upgrade.
+
+The first hardware USB launch reached the game but exposed an SD-only native
+read bypass incorrectly prepending /vol/external01/ to usb1:/ content paths.
+RawNativeReadPath now accepts only SD-relative roots; USB opens retain their
+virtual paths for the module-owned ContentRedirection device. Native SD save
+opens remain unchanged. tools/test-usb-raw.ps1 includes raw_native_path_test.cpp
+with the captured alldata.psb.m/code paths and USB-title SD save regression.
+This correction needs a rebuilt module and native installer; existing test8 app
+and Mocha binaries remain compatible. Fully reboot Aroma after replacing the module.

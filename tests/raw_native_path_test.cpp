@@ -62,5 +62,26 @@ int main() {
     assert(!open("/vol/save/common/save.bin", "w", true, exactCapacity - 1));
     assert(!RawNativeOpenPath(out, sizeof(out), true, "/vol/save/common/file", "w", "", "", ""));
     assert(!RawNativeOpenPath(nullptr, sizeof(out), true, "/vol/save/common/file", "w", "", "", "save"));
-    std::cout << "PASS: native content reads and save opens (all modes, accounts, boundaries, capacity)\n";
+    constexpr char usbContent[] = "usb1:/Games/Mario Luigi Superstar Saga [Game] [0005000010157400]/content";
+    constexpr char usbCode[] = "usb1:/Games/Mario Luigi Superstar Saga [Game] [0005000010157400]/code";
+    for (const char *path : {"/vol/content/alldata.psb.m", "/vol/content/alldata.psb.m.m", "/vol/code/m2engage.rpx"}) {
+        for (const char *mode : {"r", "rb", "r+"}) {
+            std::strcpy(out, "unchanged");
+            assert(!RawNativeOpenPath(out, sizeof(out), true, path, mode, usbContent, usbCode,
+                                      "wiiu/raw-saves/0005000010157400"));
+            assert(std::strcmp(out, "unchanged") == 0);
+        }
+    }
+    for (const char *root : {"ufusb:/Games/Test/content", "fs:/vol/external01/Games/Test/content", "/Games/Test/content"}) {
+        std::strcpy(out, "unchanged");
+        assert(!RawNativeReadPath(out, sizeof(out), true, "/vol/content/file", "r", root, root));
+        assert(!RawNativeReadPath(out, sizeof(out), true, "/vol/code/file", "rb", root, root));
+        assert(std::strcmp(out, "unchanged") == 0);
+    }
+    for (const char *mode : {"r", "rb", "r+", "w", "wb", "w+", "a", "a+"}) {
+        assert(RawNativeOpenPath(out, sizeof(out), true, "/vol/save/common/save.bin", mode,
+                                 usbContent, usbCode, "wiiu/raw-saves/0005000010157400"));
+        assert(std::strcmp(out, "/vol/external01/wiiu/raw-saves/0005000010157400/common/save.bin") == 0);
+    }
+    std::cout << "PASS: native SD reads/saves and USB content/code bypass exclusion\n";
 }
