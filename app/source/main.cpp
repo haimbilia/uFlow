@@ -1163,7 +1163,7 @@ public:
         VisualPreview("mediaedit"); editingSourceIndex_=-1; defaultFileChosen_=false;
         draftMediaSource_.path="auto-default-check"; draftMediaSource_.type=MediaType::FullCover;
         AutoSelectDraftDefault(); if(draftMediaSource_.defaultFile!="auto-default-check/Default.png") return false;
-        defaultFileBrowser_=true; browserDirectories_={"NONE"};browserRow_=0;BrowserOpenSelected();
+        defaultFileBrowser_=true; browserDirectories_={"AUTO (DEFAULT.PNG)"};browserRow_=0;BrowserOpenSelected();
         AutoSelectDraftDefault(); if(!draftMediaSource_.defaultFile.empty()) return false;
         for(int skin:{1,0}) {
             VisualPreview("library"); preferences_.skin=skin;
@@ -1342,7 +1342,7 @@ public:
             SettingsTouch(1050,278+5*38);
             if(!directoryBrowser_ || settingsEditing_) return false;
             BrowserCancel(); if(draftMediaSource_.defaultFile.empty()) return false;
-            SourceEditorActivate(); browserRow_=0; SettingsInput(0,0,true);
+            SourceEditorActivate(); browserRow_=1; SettingsInput(0,0,true); // ../ precedes AUTO
             if(directoryBrowser_ || !draftMediaSource_.defaultFile.empty()) return false;
             sourceEditorRow_=0; SourceEditorActivate();
             if(defaultFileBrowser_) return false; // regular folder picker unchanged
