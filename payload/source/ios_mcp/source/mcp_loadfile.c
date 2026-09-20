@@ -20,6 +20,7 @@
 #include "../../common/kernel_commands.h"
 #include "../../common/raw_title_profile.h"
 #include "../../common/raw_rpl_scope.h"
+#include "../../common/mcp_path.h"
 #include "fsa.h"
 #include "imports.h"
 #include "ipc_types.h"
@@ -183,19 +184,15 @@ MCP_LoadCustomFile(LoadTargetDevice target, char *path, uint32_t filesize, uint3
     }
 
     char filepath[256];
-    memset(filepath, 0, sizeof(filepath));
-    strncpy(filepath, path, sizeof(filepath) - 1);
-
     char mountpath[] = "/vol/storage_iosu_homebrew";
+    const char *prefix = target == MOCHA_LOAD_TARGET_DEVICE_SD ? mountpath : "";
+    if (!MCPJoinPath(filepath, sizeof(filepath), prefix, sizeof(mountpath), path, 256)) return -1;
 
     if (target == MOCHA_LOAD_TARGET_DEVICE_SD) {
         int fsa_h = svcOpen("/dev/fsa", 0);
         FSA_Mount(fsa_h, "/dev/sdcard01", mountpath, 2, NULL, 0);
         svcClose(fsa_h);
 
-        strncpy(filepath, mountpath, sizeof(filepath) - 1);
-        strncat(filepath, "/", (sizeof(filepath) - 1) - strlen(filepath));
-        strncat(filepath, path, (sizeof(filepath) - 1) - strlen(filepath));
     }
 
     DEBUG_FUNCTION_LINE("Trying to load .rpx from custom path \"%s\"\n", filepath);
@@ -387,7 +384,8 @@ int DoReplacementByStruct(ipcmessage *msg, MCPLoadFileRequest *request, const RP
     LoadTargetDevice target = MOCHA_LOAD_TARGET_DEVICE_NONE;
     if (curReplacement->relativeTo == PATH_RELATIVE_TO_ENVIRONMENT) {
         char *environmentPath = &((char *) 0x0511FF00)[19];
-        snprintf(_rpxpath, sizeof(_rpxpath) - 1, "%s/%s", environmentPath, curReplacement->replacementPath); // Copy in environment path
+        if (!MCPJoinPath(_rpxpath, sizeof(_rpxpath), environmentPath, 0x100 - 19,
+                         curReplacement->replacementPath, sizeof(curReplacement->replacementPath))) return -1;
         target = MOCHA_LOAD_TARGET_DEVICE_SD;
     } else if (curReplacement->relativeTo == PATH_RELATIVE_TO_SD_ROOT) {
         strncpy(_rpxpath, curReplacement->replacementPath, sizeof(_rpxpath) - 1);
@@ -396,15 +394,15 @@ int DoReplacementByStruct(ipcmessage *msg, MCPLoadFileRequest *request, const RP
         strncpy(_rpxpath, curReplacement->replacementPath, sizeof(_rpxpath)-1);
         target=MOCHA_LOAD_TARGET_DEVICE_USB;
     } else if (curReplacement->relativeTo == PATH_RELATIVE_TO_MLC_ROOT) {
-        strncpy(_rpxpath, curReplacement->replacementPath, sizeof(_rpxpath) - 1);
-        snprintf(_rpxpath, sizeof(_rpxpath) - 1, "/vol/storage_mlc01/%s", curReplacement->replacementPath); // Copy in environment path
+        if (!MCPJoinPath(_rpxpath, sizeof(_rpxpath), "/vol/storage_mlc01", sizeof("/vol/storage_mlc01"),
+                         curReplacement->replacementPath, sizeof(curReplacement->replacementPath))) return -1;
         target = MOCHA_LOAD_TARGET_DEVICE_MLC;
     } else {
         DEBUG_FUNCTION_LINE("Unknown relativeTo: %d\n", curReplacement->relativeTo);
         return -1;
     }
 
-    // DEBUG_FUNCTION_LINE("Load custom file %s\n", _rpxpath);
+    if (gMenuLoadTrace) DEBUG_FUNCTION_LINE("Menu replacement path ready: %s\n", _rpxpath);
     return MCP_LoadCustomFile(target,
                               _rpxpath,
                               curReplacement->fileSize,
@@ -430,12 +428,16 @@ int MCPLoadFileReplacement(ipcmessage *msg, MCPLoadFileRequest *request) {
         // The start index for looking for a replacement will be read from "offset"
         // if the function returns != NULL, offset will be set to the next possible index/offset
         curReplacement = GetCurrentRPXReplacement(request, &offset);
+        if (gMenuLoadTrace) DEBUG_FUNCTION_LINE("Menu replacement selected offset=%lu found=%d\n",
+                                                (unsigned long) offset, curReplacement != NULL);
         if (curReplacement == NULL) {
             // DEBUG_FUNCTION_LINE("Couldn't find replacement for %s!\n", request->name);
             return -1;
         }
 
-        if ((res = DoReplacementByStruct(msg, request, curReplacement)) >= 0) {
+        res = DoReplacementByStruct(msg, request, curReplacement);
+        if (gMenuLoadTrace) DEBUG_FUNCTION_LINE("Menu replacement read result=%d\n", res);
+        if (res >= 0) {
             return res;
         }
     } while (curReplacement);
@@ -484,8 +486,10 @@ int _MCP_LoadFile_patch(ipcmessage *msg) {
     const bool traceMenu = gMenuLoadTrace != 0;
     if (traceMenu) {
         --gMenuLoadTrace;
-        DEBUG_FUNCTION_LINE("Menu load begin pid=%lu type=%lu name=%.64s pos=%lu len=%lu\n",
-                            (unsigned long) request->cafe_pid, (unsigned long) request->type, request->name,
+        /* IOSU's printf does not implement string precision (%.64s). Log the
+           numeric request fields without shifting its variadic arguments. */
+        DEBUG_FUNCTION_LINE("Menu load begin pid=%lu type=%lu pos=%lu len=%lu\n",
+                            (unsigned long) request->cafe_pid, (unsigned long) request->type,
                             (unsigned long) request->pos, (unsigned long) msg->ioctl.length_io);
     }
 

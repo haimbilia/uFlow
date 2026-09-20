@@ -2,8 +2,6 @@ OUTPUT_ARCH(arm)
 
 INCLUDE "imports.ld"
 
-PROVIDE(snprintf = 0x05059010);
-
 SECTIONS
 {
 	.text 0x05116000 : {

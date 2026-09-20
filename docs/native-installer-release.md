@@ -243,3 +243,18 @@ remain in place within that process. The Menu-only return hook is enabled again.
 Run tests/test_raw_hook_scope.py and tools/test-return-hook.ps1 with USB/SD tests.
 Retain startup/shutdown trace checkpoints until hardware confirms Menu entry and
 game return; host tests alone do not establish that this fixes the observed hang.
+
+The game-only hook candidate still hung on hardware. The user confirmed an older
+install on another SD exits normally on the same console. The current capture
+contains MCP Menu-load reset/lookup messages (some malformed console log bytes
+made ordinary text search miss them); it stops before the replacement path is
+reported. MCP now constructs environment/MLC/SD paths with bounded MCPJoinPath,
+without the fixed-address snprintf import. Missing optional Menu overrides must
+fall through to the installed Menu. Unterminated/oversized paths fail before I/O,
+not after silently truncating to a different file. Diagnostics no longer use the
+unsupported printf string-precision format. This is a hardware candidate, not a
+confirmed resolution. tools/test-mcp-replacements.ps1 runs the actual replacement
+loop and path/I/O routing with only firmware entrypoints/environment memory
+mocked, including Menu bootstrap, missing overrides, all eleven lookup records,
+MLC regional backups and malformed fields under ASan/UBSan. It is part of the USB
+raw suite. Rebuild Mocha and the native installer; fully reboot for the retest.

@@ -1,4 +1,5 @@
 $ErrorActionPreference='Stop'
+& "$PSScriptRoot/test-mcp-replacements.ps1"
 $project=Split-Path $PSScriptRoot -Parent
 python (Join-Path $project 'tests/test_raw_hook_scope.py')
 if($LASTEXITCODE -ne 0){throw 'Raw hook process-scope regression failed'}
