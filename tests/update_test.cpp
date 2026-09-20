@@ -1,4 +1,5 @@
 #include "update_transaction.hpp"
+#include "update_trust.hpp"
 #include <filesystem>
 #include <iostream>
 #include <cassert>
@@ -7,7 +8,8 @@ using namespace UFlowUpdate;
 std::string B64(const std::string &s){const char *c="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";std::string out;unsigned n=0,bits=0;for(unsigned char b:s){n=(n<<8)|b;bits+=8;while(bits>=6){bits-=6;out+=c[(n>>bits)&63];}}if(bits)out+=c[(n<<(6-bits))&63];while(out.size()%4)out+='=';return out;}
 std::string Envelope(const std::string &body,const uint8_t *sk){uint8_t sig[64];crypto_ed25519_sign(sig,sk,(const uint8_t*)body.data(),body.size());return "{\"manifest\":\""+B64(body)+"\",\"signature\":\""+B64(std::string((char*)sig,64))+"\"}";}
 template<class F>void Fails(F f){bool failed=false;try{f();}catch(const std::exception &){failed=true;}assert(failed);}
-int main(){
+int main(int argc,char **argv){
+    if(argc==3){auto r=Parse(ReadSmall(argv[1]),PublicKey,"stable");assert(Setup::Size(argv[2])==r.size&&Setup::HashFile(argv[2],{},"")==r.sha);std::cout<<"PASS: Python-signed release accepted by production C++ verifier: "<<r.version<<"\n";return 0;}
     uint8_t seed[32]={7},sk[64],pk[32];crypto_ed25519_key_pair(sk,pk,seed);
     const std::string binary="new verified uFlow test binary",hash=Setup::Hash(binary);
     std::string body="{\"schema\":1,\"release\":\"2026.09.20-test1\",\"sequence\":2026092001,\"channel\":\"stable\",\"base_url\":\""+std::string(BaseURL)+"\",\"changes\":\"Popup updates\\nRelease notes\",\"components\":[{\"component\":\"uflow\",\"destination\":\"wiiu/apps/uFlow/uFlow.wuhb\",\"size\":"+std::to_string(binary.size())+",\"sha256\":\""+hash+"\",\"url\":\"releases/2026.09.20-test1/files/"+hash+"\"}]}";
