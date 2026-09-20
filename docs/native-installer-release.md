@@ -167,3 +167,11 @@ before recovery/commit and stop on failure. Its font/code are self-contained.
 Test3 checks this ordering and failure gating on host; the SD bootstrap now has
 sequence 2026092002 and the server/installer have 2026092003. A host pass does not
 establish that console bundle handles have been released; hardware retest is required.
+
+The user confirmed test3 installs and reopens successfully on hardware. Test4
+(sequence 2026092004) adds scoped white outer glow to GlassFlow update, injection
+and welcome popup text. The glyph mask is cached and reused, with the crisp dark
+face rendered last; Pixel Deck and non-popup styling are unchanged. Run the host
+`updatechecks` preview (including Pixel Deck and scope-restoration checks), rebuild
+the app and native installer, and publish the signed software-only OTA. Do not
+replace the installed app on SD when the requested test is the OTA path itself.

@@ -1,0 +1,3 @@
+Added a soft white outer glow to GlassFlow popup text for readability over transparent backgrounds.
+Titles, version notes, messages and popup buttons keep their crisp dark lettering.
+Pixel Deck styling is unchanged.

@@ -86,6 +86,12 @@ struct SmoothTextEntry { SDL_Texture *texture = nullptr; int width = 0; int heig
 std::array<TTF_Font *, 6> gSmoothFonts{};
 std::unordered_map<std::string, SmoothTextEntry> gSmoothTextCache;
 bool gSmoothText = false;
+bool gPopupTextGlow = false;
+struct PopupTextGlowScope {
+    bool previous=gPopupTextGlow;
+    explicit PopupTextGlowScope(bool enabled){gPopupTextGlow=enabled;}
+    ~PopupTextGlowScope(){gPopupTextGlow=previous;}
+};
 GlassMaterial gGlassMaterial;
 SDL_Texture *gGlassBackdrop = nullptr; // never aliases the active render target
 bool gGlassOverVideo = false;
@@ -572,7 +578,7 @@ std::string Ellipsize(std::string text, std::size_t maximum) {
 
 void DrawText(SDL_Renderer *renderer, const std::string &text, int x, int y, int scale, Color color,
               bool centered = false) {
-    if(gGlassOverVideo && color.r<160 && color.g<175 && color.b<190)
+    if(!gPopupTextGlow && gGlassOverVideo && color.r<160 && color.g<175 && color.b<190)
         color={241,248,253,color.a};
     if (gSmoothText && scale >= 1 && scale <= 5 && gSmoothFonts[scale]) {
         const std::string key = std::to_string(scale) + ":" + std::to_string(color.r) + ":" +
@@ -588,7 +594,7 @@ void DrawText(SDL_Renderer *renderer, const std::string &text, int x, int y, int
                 }
             }
             SDL_Surface *surface = TTF_RenderUTF8_Blended(gSmoothFonts[scale], text.c_str(),
-                                                          SDL_Color{color.r,color.g,color.b,255});
+                                                          SDL_Color{255,255,255,255});
             SmoothTextEntry entry;
             if (surface) {
                 entry.width = surface->w; entry.height = surface->h;
@@ -603,7 +609,18 @@ void DrawText(SDL_Renderer *renderer, const std::string &text, int x, int y, int
             SDL_SetTextureAlphaMod(found->second.texture, color.a);
             if (centered) x -= found->second.width / 2;
             SDL_Rect destination = {x, y, found->second.width, found->second.height};
-            if(gGlassOverVideo) {
+            if(gPopupTextGlow) {
+                // Reuse the glyph alpha mask: soft white outer halo, then a
+                // crisp dark face. No extra textures or per-frame rasterization.
+                SDL_SetTextureColorMod(found->second.texture,255,255,255);
+                for(int radius=3;radius>=1;--radius){
+                    SDL_SetTextureAlphaMod(found->second.texture,static_cast<Uint8>(color.a*(radius==1?100:radius==2?48:20)/255));
+                    for(const auto &offset:std::array<SDL_Point,8>{{{-1,0},{1,0},{0,-1},{0,1},{-1,-1},{1,-1},{-1,1},{1,1}}}){
+                        SDL_Rect halo=destination;halo.x+=offset.x*radius;halo.y+=offset.y*radius;
+                        SDL_RenderCopy(renderer,found->second.texture,nullptr,&halo);
+                    }
+                }
+            }else if(gGlassOverVideo) {
                 SDL_Rect shadow=destination; shadow.x+=1; shadow.y+=2;
                 SDL_SetTextureColorMod(found->second.texture,0,0,0);
                 SDL_SetTextureAlphaMod(found->second.texture,static_cast<Uint8>(color.a*180/255));
@@ -611,6 +628,8 @@ void DrawText(SDL_Renderer *renderer, const std::string &text, int x, int y, int
                 SDL_SetTextureColorMod(found->second.texture,255,255,255);
                 SDL_SetTextureAlphaMod(found->second.texture,color.a);
             }
+            SDL_SetTextureColorMod(found->second.texture,color.r,color.g,color.b);
+            SDL_SetTextureAlphaMod(found->second.texture,color.a);
             SDL_RenderCopy(renderer, found->second.texture, nullptr, &destination);
         }
         return;
@@ -2020,7 +2039,10 @@ public:
         s.state=UFlowUpdate::State::Handoff;UpdateState(s);
         if(UpdateInput(0,true,true)!=0||!UpdateOpen())return false;
         s.state=UFlowUpdate::State::Success;UpdateState(s);
-        if(!Render(0,path+"-success.png")||UpdateInput(0,true,false)!=-1)return false;
+        if(!Render(0,path+"-success.png")||gPopupTextGlow)return false;
+        preferences_.skin=0;if(!Render(0,path+"-pixel-success.png")||gPopupTextGlow)return false;
+        preferences_.skin=1;
+        if(UpdateInput(0,true,false)!=-1)return false;
         s.state=UFlowUpdate::State::Error;s.message="Downloaded update failed verification";UpdateState(s);
         if(!Render(0,path+"-error.png")||UpdateInput(0,false,true)!=-1)return false;
         std::puts("PASS: update prompt, default No, accept, busy input, success and failure dialogs");return true;
@@ -4348,6 +4370,7 @@ private:
         }
     }
     void DrawInjectionDialog(Color accent) {
+        const PopupTextGlowScope glow(preferences_.skin==1);
         const bool glass=preferences_.skin==1;
         const Color ink=glass?Color{42,53,62,255}:Color{238,244,252,255};
         FillRoundedRect(renderer_,{300,185,680,350},24,glass?Color{239,246,248,235}:Color{20,31,49,245});
@@ -4390,6 +4413,7 @@ private:
     }
     void DrawUpdate(Color accent) {
         const bool glass=preferences_.skin==1;
+        const PopupTextGlowScope glow(glass);
         const Color ink=glass?Color{42,53,62,255}:Color{238,244,252,255};
         FillRoundedRect(renderer_,{290,160,700,390},24,glass?Color{239,246,248,245}:Color{20,31,49,250});
         if(glass)DrawGlassSurface(renderer_,{290,160,700,390},24,accent,100,true);
@@ -4422,6 +4446,7 @@ private:
     }
     void DrawWelcome(Color accent) {
         const bool glass=preferences_.skin==1;
+        const PopupTextGlowScope glow(glass);
         const Color ink=glass?Color{42,53,62,255}:Color{238,244,252,255};
         FillRoundedRect(renderer_,{240,220,800,280},24,glass?Color{239,246,248,242}:Color{20,31,49,245});
         if(glass)DrawGlassSurface(renderer_,{240,220,800,280},24,accent,100,true);

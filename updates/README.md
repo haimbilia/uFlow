@@ -94,3 +94,7 @@ sequence 2026092002 and the server offers 2026092003 (`2026.09.20-test3`). The
 native installer contains the latest app with the helper embedded. The first
 test release exposed the running-WUHB rename failure; it was not a successful
 hardware update. Do not deploy the original no-helper bootstrap again.
+
+The user confirmed test3 installs and reopens on hardware. Test4 (2026092004)
+adds white outer glow to GlassFlow popup text and is offered as a normal OTA
+from the working test3 installation; no SD bootstrap replacement is needed.
