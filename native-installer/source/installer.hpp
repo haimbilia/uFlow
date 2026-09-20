@@ -57,6 +57,7 @@ inline bool Safe(const std::string &path){
     return true;
 }
 inline bool Allowed(const std::string &p){
+    if(p=="wiiu/apps/WiiFlow.wuhb")return true;
     for(const char *prefix:{"wiiu/apps/uFlow/","wiiu/apps/noods/","wiiu/vc-bases/","apps/wiiflow/","apps/usbloader_gx/","apps/nintendont/","apps/d2x-cios-installer-vwii/","apps/wiiflow_channel_installer/","wiiflow/"})if(p.rfind(prefix,0)==0)return true;
     return p=="wiiu/apps/compat_installer.wuhb"||p=="wiiu/environments/aroma/modules/RPXLoadingModule.wms"||
         p=="wiiu/environments/aroma/modules/uFlowRawKernel.wms"||p=="wiiu/environments/aroma/modules/setup/00_mocha.rpx"||p=="wiiu/environments/aroma/modules/setup/99_autoboot.rpx"||

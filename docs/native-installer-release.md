@@ -188,3 +188,13 @@ enumerated entries, without listing inaccessible drives or mounting anything.
 Library and default-media pickers share this behavior. browser_path tests cover
 unlistable parents, absent volumes and deduplication; browserchecks enters vol
 from the real listing instead of injecting a synthetic root fixture.
+
+Wii/GameCube selections also install wiiu/apps/WiiFlow.wuhb (mask 6).
+tools/build-wiiflow-forwarder.ps1 builds Boot2vWii from tooling/sources/Boot2vWii
+(upstream https://github.com/WiiDatabase/Boot2vWii, source commit
+5c4f712dd1bfc66c833d27d9f1af64117feba936, Unlicense). It targets DWFA
+0001000144574641 with BOTH screens, no forced resolution, and isolated objects.
+This Wii U Menu shortcut needs the existing vWii DWFA channel and SD WiiFlow;
+it skips Wii Menu/Wiimote prompts but does not emulate GamePad controls. Keep
+normal vWii mode for the USB diagnostic, not Wii VC injection mode. No NAND
+installation is performed when deploying this WUHB to an already configured console.

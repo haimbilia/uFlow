@@ -15,6 +15,7 @@ RAW = 1017  # Wii U and DS/NES/SNES/GBA/N64/PCE/MSX VC selections.
 REGION = "wiiu/environments/aroma/plugins/regionfree.wps"
 WIIFLOW_BINS = ("app_booter.bin", "ext_loader.bin", "ext_booter.bin")
 WIIFLOW_BIN_PATHS = {f"apps/wiiflow/bins/{name}" for name in WIIFLOW_BINS}
+WIIFLOW_FORWARDER = "wiiu/apps/WiiFlow.wuhb"
 RETURN_RUNTIME = {
     "wiiu/environments/aroma/modules/RPXLoadingModule.wms",
     "wiiu/environments/aroma/modules/uFlowRawKernel.wms",
@@ -47,6 +48,7 @@ def inputs(project, sources):
         REGION: sources / "region_free_plugin/regionfree.wps",
         "wiiu/environments/aroma/modules/setup/99_autoboot.rpx": sources / "AutobootModule/99_autoboot.rpx",
         "apps/wiiflow/boot.dol": sources / "wiiflow-lite/out/boot.dol",
+        WIIFLOW_FORWARDER: sources / "Boot2vWii/uFlow-WiiFlow.wuhb",
         "apps/usbloader_gx/boot.dol": sources / "usbloadergx/boot.dol",
         "apps/nintendont/boot.dol": sources / "nintendont/loader/loader.dol",
         "wiiu/apps/noods/noods.wuhb": project / "emulators/NooDS/noods.wuhb",
@@ -77,9 +79,9 @@ def synchronize(project, sources, sync=False):
         if path == REGION and hashed != REGION_PATCH_HASH:
             raise ValueError("Region Free input lacks the uFlow raw-metadata fix")
         old = entries.get(path)
-        if old is None and path != REGION and path not in cover_paths() and path not in WIIFLOW_BIN_PATHS:
+        if old is None and path not in (REGION, WIIFLOW_FORWARDER) and path not in cover_paths() and path not in WIIFLOW_BIN_PATHS:
             raise ValueError(f"Required component missing from manifest: {path}")
-        if path in WIIFLOW_BIN_PATHS:
+        if path in WIIFLOW_BIN_PATHS or path == WIIFLOW_FORWARDER:
             mask, mode = 6, "r"  # Both Wii and GameCube need WiiFlow's external booters.
         elif path in cover_paths():
             mask, mode = cover_paths()[path], "k"  # Never replace a user's sleeve.

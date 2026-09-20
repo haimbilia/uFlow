@@ -132,6 +132,14 @@ class PayloadSyncTest(unittest.TestCase):
         for path in sync.cover_paths():
             self.assertIn(path, self.manifest.read_text())
 
+    def test_wiiflow_forwarder_added_for_wii_and_gamecube(self):
+        self.manifest.write_text(sync.ENTRY.sub(lambda m: "" if m[1] == sync.WIIFLOW_FORWARDER else m[0], self.manifest.read_text()))
+        self.run_sync(True)
+        self.run_sync()
+        entry = next(m for m in sync.ENTRY.finditer(self.manifest.read_text()) if m[1] == sync.WIIFLOW_FORWARDER)
+        self.assertEqual((entry[4], entry[5]), ("6", "r"))
+        self.assertEqual((self.payload / sync.WIIFLOW_FORWARDER).read_bytes(), sync.inputs(self.project, self.sources)[sync.WIIFLOW_FORWARDER].read_bytes())
+
 
 class DefaultCoverGeometryTest(unittest.TestCase):
     def test_real_default_panels_fit_system_cases(self):

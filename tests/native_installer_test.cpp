@@ -17,6 +17,9 @@ int main(int argc,char **argv){
     Aroma(sd);fs::create_directories(bundle);std::vector<FileDef> defs;
     auto asset=[&](const std::string &p,uint32_t mask,char mode){Put(bundle+"/payload/"+p,"payload "+p);auto text="payload "+p;defs.push_back({p,Hash(text),text.size(),mask,mode});};
     asset("wiiu/apps/uFlow/uFlow.wuhb",Core,'r');
+    const std::string forwarder="wiiu/apps/WiiFlow.wuhb";
+    asset(forwarder,6u,'r');
+    assert(Allowed(forwarder)&&!Allowed("wiiu/apps/Other.wuhb"));
     asset("wiiu/environments/aroma/modules/RPXLoadingModule.wms",1u|(1u<<4),'r');
     const std::string regionPlugin="wiiu/environments/aroma/plugins/regionfree.wps";
     const std::string regionConfig="wiiu/environments/aroma/plugins/config/region_free_plugin.json";
@@ -74,6 +77,7 @@ int main(int argc,char **argv){
         assert(contains(nesCover)==(bit==4));
         assert(contains(msxCover)==(bit==9));
         assert(contains(pceCover)==(bit==8));
+        assert(contains(forwarder)==(bit==1||bit==2));
     }
     std::vector<std::string> dirs;auto config=Configs(1u<<10,dirs);assert(config[0].second.find("\tnoods\t")!=std::string::npos&&config[0].second.find("ds-vc")==std::string::npos);
     auto nesConfig=Configs(1u<<4,dirs);assert(nesConfig[0].second.find("\t.nes,.unf,.unif,.zip\t")!=std::string::npos);
