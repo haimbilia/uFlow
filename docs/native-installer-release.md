@@ -151,3 +151,12 @@ updates the app only; Aroma/backends still require the installer workflow.
 The initial test SD uses sequence 2026092000 so it can accept server release
 2026092001; the installer contains the latter. See `updates/README.md` for the
 recovery entry and remaining hardware checks. Never ship the private signing key.
+
+Updater correction: active WUHB files cannot be renamed while Aroma's content
+mount holds them open. `app/Makefile` now builds `update-helper` first and embeds
+its bare RPX. The app verifies/stages a signed request without renaming itself;
+the helper installs after the app exits and reopens uFlow. Keep the helper build
+dependency and handoff tests when changing packaging. The corrected test pair is
+helper-enabled sequence 2026092001 on SD and release 2026092002 on the server;
+the refreshed native installer contains 2026092002. Both the SD and installer
+must include the embedded helper. Do not ship the previous no-helper bootstrap.

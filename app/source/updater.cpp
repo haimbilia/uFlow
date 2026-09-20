@@ -62,7 +62,11 @@ struct Client::Impl {
         worker=std::thread([this]{try{
             Transaction tx(sd,PublicKey,channel);tx.Recover();Fetch(release.url,release.size,tx.stage);
             Setup::Need(!cancel,"Update cancelled");Set(State::Installing,"Verifying and installing...");
-            tx.Commit(envelope);Set(State::Success,"Update installed. Restart uFlow to use it.");
+            const std::string source="fs:/vol/content/updates/install-helper.rpx";
+            Setup::Need(Setup::Size(source)>0&&Setup::Size(source)<8*1024*1024,"Update helper is missing");
+            {std::ifstream input(source,std::ios::binary);std::string bytes((std::istreambuf_iterator<char>(input)),{});Setup::Need(input.eof()||bool(input),"Cannot read update helper");Durable(HelperPath,bytes);}
+            Setup::Need(tx.Hash(source)==tx.Hash(HelperPath),"Update helper failed verification");
+            tx.Prepare(envelope);Set(State::Handoff,"Opening update installer...");
         }catch(const std::exception &e){Set(State::Error,e.what());}});
     }
 };
@@ -76,4 +80,5 @@ void Client::Dismiss(){auto s=Poll().state;
     if(s==State::Available||s==State::Success||s==State::Error)impl->Set(State::Idle);
 }
 void Client::Stop(){impl->cancel=true;impl->Join();}
+void Client::HandoffFailed(const std::string &message){impl->Join();impl->Set(State::Error,message);}
 }

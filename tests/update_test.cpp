@@ -31,6 +31,17 @@ int main(int argc,char **argv){
     auto sd=root+"/corrupt";fs::create_directories(sd);Transaction tx(sd,pk,"stable");
     Durable(tx.target,"original app");Durable(tx.stage,"corrupt");Fails([&]{tx.Commit(envelope);});
     assert(ReadSmall(tx.target)=="original app"&&!fs::exists(tx.journal));
+    // The foreground app prepares a handoff without renaming its open WUHB.
+    auto handoff=root+"/handoff";fs::create_directories(handoff);Transaction ht(handoff,pk,"stable");
+    Durable(ht.target,"original app");Durable(ht.stage,binary);ht.Prepare(envelope);
+    assert(ReadSmall(ht.target)=="original app"&&!fs::exists(ht.journal)&&!fs::exists(ht.recovery));
+    // A separate process consumes only the signed request after the app exits.
+    ht.InstallPrepared();assert(ht.Hash(ht.target)==hash&&!fs::exists(ht.receipt+".ready"));
+    assert(ht.Recover()&&!fs::exists(ht.recovery));
+    Fails([&]{ht.InstallPrepared();}); // Never replays a consumed request.
+    Durable(ht.receipt+".ready",altered);Fails([&]{ht.InstallPrepared();});
+    assert(ht.Hash(ht.target)==hash); // Tampered handoff cannot replace the app.
+    try{ht.Move(handoff+"/missing",handoff+"/other");assert(false);}catch(const std::exception &e){assert(std::string(e.what()).find("errno ")!=std::string::npos);}
     fs::remove_all(root);
     std::cout<<"PASS: signatures, tampering, channel/path restrictions, JSON depth, corrupted download, commit and recovery at all four checkpoints, settings preserved\n";
 }

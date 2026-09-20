@@ -52,9 +52,11 @@ export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 export LD := $(CXX)
 
-.PHONY: $(BUILD) clean all
+.PHONY: $(BUILD) clean all update-helper
 all: $(BUILD)
-$(BUILD):
+update-helper:
+	@$(MAKE) -C ../update-helper
+$(BUILD): update-helper
 	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 clean:
@@ -64,7 +66,7 @@ else
 .PHONY: all
 DEPENDS := $(OFILES:.o=.d)
 all: $(OUTPUT).wuhb
-$(OUTPUT).wuhb: $(OUTPUT).rpx $(wildcard ../content/skins/glass/background.mp4) ../content/updates/cacert.pem
+$(OUTPUT).wuhb: $(OUTPUT).rpx $(wildcard ../content/skins/glass/background.mp4) ../content/updates/cacert.pem ../content/updates/install-helper.rpx
 $(OUTPUT).rpx: $(OUTPUT).elf
 $(OUTPUT).elf: $(OFILES)
 $(OFILES_SOURCES): $(HFILES)

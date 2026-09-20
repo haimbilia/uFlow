@@ -26,9 +26,21 @@ struct Transaction {
         receipt=Setup::Path(root,"wiiu/apps/uFlow/cache/update/installed");
     }
     std::string Hash(const std::string &path){return Setup::HashFile(path,{},"");}
-    void Move(const std::string &a,const std::string &b){Setup::Need(std::rename(a.c_str(),b.c_str())==0,"Cannot replace uFlow file");}
+    void Move(const std::string &a,const std::string &b){if(std::rename(a.c_str(),b.c_str())!=0){const int code=errno;throw std::runtime_error("Cannot move "+a+" -> "+b+" (errno "+std::to_string(code)+": "+std::strerror(code)+")");}}
     void Remove(const std::string &p){Setup::Need(std::remove(p.c_str())==0||errno==ENOENT,"Cannot finish update cleanup");}
     void Record(const std::string &envelope){Durable(receipt+".tmp",envelope);Remove(receipt);Move(receipt+".tmp",receipt);}
+    void Prepare(const std::string &envelope){
+        const auto r=Parse(envelope,key,channel);
+        Setup::Need(Setup::Size(stage)==r.size&&Hash(stage)==r.sha,"Downloaded update failed verification");
+        // No running-app rename here. A separate, bare RPX consumes this request.
+        Durable(receipt+".ready",envelope);
+    }
+    void InstallPrepared(const std::function<void(int)> &checkpoint={}){
+        const auto body=ReadSmall(receipt+".ready");const auto r=Parse(body,key,channel);
+        Recover();
+        if(!Setup::File(target)||Hash(target)!=r.sha)Commit(body,checkpoint);
+        Remove(receipt+".ready");
+    }
     bool Recover(){
         if(!Setup::File(journal))return false;
         const auto saved=ReadSmall(journal);Setup::Need(saved.size()>65&&saved[64]=='\n',"Invalid update journal");

@@ -2017,6 +2017,8 @@ public:
         UpdateState(s);if(UpdateInput(1,true,false)!=1)return false;
         s.state=UFlowUpdate::State::Downloading;s.done=40;s.total=100;s.message="Downloading update...";UpdateState(s);
         if(UpdateInput(0,true,true)!=0||!UpdateOpen()||!Render(0,path+"-progress.png"))return false;
+        s.state=UFlowUpdate::State::Handoff;UpdateState(s);
+        if(UpdateInput(0,true,true)!=0||!UpdateOpen())return false;
         s.state=UFlowUpdate::State::Success;UpdateState(s);
         if(!Render(0,path+"-success.png")||UpdateInput(0,true,false)!=-1)return false;
         s.state=UFlowUpdate::State::Error;s.message="Downloaded update failed verification";UpdateState(s);
@@ -4411,7 +4413,7 @@ private:
                 while(words>>word){if(!line.empty()&&line.size()+word.size()+1>64){updateLines_.push_back(line);line.clear();}if(!line.empty())line+=' ';line+=word;}
                 if(!line.empty())updateLines_.push_back(line);}
             for(int i=0;i<6&&i+updateScroll_<int(updateLines_.size());++i)DrawFittedText(renderer_,updateLines_[i+updateScroll_],330,280+i*25,620,1,ink);
-            if(s.state==UFlowUpdate::State::Success)DrawText(renderer_,"Restart uFlow to use the new version.",640,447,1,ink,true);
+            if(s.state==UFlowUpdate::State::Success)DrawText(renderer_,"Update installed successfully.",640,447,1,ink,true);
             if(updateLines_.size()>6)DrawText(renderer_,"UP / DOWN SCROLL",640,428,1,ink,true);
         }
         if(ask)for(int i=0;i<2;++i){FillRoundedRect(renderer_,{380+i*280,475,240,52},14,{accent.r,accent.g,accent.b,Uint8(updateYes_==(i==1)?140:45)});
@@ -4724,6 +4726,14 @@ int main(int, char **) {
         wiiRemote.Merge(input,ticks);
         if(!updateChecked&&mounted&&ticks>5000){updater.Check();updateChecked=true;}
         const auto updateStatus=updater.Poll();dashboard.UpdateState(updateStatus);
+        if(updateStatus.state==UFlowUpdate::State::Handoff){
+            updater.Stop();dashboard.StopMusic();dashboard.Render(delta);
+            auto result=RPXLoader_PrepareLaunchFromSD(UFlowUpdate::HelperRelativePath);
+            if(result==RPX_LOADER_RESULT_SUCCESS)result=RPXLoader_LaunchPreparedHomebrew();
+            if(result==RPX_LOADER_RESULT_SUCCESS){launchRequested=true;continue;}
+            updater.HandoffFailed(std::string("Cannot start update helper: ")+RPXLoader_GetStatusStr(result));
+            continue;
+        }
         if(updateHomeBlocked&&!UFlowUpdate::Busy(updateStatus.state)){OSEnableHomeButtonMenu(true);updateHomeBlocked=false;}
         if(dashboard.UpdateOpen()){
             int x=-1,y=-1;VPADTouchData point{};

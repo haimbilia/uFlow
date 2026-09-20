@@ -8,7 +8,7 @@ The client checks the stable channel once on startup, without blocking browsing.
 When a newer signed release exists, it waits until other dialogs close and offers
 Yes/No (No is selected initially). Yes shows download/install progress, followed
 by version changes. No dismisses the offer until the next startup. Offline checks
-are silent. Restart uFlow after installation to run the new version.
+are silent. A bundled helper installs after uFlow closes, then reopens the new app.
 
 Version 1 updates **only** `wiiu/apps/uFlow/uFlow.wuhb`. Module/backend updates
 remain installer-managed; the client rejects multi-component manifests. It never
@@ -71,7 +71,9 @@ The host renderer's `updatechecks` covers the actual dialogs and input handling.
 These are host tests, not proof of successful Wii U networking or power-cut recovery.
 
 The update is downloaded under `wiiu/apps/uFlow/cache/update`, verified, then
-replaced using a journal. The previous executable temporarily remains as
+handed to a separate bare-RPX helper. Aroma holds the active WUHB open; replacing
+it inside the original process fails. The helper starts after that process exits
+and replaces the app using a journal. The previous executable temporarily remains as
 `wiiu/apps/uFlow-Recovery.wuhb`. If power is lost between file renames and uFlow
 is missing, launch this recovery entry from the Wii U Menu. Startup reconciles
 the transaction before checking for another update. Do not delete this entry or
@@ -85,6 +87,8 @@ using `tools/publish-update-release.py <release-directory> --identity <ssh-key>`
 it verifies upload hashes and promotes the channel manifest last. Private signing
 keys never leave the PC. Do not publish an older sequence to an existing channel.
 
-For the first console test, the SD receives bootstrap sequence 2026092000 and
-the server offers 2026092001, release `2026.09.20-test1`. The native installer
-contains 2026092001, so fresh installs already have the updater and latest app.
+For the corrected console test, the SD receives a helper-enabled bootstrap at
+sequence 2026092001 and the server offers 2026092002 (`2026.09.20-test2`). The
+native installer contains the latest app with the helper embedded. The first
+test release exposed the running-WUHB rename failure; it was not a successful
+hardware update. Do not deploy the original no-helper bootstrap again.

@@ -1,0 +1,4 @@
+Fixed updates failing with "Cannot replace uFlow file".
+Installation now runs in a separate helper after uFlow releases its bundled content.
+uFlow reopens automatically after installation and shows these version changes.
+Improved file-operation errors with the exact paths and error number.
