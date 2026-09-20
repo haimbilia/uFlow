@@ -258,3 +258,10 @@ loop and path/I/O routing with only firmware entrypoints/environment memory
 mocked, including Menu bootstrap, missing overrides, all eleven lookup records,
 MLC regional backups and malformed fields under ASan/UBSan. It is part of the USB
 raw suite. Rebuild Mocha and the native installer; fully reboot for the retest.
+
+Hardware confirmation (2026-09-20): after deploying the bounded-path payload
+(SHA-256 816804F55F9C78E1E4B627546C9EEE23C120E95B21445A7B29DC28C4BAA81CAC)
+and fully rebooting, the user confirmed both USB-game exit and explicit uFlow
+exit work. This resolves the tested Menu-exit regression. The refreshed native
+installer already embeds this exact payload and passed the actual-bundle install
+and idempotent-rerun tests; do not revert it to the earlier formatter-based build.
