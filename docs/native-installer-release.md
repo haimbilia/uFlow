@@ -207,3 +207,21 @@ All filesystem calls are serialized; aligned sector buffers handle arbitrary
 caller alignment. usb-storage.log on SD records mount/read failures. Use
 tools/test-usb-storage.sh and browserchecks; test physical USB browsing before
 claiming support. The embedded code follows the app into fresh native installs.
+
+Direct raw USB test8 adds a module-owned read-only FatFs device (`ufusb:/`) for
+retail content/code/meta redirection. Close its process-owned FSA handles on
+APPLICATION_ENDS, then reopen and check the original disk on the target process.
+The app's separate `usb1:/` browsing device must not own runtime callbacks.
+Before launching, the module passes bounded RPX/RPL FAT allocation metadata to
+MCP (64 code files, 4096 extents maximum). MCP reads executable bytes directly
+from those USB sectors, including fragmented files; no game data is staged on SD.
+Read-only maps are scoped to the selected raw launch and cleared on cancellation,
+profile replacement, or the next title. MBR/boot fingerprints detect swapped disks.
+Game saves continue in the existing SD raw-saves namespace.
+Run tools/test-usb-raw.ps1, tools/build-usb-raw.ps1, rebuild the app, then the native
+installer and actual-bundle host tests. The module build needs sibling /app and
+/payload mounts; the script provides them. Deploy app, RPXLoadingModule.wms and
+setup/00_mocha.rpx together and fully reboot into Aroma. Host tests do not prove
+retail USB launch compatibility; test executable startup, content reads, HOME,
+return-to-uFlow, and an SD raw launch on hardware. Do not publish an app-only OTA
+as a complete direct-USB upgrade.

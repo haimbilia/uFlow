@@ -1,4 +1,7 @@
 #include "RPXLoading.h"
+#include "RawSourcePath.h"
+#include "../../app/source/usb_storage.hpp"
+#include "../../payload/source/common/raw_usb_map.h"
 #include "RawTitleKernel.h"
 #include "RawTitleProfile.h"
 #include "RawReadRange.h"
@@ -413,7 +416,8 @@ RPXLoaderStatus RL_PrepareLaunchFromSD(const char *bundle_path) {
     MochaRPXLoadInfo request;
     memset(&request, 0, sizeof(request));
 
-    request.target     = LOAD_RPX_TARGET_SD_CARD; // LOAD_FILE_TARGET_SD_CARD
+    const bool usb=RawSourceUSB(bundle_path);
+    request.target     = usb?static_cast<LoadRPXTargetEnum>(UFLOW_USB_TARGET):LOAD_RPX_TARGET_SD_CARD;
     request.filesize   = 0;                       // unknown filesize
     request.fileoffset = 0;                       //
 
@@ -422,7 +426,7 @@ RPXLoaderStatus RL_PrepareLaunchFromSD(const char *bundle_path) {
     bool metaLoaded = false;
 
     std::string completePath       = std::string("/vol/external01/") + bundle_path;
-    std::string completeNewLibPath = std::string("fs:/vol/external01/") + bundle_path;
+    std::string completeNewLibPath = RawSourcePath(bundle_path);
 
     struct stat st {};
     if (stat(completeNewLibPath.c_str(), &st) < 0) {
@@ -431,7 +435,7 @@ RPXLoaderStatus RL_PrepareLaunchFromSD(const char *bundle_path) {
     }
 
     bool isBundle = false;
-    auto rpxInfo  = WUHBUtils_GetRPXInfo(completePath.c_str(), BundleSource_FileDescriptor_CafeOS, &fileInfo);
+    auto rpxInfo  = usb?WUHB_UTILS_RESULT_UNKNOWN_ERROR:WUHBUtils_GetRPXInfo(completePath.c_str(), BundleSource_FileDescriptor_CafeOS, &fileInfo);
     if (rpxInfo == WUHB_UTILS_RESULT_SUCCESS) {
         isBundle           = true;
         request.filesize   = ((uint32_t *) &fileInfo.length)[1];
@@ -490,7 +494,7 @@ RPXLoaderStatus RL_PrepareLaunchFromSD(const char *bundle_path) {
     }
 
     request.path[0] = '\0';
-    strncat(request.path, bundle_path, sizeof(request.path) - 1);
+    strncat(request.path, usb?bundle_path+6:bundle_path, sizeof(request.path) - 1);
 
     OSMemoryBarrier();
     bool success = false;
@@ -540,6 +544,7 @@ RPXLoaderStatus RL_PrepareLaunchFromSD(const char *bundle_path) {
 }
 
 static bool IsSafeRelativePath(const char *path) {
+    if(RawSourceUSB(path))return RawUsbSafePath(path+6);
     if (path == nullptr || path[0] == '\0' || path[0] == '/' || path[0] == '\\' || strchr(path, ':') != nullptr) {
         return false;
     }
@@ -549,7 +554,7 @@ static bool IsSafeRelativePath(const char *path) {
 }
 
 static bool PathHasExpectedType(const char *relativePath, bool directory) {
-    std::string fullPath = std::string("fs:/vol/external01/") + relativePath;
+    std::string fullPath = RawSourcePath(relativePath);
     struct stat info {};
     if (stat(fullPath.c_str(), &info) != 0) {
         return false;
@@ -610,7 +615,7 @@ static bool SendRawTitleProfile(const char *codePath, const char *rpxPath, bool 
     profile.enabled        = enabled ? 1 : 0;
 
     if (enabled) {
-        const std::string absoluteCode = std::string("fs:/vol/external01/") + codePath;
+        const std::string absoluteCode = RawSourcePath(codePath);
         const std::string appXml       = ReadTextFile(absoluteCode + "/app.xml");
         const std::string cosXml       = ReadTextFile(absoluteCode + "/cos.xml");
         if (appXml.empty() || cosXml.empty()) {
@@ -726,11 +731,14 @@ RPXLoaderStatus RL_PrepareLaunchFromLooseDirectory(const char *rpxPath,
     sRawFrameReports = sRawMaxSwapUs = 0;
     if (!IsSafeRelativePath(rpxPath) || !IsSafeRelativePath(contentPath) ||
         !IsSafeRelativePath(codePath) || !IsSafeRelativePath(savePath) ||
+        strlen(rpxPath)>=256 ||
+        RawSourceUSB(rpxPath)!=RawSourceUSB(contentPath) || RawSourceUSB(rpxPath)!=RawSourceUSB(codePath) || RawSourceUSB(savePath) ||
         strlen(contentPath) >= sizeof(gLooseTitleInfo.contentPath) ||
         strlen(codePath) >= sizeof(gLooseTitleInfo.codePath) ||
         strlen(savePath) >= sizeof(gLooseTitleInfo.savePath)) {
         return RPX_LOADER_RESULT_INVALID_ARGUMENT;
     }
+    if(RawSourceUSB(rpxPath)&&!USBStorage::Mount())return RPX_LOADER_RESULT_NOT_FOUND;
     if (!PathHasExpectedType(rpxPath, false) || !PathHasExpectedType(contentPath, true) ||
         !PathHasExpectedType(codePath, true)) {
         return RPX_LOADER_RESULT_NOT_FOUND;
@@ -738,6 +746,11 @@ RPXLoaderStatus RL_PrepareLaunchFromLooseDirectory(const char *rpxPath,
 
     if (!SendRawTitleProfile(codePath, rpxPath, true)) {
         DEBUG_FUNCTION_LINE_ERR("Custom Mocha raw-title support is unavailable or the XML profile is invalid");
+        return RPX_LOADER_RESULT_UNSUPPORTED_COMMAND;
+    }
+
+    if(RawSourceUSB(rpxPath)&&!USBStorage::PrepareCode(codePath)) {
+        RL_ClearRawTitleProfile();USBStorage::Unmount();
         return RPX_LOADER_RESULT_UNSUPPORTED_COMMAND;
     }
 

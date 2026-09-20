@@ -26,6 +26,7 @@
 #include "logger.h"
 #include "svc.h"
 #include "syslogserver.h"
+#include "raw_usb.h"
 #include <inttypes.h>
 
 #include <mocha/commands.h>
@@ -38,6 +39,7 @@ typedef enum {
     MOCHA_LOAD_TARGET_DEVICE_NONE = 0,
     MOCHA_LOAD_TARGET_DEVICE_SD   = 1,
     MOCHA_LOAD_TARGET_DEVICE_MLC  = 2,
+    MOCHA_LOAD_TARGET_DEVICE_USB  = 3,
 } LoadTargetDevice;
 
 static int
@@ -80,6 +82,7 @@ typedef enum {
     PATH_RELATIVE_TO_ENVIRONMENT = 1,
     PATH_RELATIVE_TO_SD_ROOT     = 2,
     PATH_RELATIVE_TO_MLC_ROOT    = 3,
+    PATH_RELATIVE_TO_USB_ROOT    = 4,
 } PathRelativeTo;
 
 
@@ -101,6 +104,7 @@ static bool gRawTitleProfileActive = false;
    Keep the fixed IOSU BSS allocation within its existing bounds. */
 static char gRawTitleExecutable[65];
 static RawRplScope gRawRplScope;
+static bool gRawUsbScope;
 
 
 // Dynamic replacements have priority over default replacements
@@ -169,6 +173,12 @@ MCP_LoadCustomFile(LoadTargetDevice target, char *path, uint32_t filesize, uint3
                    uint32_t pos, bool isRPX) {
     if (path == NULL || (filesize > 0 && (pos > filesize))) {
         return 0;
+    }
+    if(target==MOCHA_LOAD_TARGET_DEVICE_USB) {
+        if(fileoffset)return -1; /* USB supports loose executables, not bundles. */
+        int result=RawUsbRead(path,buffer_out,buffer_len,pos);
+        if(isRPX && (result<0 || result<0x400000))RemoveByLifetime(REPLACEMENT_LIFETIME_ONE_RPX_LAUNCH);
+        return result;
     }
 
     char filepath[256];
@@ -381,6 +391,9 @@ int DoReplacementByStruct(ipcmessage *msg, MCPLoadFileRequest *request, const RP
     } else if (curReplacement->relativeTo == PATH_RELATIVE_TO_SD_ROOT) {
         strncpy(_rpxpath, curReplacement->replacementPath, sizeof(_rpxpath) - 1);
         target = MOCHA_LOAD_TARGET_DEVICE_SD;
+    } else if (curReplacement->relativeTo == PATH_RELATIVE_TO_USB_ROOT) {
+        strncpy(_rpxpath, curReplacement->replacementPath, sizeof(_rpxpath)-1);
+        target=MOCHA_LOAD_TARGET_DEVICE_USB;
     } else if (curReplacement->relativeTo == PATH_RELATIVE_TO_MLC_ROOT) {
         strncpy(_rpxpath, curReplacement->replacementPath, sizeof(_rpxpath) - 1);
         snprintf(_rpxpath, sizeof(_rpxpath) - 1, "/vol/storage_mlc01/%s", curReplacement->replacementPath); // Copy in environment path
@@ -477,6 +490,7 @@ int _MCP_LoadFile_patch(ipcmessage *msg) {
     // Check if a fresh RPX is loaded
     if (request->pos == 0 && requestIsRPX) {
         RawRplBeginExecutable(&gRawRplScope, request->name);
+        if(!gRawRplScope.prepared){RawUsbClear();gRawUsbScope=false;}
         // DEBUG_FUNCTION_LINE("fresh RPX load\n");
         // Remove any old replacements that should only survive one RPX replacement
         RemoveByLifetime(REPLACEMENT_LIFETIME_DURING_RPX_REPLACEMENT);
@@ -500,7 +514,7 @@ int _MCP_LoadFile_patch(ipcmessage *msg) {
     char libraryPath[256];
     if (RawRplPath(&gRawRplScope, request->name, request->cafe_pid,
                    request->type, libraryPath)) {
-        res = MCP_LoadCustomFile(MOCHA_LOAD_TARGET_DEVICE_SD, libraryPath, 0, 0,
+        res = MCP_LoadCustomFile(gRawUsbScope?MOCHA_LOAD_TARGET_DEVICE_USB:MOCHA_LOAD_TARGET_DEVICE_SD, libraryPath, 0, 0,
                                 msg->ioctl.buffer_io, msg->ioctl.length_io,
                                 request->pos, false);
         if (res >= 0) return res;
@@ -629,6 +643,14 @@ int _MCP_ioctl100_patch(ipcmessage *msg) {
         int command = msg->ioctl.buffer_in[0];
 
         switch (command) {
+            case UFLOW_USB_MAP_COMMAND: {
+                if(!gRawTitleProfileActive || msg->ioctl.length_in!=sizeof(RawUsbMap)+4 ||
+                   !msg->ioctl.buffer_io || msg->ioctl.length_io<4)return 29;
+                int result=RawUsbInstall((uint8_t*)msg->ioctl.buffer_in+4,sizeof(RawUsbMap));
+                if(result<0)return 29;
+                msg->ioctl.buffer_io[0]=UFLOW_USB_MAP_MAGIC;
+                return 0;
+            }
             case IPC_CUSTOM_SET_RAW_TITLE_PROFILE: {
                 if (msg->ioctl.length_in < sizeof(RawTitleProfile) + sizeof(uint32_t)) {
                     return 29;
@@ -641,6 +663,7 @@ int _MCP_ioctl100_patch(ipcmessage *msg) {
                 memcpy(gRawTitleExecutable, profile->argstr, sizeof(gRawTitleExecutable) - 1);
                 gRawTitleExecutable[sizeof(gRawTitleExecutable) - 1] = '\0';
                 RawRplReset(&gRawRplScope);
+                RawUsbClear();gRawUsbScope=false;
                 gRawTitleProfileActive = profile->enabled != 0;
                 if (msg->ioctl.buffer_io && msg->ioctl.length_io >= sizeof(uint32_t)) {
                     msg->ioctl.buffer_io[0] = RAW_TITLE_PROFILE_MAGIC;
@@ -657,15 +680,21 @@ int _MCP_ioctl100_patch(ipcmessage *msg) {
                 if (msg->ioctl.length_in >= sizeof(MochaRPXLoadInfo) + 4) {
                     int target = msg->ioctl.buffer_in[0x04 / 0x04];
                     if (target == LOAD_RPX_TARGET_EXTRA_REVERT_PREPARE) {
+                        RawUsbClear();gRawUsbScope=false;
                         RemoveByLifetime(REPLACEMENT_LIFETIME_ONE_RPX_LAUNCH);
                         return 0;
                     }
-                    if (target != LOAD_RPX_TARGET_SD_CARD) {
+                    if (target != LOAD_RPX_TARGET_SD_CARD && target != UFLOW_USB_TARGET) {
                         return 29;
                     }
                     uint32_t filesize   = msg->ioctl.buffer_in[0x08 / 0x04];
                     uint32_t fileoffset = msg->ioctl.buffer_in[0x0C / 0x04];
                     char *str_ptr       = (char *) &msg->ioctl.buffer_in[0x10 / 0x04];
+                    const bool usb=target==UFLOW_USB_TARGET;
+                    if(usb && (!gRawTitleProfileActive || fileoffset || filesize ||
+                       !RawUsbSafePath(str_ptr)||!RawUsbHasFile(str_ptr)))return 29;
+                    if(!usb)RawUsbClear();
+                    gRawUsbScope=usb;
 
                     RPXFileReplacements *newReplacement = svcAlloc(0xCAFF, sizeof(RPXFileReplacements));
                     if (newReplacement == NULL) {
@@ -679,7 +708,7 @@ int _MCP_ioctl100_patch(ipcmessage *msg) {
                     newReplacement->fileOffset = fileoffset;
                     newReplacement->fileSize   = filesize;
                     newReplacement->lifetime   = REPLACEMENT_LIFETIME_ONE_RPX_LAUNCH;
-                    newReplacement->relativeTo = PATH_RELATIVE_TO_SD_ROOT;
+                    newReplacement->relativeTo = usb?PATH_RELATIVE_TO_USB_ROOT:PATH_RELATIVE_TO_SD_ROOT;
                     newReplacement->type       = REPLACEMENT_TYPE_HOMEBREW_RPX;
 
                     if (!addDynamicReplacement(newReplacement)) {

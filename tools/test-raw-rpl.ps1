@@ -8,7 +8,7 @@ function Section([string]$start, [string]$end) {
     return $source.Substring($a, $b - $a)
 }
 $hook = Section 'int _MCP_LoadFile_patch(' 'void _MassEffect3LaunchDetected('
-$cases = Section '            case IPC_CUSTOM_SET_RAW_TITLE_PROFILE:' '            case IPC_CUSTOM_START_MCP_THREAD:'
+$cases = Section '            case UFLOW_USB_MAP_COMMAND:' '            case IPC_CUSTOM_START_MCP_THREAD:'
 $types = Section 'typedef enum {' 'static const RPXFileReplacements gDefaultReplacements'
 # Fixed IOSU entrypoints are mocked; all changed dispatch/lifecycle code is compiled verbatim.
 $types = $types -replace '(?s)int \(\*const real_MCP_LoadFile\).*?0x05017248 \+ 1\);', ''

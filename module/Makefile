@@ -23,7 +23,8 @@ TARGET		:=	RPXLoadingModule
 BUILD		:=	build
 SOURCES		:=	src \
                 src/data \
-                src/utils
+                src/utils \
+                ../app/vendor/fatfs
 DATA		:=	data
 INCLUDES	:=	src
 
@@ -33,7 +34,7 @@ INCLUDES	:=	src
 CFLAGS	:=	-Wall -Wextra -Os -ffunction-sections -msdata=none\
 			$(MACHDEP)
 
-CFLAGS	+=	$(INCLUDE) -D__WIIU__ -D__WUT__
+CFLAGS	+=	$(INCLUDE) -D__WIIU__ -D__WUT__ -DUFLOW_USB_LOADER
 
 CXXFLAGS	:= $(CFLAGS) -std=c++20
 

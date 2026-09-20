@@ -14,13 +14,14 @@ bool NonemptyFile(const std::string &path) {
 
 std::string ValidateRawGame(const GameEntry &game) {
     if (game.installed || game.platform != Platform::WiiU) return "SELECT A RAW WII U GAME";
-    if (game.absolutePath.rfind("fs:/vol/external01/", 0) != 0)
-        return "RAW LOADER CURRENTLY REQUIRES THE SD/FAT32 SOURCE";
+    const bool usb=game.absolutePath.rfind("usb1:/",0)==0;
+    if (!usb&&game.absolutePath.rfind("fs:/vol/external01/", 0) != 0)
+        return "RAW LOADER REQUIRES AN SD OR USB FAT32 SOURCE";
     if (game.titleId.size() != 16 || game.titleId.substr(0, 8) != "00050000")
         return "RAW LAUNCH REQUIRES A BASE GAME, NOT UPDATE OR DLC";
     if (!NonemptyFile(game.absolutePath + "/code/app.xml")) return "MISSING CODE/APP.XML";
     if (!NonemptyFile(game.absolutePath + "/code/cos.xml")) return "MISSING CODE/COS.XML";
-    const std::string path = "fs:/vol/external01/" + game.rpxRelative;
+    const std::string path = usb?game.rpxRelative:"fs:/vol/external01/" + game.rpxRelative;
     if (!NonemptyFile(path)) return "GAME EXECUTABLE IS MISSING OR EMPTY";
     std::ifstream executable(path, std::ios::binary);
     std::array<unsigned char, 20> header {};

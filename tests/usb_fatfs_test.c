@@ -25,6 +25,12 @@ int main(void){
     b=image+DATA*512;memcpy(b,"TEST    TXT",11);b[11]=0x20;u16(b+26,3);u32(b+28,5);memcpy(image+(DATA+1)*512,"hello",5);
     FATFS fs;assert(f_mount(&fs,"0:",1)==FR_OK);assert(fs.fs_type==FS_FAT32);
     FIL file;assert(f_open(&file,"0:/TEST.TXT",FA_READ)==FR_OK);char bytes[8]={0};UINT got;
+#if FF_USE_FASTSEEK
+    DWORD clusters[32]={32};file.cltbl=clusters;
+    assert(f_lseek(&file,CREATE_LINKMAP)==FR_OK);
+    assert(clusters[1]==1&&clusters[2]==3&&clusters[3]==0);
+    assert(fs.database+(clusters[2]-2)*fs.csize==DATA+1);
+#endif
     assert(f_read(&file,bytes,8,&got)==FR_OK&&got==5&&!strcmp(bytes,"hello"));
     assert(f_lseek(&file,1)==FR_OK);assert(f_read(&file,bytes,2,&got)==FR_OK&&got==2&&!memcmp(bytes,"el",2));assert(f_close(&file)==FR_OK);
     DIR dir;FILINFO info;assert(f_opendir(&dir,"0:/")==FR_OK);assert(f_readdir(&dir,&info)==FR_OK&&!strcmp(info.fname,"TEST.TXT"));assert(f_readdir(&dir,&info)==FR_OK&&!info.fname[0]);assert(f_closedir(&dir)==FR_OK);

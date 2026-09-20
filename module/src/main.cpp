@@ -1,5 +1,7 @@
 #include "FileUtils.h"
 #include "RPXLoading.h"
+#include "RawSourcePath.h"
+#include "../../app/source/usb_storage.hpp"
 #include "RawTitleKernel.h"
 #include "globals.h"
 #include "utils/StringTools.h"
@@ -91,6 +93,10 @@ WUMS_APPLICATION_ENDS() {
     gReplacementInfo.rpxReplacementInfo.isRPXReplaced = false;
 
     RPXLoadingCleanUp();
+    // Raw FSA clients belong to the outgoing process; reopen on game start.
+    int usbRemoved=-1;
+    ContentRedirection_RemoveDevice("ufusb:",&usbRemoved);
+    USBStorage::Unmount();
 
     deinitLogging();
 }
@@ -132,8 +138,11 @@ WUMS_APPLICATION_STARTS() {
         nn::act::PersistentId persistentId = nn::act::GetPersistentId();
         nn::act::Finalize();
 
-        std::string contentPath = std::string("fs:/vol/external01/") + gLooseTitleInfo.contentPath;
-        std::string codePath    = std::string("fs:/vol/external01/") + gLooseTitleInfo.codePath;
+        if(RawSourceUSB(gLooseTitleInfo.contentPath)&&!USBStorage::MountRuntime()) {
+            OSFatal("uFlow: USB source unavailable or changed during launch. Reconnect the original drive and restart.");
+        }
+        std::string contentPath = RawSourcePath(gLooseTitleInfo.contentPath);
+        std::string codePath    = RawSourcePath(gLooseTitleInfo.codePath);
         std::string metaPath    = codePath.substr(0, codePath.size() - strlen("code")) + "meta";
         std::string savePath    = std::string("fs:/vol/external01/") + gLooseTitleInfo.savePath;
         std::string commonPath  = savePath + "/common";

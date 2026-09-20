@@ -13,6 +13,16 @@
 #include <string>
 #include <limits>
 #include <limits.h>
+#include <cctype>
+#ifdef UFLOW_USB_LOADER
+#include <content_redirection/redirection.h>
+#include <coreinit/ios.h>
+#include <vector>
+#include "../../payload/source/common/raw_usb_map.h"
+#define USB_NAME "ufusb"
+#else
+#define USB_NAME "usb1"
+#endif
 #define DIR FATDIR
 #include "../vendor/fatfs/ff.h"
 #undef DIR
@@ -24,6 +34,7 @@ FATFS volume{};
 devoptab_t device{};
 std::mutex mutex;
 bool registered=false;
+unsigned rawDevice=0;
 alignas(64) unsigned char bounce[64*1024];
 void Log(const char *phase,int code){
     if(FILE *f=fopen("fs:/vol/external01/wiiu/apps/uFlow/usb-storage.log","a")){
@@ -34,8 +45,9 @@ int Fail(_reent *r,FRESULT result){
     r->_errno=result==FR_NO_FILE||result==FR_NO_PATH?ENOENT:result==FR_INVALID_NAME?EINVAL:result==FR_DENIED?EACCES:EIO;return -1;
 }
 bool Path(const char *path,std::string &out){
-    if(!path||strncmp(path,"usb1:/",6)!=0)return false;
-    out="0:/";out+=path+6;return out.find(':',2)==std::string::npos;
+    constexpr size_t prefix=sizeof(USB_NAME ":/")-1;
+    if(!path||strncmp(path,USB_NAME ":/",prefix)!=0)return false;
+    out="0:/";out+=path+prefix;return out.find(':',2)==std::string::npos;
 }
 void Stat(struct stat *s,FSIZE_t size,bool dir){
     memset(s,0,sizeof(*s));s->st_mode=(dir?S_IFDIR|0555:S_IFREG|0444);s->st_nlink=1;s->st_size=size;s->st_blksize=512;s->st_blocks=(size+511)/512;
@@ -86,14 +98,15 @@ extern "C" DRESULT disk_read(BYTE n,BYTE *data,LBA_t sector,UINT count){
     while(count){const UINT batch=std::min<UINT>(count,sizeof(bounce)/512);
         auto result=FSAEx_RawReadEx(client,bounce,512,batch,sector,handle);
         if(result!=FS_ERROR_OK){Log("read-error",result);return RES_ERROR;}
-        memcpy(data,bounce,batch*512);data+=batch*512;sector+=batch;count-=batch;
+        if(data!=bounce)memcpy(data,bounce,batch*512);
+        data+=batch*512;sector+=batch;count-=batch;
     }return RES_OK;
 }
 extern "C" DRESULT disk_ioctl(BYTE,BYTE command,void*){return command==CTRL_SYNC?RES_OK:RES_PARERR;}
 bool USBStorage::Mount(){
     std::lock_guard lock(mutex);if(registered)return true;
     Log("usb-readonly-build",2026092007);
-    if(FindDevice("usb1:")>=0){Log("usb1-name-in-use",1);return false;}
+    if(FindDevice(USB_NAME ":")>=0){Log("usb-name-in-use",1);return false;}
     auto init=Mocha_InitLibrary();Log("mocha-init",init);if(init!=MOCHA_RESULT_SUCCESS)return false;
     for(const char *raw:{"/dev/usb01","/dev/usb02"}){
         client=FSAAddClient(nullptr);if(client<0){Log("fsa-client",client);continue;}
@@ -103,7 +116,8 @@ bool USBStorage::Mount(){
         if(result!=FS_ERROR_OK){handle=-1;CloseRaw();continue;}
         auto mount=f_mount(&volume,"0:",1);Log("fat-mount",mount);
         if(mount!=FR_OK||volume.fs_type!=FS_FAT32){f_mount(nullptr,"0:",0);CloseRaw();continue;}
-        device.name="usb1";device.structSize=sizeof(FIL);device.open_r=Open;device.close_r=Close;
+        rawDevice=raw[9]=='1'?1:2;
+        device.name=USB_NAME;device.structSize=sizeof(FIL);device.open_r=Open;device.close_r=Close;
         device.read_r=Read;device.seek_r=Seek;device.fstat_r=FileStat;device.stat_r=PathStat;device.lstat_r=PathStat;
         device.dirStateSize=sizeof(FATDIR);device.diropen_r=DirOpen;device.dirnext_r=DirNext;device.dirreset_r=DirReset;device.dirclose_r=DirClose;
         const auto added=AddDevice(&device);Log("register-usb1",added);
@@ -111,4 +125,82 @@ bool USBStorage::Mount(){
         f_mount(nullptr,"0:",0);CloseRaw();
     }return false;
 }
-void USBStorage::Unmount(){std::lock_guard lock(mutex);if(registered){RemoveDevice("usb1:");registered=false;}f_mount(nullptr,"0:",0);CloseRaw();}
+void USBStorage::Unmount(){std::lock_guard lock(mutex);if(registered){RemoveDevice(USB_NAME ":");registered=false;}f_mount(nullptr,"0:",0);CloseRaw();}
+
+#ifdef UFLOW_USB_LOADER
+namespace {
+uint32_t expectedDevice, expectedBoot, expectedMbrHash, expectedBootHash;
+bool AddCodeFile(RawUsbMap &map,const std::string &name) {
+    if(map.fileCount==UFLOW_USB_FILES||name.size()>=256||!RawUsbSafePath(name.c_str()))return false;
+    FIL file{};
+    if(f_open(&file,("0:/"+name).c_str(),FA_READ)!=FR_OK)return false;
+    std::vector<DWORD> clusters(UFLOW_USB_EXTENTS*2+2);
+    clusters[0]=clusters.size();file.cltbl=clusters.data();
+    auto result=f_lseek(&file,CREATE_LINKMAP);
+    auto &entry=map.files[map.fileCount];
+    strcpy(entry.path,name.c_str());entry.size=f_size(&file);entry.first=map.extentCount;
+    if(result==FR_OK&&entry.size) {
+        uint32_t remaining=(uint64_t(entry.size)+511)/512;
+        for(size_t i=1;i+1<clusters.size()&&clusters[i]&&remaining;i+=2) {
+            uint64_t sector=uint64_t(volume.database)+uint64_t(clusters[i+1]-2)*volume.csize;
+            uint64_t count=std::min<uint64_t>(uint64_t(clusters[i])*volume.csize,remaining);
+            if(clusters[i+1]<2||sector>UINT32_MAX||map.extentCount==UFLOW_USB_EXTENTS){result=FR_INT_ERR;break;}
+            map.extents[map.extentCount++]={uint32_t(sector),uint32_t(count)};
+            remaining-=count;
+        }
+        if(remaining)result=FR_INT_ERR;
+    } else result=FR_INT_ERR;
+    file.cltbl=nullptr;f_close(&file);
+    entry.count=map.extentCount-entry.first;++map.fileCount;
+    return result==FR_OK;
+}
+}
+bool USBStorage::PrepareCode(const char *directory) {
+    if(strncmp(directory,"usb1:/",6)||!Mount())return false;
+    std::vector<unsigned char> storage(sizeof(RawUsbMap)+4+63);
+    auto *request=reinterpret_cast<uint32_t*>((uintptr_t(storage.data())+63)&~uintptr_t(63));
+    request[0]=UFLOW_USB_MAP_COMMAND;
+    auto &map=*reinterpret_cast<RawUsbMap*>(request+1);memset(&map,0,sizeof(map));
+    {
+        std::lock_guard lock(mutex);
+        map.magic=UFLOW_USB_MAP_MAGIC;map.device=rawDevice;map.bootSector=volume.volbase;
+        if(disk_read(0,bounce,0,1)!=RES_OK)return false;
+        map.mbrHash=RawUsbHash(bounce,512);
+        if(disk_read(0,bounce,map.bootSector,1)!=RES_OK)return false;
+        map.bootHash=RawUsbHash(bounce,512);
+        FATDIR dir{};
+        if(f_opendir(&dir,(std::string("0:/")+(directory+6)).c_str())!=FR_OK)return false;
+        bool success=true;FILINFO info{};
+        for(;;) {
+            if(f_readdir(&dir,&info)!=FR_OK){success=false;break;}
+            if(!info.fname[0])break;
+            std::string name=info.fname;
+            if(!(info.fattrib&AM_DIR)&&name.size()>4) {
+                std::string ext=name.substr(name.size()-4);
+                for(auto &c:ext)c=tolower(static_cast<unsigned char>(c));
+                if((ext==".rpx"||ext==".rpl")&&!AddCodeFile(map,std::string(directory+6)+"/"+name)){success=false;break;}
+            }
+        }
+        f_closedir(&dir);
+        if(!success||!RawUsbMapValid(&map)){Log("usb-code-map-invalid",map.fileCount);return false;}
+    }
+    int mcp=IOS_Open("/dev/mcp",static_cast<IOSOpenMode>(0));
+    if(mcp<0)return false;
+    alignas(64) uint32_t response[16]{};
+    auto result=IOS_Ioctl(mcp,100,request,sizeof(map)+4,response,4);IOS_Close(mcp);
+    Log("usb-code-map-ipc",result);
+    if(result!=0||response[0]!=UFLOW_USB_MAP_MAGIC)return false;
+    expectedDevice=map.device;expectedBoot=map.bootSector;expectedMbrHash=map.mbrHash;expectedBootHash=map.bootHash;
+    return true;
+}
+bool USBStorage::MountRuntime() {
+    if(!Mount())return false;
+    {
+        std::lock_guard lock(mutex);
+        if(rawDevice!=expectedDevice||disk_read(0,bounce,0,1)!=RES_OK||RawUsbHash(bounce,512)!=expectedMbrHash||
+           disk_read(0,bounce,expectedBoot,1)!=RES_OK||RawUsbHash(bounce,512)!=expectedBootHash)return false;
+    }
+    int added=-1;
+    return ContentRedirection_AddDevice(&device,&added)==CONTENT_REDIRECTION_RESULT_SUCCESS&&added>=0;
+}
+#endif

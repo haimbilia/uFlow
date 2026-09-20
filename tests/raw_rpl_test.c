@@ -3,19 +3,25 @@
 #include <stdlib.h>
 #include "raw_rpl_scope.h"
 #include "raw_title_profile.h"
+#include "raw_usb_map.h"
 // PRODUCTION_REQUEST_TYPE
 #include "/project/payload/source/ios_mcp/source/ipc_types.h"
 #define DEBUG_FUNCTION_LINE(...) ((void)0)
 #define IPC_CUSTOM_MEN_RPX_HOOK_COMPLETED 0xFE
 #define IPC_CUSTOM_LOAD_CUSTOM_RPX 0xFC
 #define LOAD_RPX_TARGET_EXTRA_REVERT_PREPARE 0xFFFF
-#define LOAD_RPX_TARGET_SD_CARD 1
+#define LOAD_RPX_TARGET_SD_CARD 0
 typedef struct { uint32_t target, size, offset; char path[256]; } MochaRPXLoadInfo;
 // PRODUCTION_TYPES
 static int stockCalls, localCalls, replacementResult, localResult, oneLaunchRemovals;
 static uint32_t seenPos;
 static char seenPath[256];
 static bool allocationFails, registrationFails;
+static bool usbMapAvailable;
+static LoadTargetDevice seenTarget;
+static void RawUsbClear(void){usbMapAvailable=false;}
+static int RawUsbHasFile(const char *path){(void)path;return usbMapAvailable;}
+static int RawUsbInstall(const void *data,unsigned size){(void)data;usbMapAvailable=size==sizeof(RawUsbMap);return usbMapAvailable?0:-1;}
 static void *svcAlloc(uint32_t heap, size_t size) { (void)heap; return allocationFails ? NULL : malloc(size); }
 static void svcFree(uint32_t heap, void *p) { (void)heap; free(p); }
 static bool addDynamicReplacement(RPXFileReplacements *r) {
@@ -37,7 +43,7 @@ static int MCPLoadFileReplacement(ipcmessage *msg, MCPLoadFileRequest *r) {
 }
 static int MCP_LoadCustomFile(LoadTargetDevice target, char *path, uint32_t size,
                               uint32_t offset, void *out, uint32_t len, uint32_t pos, bool rpx) {
-    (void)out; assert(target == MOCHA_LOAD_TARGET_DEVICE_SD && size == 0 && offset == 0 && !rpx);
+    (void)out; seenTarget=target;assert(size == 0 && offset == 0 && !rpx);
     assert(len == 4096); ++localCalls; seenPos = pos; strcpy(seenPath, path); return localResult;
 }
 // PRODUCTION_HOOK
@@ -61,6 +67,12 @@ static int prepare(const char *path, uint32_t offset, uint32_t target) {
     packet[1] = target; packet[3] = offset; strcpy((char *)(packet + 4), path);
     ipcmessage msg = {0}; msg.ioctl.buffer_in = packet; msg.ioctl.length_in = sizeof(packet);
     return ioctlTest(&msg);
+}
+static void installUsb(void){
+    uint32_t packet[1+sizeof(RawUsbMap)/4]={UFLOW_USB_MAP_COMMAND}, response=0;
+    ipcmessage msg={0};msg.ioctl.buffer_in=packet;msg.ioctl.length_in=sizeof(packet);
+    msg.ioctl.buffer_io=&response;msg.ioctl.length_io=4;
+    assert(ioctlTest(&msg)==0&&response==UFLOW_USB_MAP_MAGIC);
 }
 static int load(const char *name, uint32_t pos, uint32_t pid, uint32_t type) {
     MCPLoadFileRequest r = {0}; strcpy(r.name, name); r.pos = pos; r.cafe_pid = pid; r.type = type;
@@ -108,10 +120,10 @@ int main(void) {
     assert(load("unrelated.rpx", 0, 7, 0) == 99 && !gRawRplScope.prepared);
     start("Turbo.rpx"); assert(load("Turbo.rpx", 0, 7, 0) == 99 && !gRawRplScope.active);
     profile(true); allocationFails = true;
-    assert(prepare(game, 0, 1) == 22 && !gRawRplScope.prepared); allocationFails = false;
+    assert(prepare(game, 0, LOAD_RPX_TARGET_SD_CARD) == 22 && !gRawRplScope.prepared); allocationFails = false;
     registrationFails = true;
-    assert(prepare(game, 0, 1) == 22 && !gRawRplScope.prepared); registrationFails = false;
-    assert(prepare(game, 32, 1) == 0 && !gRawRplScope.prepared);
+    assert(prepare(game, 0, LOAD_RPX_TARGET_SD_CARD) == 22 && !gRawRplScope.prepared); registrationFails = false;
+    assert(prepare(game, 32, LOAD_RPX_TARGET_SD_CARD) == 0 && !gRawRplScope.prepared);
     RemoveByLifetime(REPLACEMENT_LIFETIME_ONE_RPX_LAUNCH);
     RawRplScope s; char output[256];
     assert(!RawRplPrepare(&s, "a/../Turbo.rpx", "Turbo.rpx", true, 0));
@@ -122,6 +134,21 @@ int main(void) {
     assert(!RawRplPath(&s, "very_long_library_name.rpl", 7, 0, output));
     char noTerminator[64]; memset(noTerminator, 'a', sizeof(noTerminator));
     assert(!RawRplPath(&s, noTerminator, 7, 0, output));
-    puts("Raw RPL production dispatch/lifecycle regressions PASS (ASan/UBSan)");
+    profile(true);
+    assert(prepare(game,0,UFLOW_USB_TARGET)==29);
+    installUsb();assert(prepare(game,32,UFLOW_USB_TARGET)==29);
+    assert(prepare("../bad.rpx",0,UFLOW_USB_TARGET)==29);
+    assert(prepare(game,0,UFLOW_USB_TARGET)==0&&gRawUsbScope);
+    assert(gDynamicReplacements[0]->relativeTo==PATH_RELATIVE_TO_USB_ROOT);
+    replacementResult=1024;assert(load("Turbo.rpx",0,7,0)==1024&&usbMapAvailable);
+    RemoveByLifetime(REPLACEMENT_LIFETIME_ONE_RPX_LAUNCH);
+    replacementResult=-1;localResult=512;
+    assert(load("mvplayer",4096,7,0)==512&&seenTarget==MOCHA_LOAD_TARGET_DEVICE_USB);
+    assert(load("men.rpx",0,7,0)==99&&!usbMapAvailable&&!gRawUsbScope);
+    profile(true);installUsb();assert(prepare(game,0,UFLOW_USB_TARGET)==0);
+    assert(prepare("",0,LOAD_RPX_TARGET_EXTRA_REVERT_PREPARE)==0&&!usbMapAvailable&&!gRawUsbScope);
+    start("Turbo.rpx");assert(load("mvplayer",0,7,0)==512&&seenTarget==MOCHA_LOAD_TARGET_DEVICE_SD);
+    profile(false);RemoveByLifetime(REPLACEMENT_LIFETIME_ONE_RPX_LAUNCH);
+    puts("Raw RPL SD/USB production dispatch/lifecycle regressions PASS (ASan/UBSan)");
     return 0;
 }
