@@ -1,4 +1,5 @@
 #pragma once
+#include "scan_progress.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -118,13 +119,13 @@ const char *MediaTypeName(MediaType type);
 const char *MediaLibraryName(int library);
 std::vector<MediaSource> LoadMediaSources();
 bool SaveMediaSources(const std::vector<MediaSource> &sources);
-void EnrichLibraryMedia(std::vector<GameEntry> &games);
+void EnrichLibraryMedia(std::vector<GameEntry> &games,const ScanObserver &progress = {});
 // Resolve options against the indexed path; no directory access during playback.
 const MediaSource *VideoSourceFor(const std::vector<MediaSource> &sources, const GameEntry &game);
 
 const char *PlatformName(Platform platform);
 const char *DefaultLibraryId(Platform platform);
-ScanResult ScanLibrary();
+ScanResult ScanLibrary(const ScanObserver &progress = {});
 // Refresh only system-installed games, preserving cached SD entries/media.
 // Returns true when the catalog changed. Failed system queries preserve it.
 bool RefreshInstalledGames(std::vector<GameEntry> &games);

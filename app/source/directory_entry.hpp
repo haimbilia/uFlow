@@ -2,6 +2,9 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <string>
+#include <memory>
+
+using DirectoryHandle=std::unique_ptr<DIR,decltype(&closedir)>;
 
 // devkitPPC readdir already supplies stat data (including the USB FatFs entry).
 // Looking up every name again can turn a large FAT directory into quadratic I/O.

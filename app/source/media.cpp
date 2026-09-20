@@ -54,23 +54,26 @@ std::string FindAsset(const std::vector<Asset> &assets,const GameEntry &game) {
         for(const auto &asset:assets) if(asset.libraryId.empty() && asset.library==library) return asset.path;
     return {};
 }
-void IndexDirectory(Index &index,const MediaSource &source,const std::string &path,int depth) {
-    DIR *dir=opendir(path.c_str());
+void IndexDirectory(Index &index,const MediaSource &source,const std::string &path,int depth,const ScanObserver &progress,std::size_t games) {
+    if(progress)progress({"INDEXING ARTWORK",path,games,0,0});
+    DirectoryHandle dir(opendir(path.c_str()),closedir);
     if (!dir) return; // missing/unplugged paths are retained in settings, ignored by scan
-    std::vector<std::string> names;
-    while (auto *entry=readdir(dir)) {
+    std::vector<std::pair<std::string,mode_t>> names;
+    while (auto *entry=readdir(dir.get())) {
         std::string name=entry->d_name;
-        if (name!="." && name!="..") names.push_back(std::move(name));
+        if (name!="." && name!="..") {
+            if(progress)progress({"INDEXING ARTWORK",path+"/"+name,games,0,0});
+            names.emplace_back(name,DirectoryEntryMode(*entry,path+"/"+name));
+        }
     }
-    closedir(dir);
+    dir.reset();
     std::sort(names.begin(),names.end()); // stable duplicate precedence
-    for (const auto &name:names) {
+    for (const auto &[name,mode]:names) {
         const auto full=path+"/"+name;
-        struct stat info{};
-        if (stat(full.c_str(),&info)) continue;
-        if (S_ISDIR(info.st_mode)) {
-            if (depth>0) IndexDirectory(index,source,full,depth-1);
-        } else if (S_ISREG(info.st_mode)) {
+        if(progress)progress({"INDEXING ARTWORK",full,games,0,0});
+        if (S_ISDIR(mode)) {
+            if (depth>0) IndexDirectory(index,source,full,depth-1,progress,games);
+        } else if (S_ISREG(mode)) {
             if(full==DefaultPath(source)) continue; // A chosen fallback is not a game-specific match.
             const auto dot=name.find_last_of('.');
             if (dot==std::string::npos || !ExtensionMatches(source.type,Lower(name.substr(dot+1)))) continue;
@@ -276,12 +279,12 @@ const MediaSource *VideoSourceFor(const std::vector<MediaSource> &sources, const
     }
     return best;
 }
-void EnrichLibraryMedia(std::vector<GameEntry> &games) {
+void EnrichLibraryMedia(std::vector<GameEntry> &games,const ScanObserver &progress) {
     Index index;
     std::array<std::vector<Asset>,kMediaTypeCount> defaults;
     std::map<std::string,std::array<float,2>> layouts;
     for (const auto &source:LoadMediaSources()) if (source.enabled) {
-        IndexDirectory(index,source,source.path,source.depth);
+        IndexDirectory(index,source,source.path,source.depth,progress,games.size());
         const auto path=DefaultPath(source);
         struct stat info{};
         if(!path.empty() && MediaFileMatches(source.type,path) && !stat(path.c_str(),&info) && S_ISREG(info.st_mode)) {
@@ -295,7 +298,9 @@ void EnrichLibraryMedia(std::vector<GameEntry> &games) {
             }
         }
     }
+    std::size_t completed=0;
     for (auto &game:games) {
+        if(progress)progress({"MATCHING ARTWORK",game.absolutePath,games.size(),completed,games.size()});
         game.fullCoverPath=Find(index,MediaType::FullCover,game);
         game.backCoverPath=Find(index,MediaType::BackCover,game);
         game.spinePath=Find(index,MediaType::Spine,game);
@@ -327,5 +332,7 @@ void EnrichLibraryMedia(std::vector<GameEntry> &games) {
         if(game.coverPath.empty() && game.fullCoverPath.empty())game.coverPath=FindAsset(defaults[static_cast<int>(MediaType::Cover)],game);
         if(game.backCoverPath.empty())game.backCoverPath=FindAsset(defaults[static_cast<int>(MediaType::BackCover)],game);
         if(game.spinePath.empty())game.spinePath=FindAsset(defaults[static_cast<int>(MediaType::Spine)],game);
+        ++completed;
     }
+    if(progress)progress({"MATCHING ARTWORK","",games.size(),completed,games.size()});
 } // index freed after scan; no media directory work during rendering

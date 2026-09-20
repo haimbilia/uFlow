@@ -272,6 +272,14 @@ bool ScanInstalledGames(ScanResult &result, const std::vector<GameEntry> *cached
 }
 
 using UpdateMetadata = std::map<std::string, std::pair<unsigned long, GameEntry>>;
+struct ScanReporter {
+    const ScanObserver &observer;
+    const ScanResult &result;
+    std::string stage;
+    void Report(const std::string &path,std::size_t additional=0) const {
+        if(observer)observer({stage,path,result.games.size()+additional,0,0});
+    }
+};
 
 void ReadWiiUMetadata(GameEntry &game, const std::string &base, const std::string &meta) {
     game.name = XmlValue(meta, "longname_en");
@@ -324,20 +332,21 @@ bool ScanWiiUPath(ScanResult &result, UpdateMetadata &updates, const std::string
     return true;
 }
 
-void ScanWiiURoot(ScanResult &result, UpdateMetadata &updates, const std::string &absoluteRoot, int depth) {
+void ScanWiiURoot(ScanResult &result, UpdateMetadata &updates, const std::string &absoluteRoot, int depth,const ScanReporter &progress) {
+    progress.Report(absoluteRoot);
     if(VCPackage::IsPackageName(absoluteRoot))return;
     if (!IsDirectory(absoluteRoot)) return;
     if (ScanWiiUPath(result, updates, absoluteRoot) || depth <= 0) return;
-    DIR *directory = opendir(absoluteRoot.c_str());
+    DirectoryHandle directory(opendir(absoluteRoot.c_str()),closedir);
     if (!directory) return;
-    while (dirent *entry = readdir(directory)) {
+    while (dirent *entry = readdir(directory.get())) {
         const std::string folder = entry->d_name;
         if (folder == "." || folder == "..") continue;
         const std::string base = absoluteRoot + "/" + folder;
-        if (!IsDirectory(base)) continue;
-        ScanWiiURoot(result, updates, base, depth - 1);
+        progress.Report(base);
+        if (!S_ISDIR(DirectoryEntryMode(*entry,base))) continue;
+        ScanWiiURoot(result, updates, base, depth - 1,progress);
     }
-    closedir(directory);
 }
 
 void AddDiscGame(ScanResult &result, Platform platform, const std::string &path, const std::string &displaySource) {
@@ -358,26 +367,28 @@ void AddDiscGame(ScanResult &result, Platform platform, const std::string &path,
     result.games.push_back(std::move(game));
 }
 
-void ScanDiscRoot(ScanResult &result, Platform platform, const std::string &root, int depth) {
-    DIR *directory = opendir(root.c_str());
+void ScanDiscRoot(ScanResult &result, Platform platform, const std::string &root, int depth,const ScanReporter &progress) {
+    progress.Report(root);
+    DirectoryHandle directory(opendir(root.c_str()),closedir);
     if (!directory) return;
-    while (dirent *entry = readdir(directory)) {
+    while (dirent *entry = readdir(directory.get())) {
         const std::string name = entry->d_name;
         if (name == "." || name == "..") continue;
         const std::string path = root + "/" + name;
+        progress.Report(path);
+        const auto mode=DirectoryEntryMode(*entry,path);
         const std::string lower = Lower(name);
         const bool wii = platform == Platform::Wii && lower.size() > 5 && lower.substr(lower.size() - 5) == ".wbfs";
         const bool gameCube = platform == Platform::GameCube && lower.size() > 4 &&
                               lower.substr(lower.size() - 4) == ".iso" && lower != "disc2.iso";
-        if (IsFile(path) && (wii || gameCube)) {
+        if (S_ISREG(mode) && (wii || gameCube)) {
             const std::string parent = FileName(root);
             AddDiscGame(result, platform, path,
                         (lower == "game.iso" && !parent.empty()) ? parent : name);
-        } else if (depth > 0 && IsDirectory(path)) {
-            ScanDiscRoot(result, platform, path, depth - 1);
+        } else if (depth > 0 && S_ISDIR(mode)) {
+            ScanDiscRoot(result, platform, path, depth - 1,progress);
         }
     }
-    closedir(directory);
 }
 
 std::string FavoriteKey(const GameEntry &game) {
@@ -661,46 +672,55 @@ static bool MatchesExtension(const std::string &name,const std::string &extensio
     }
     return false;
 }
-static void ScanFiles(ScanResult &result,const std::string &path,int depth,const std::string &extensions) {
-    DIR *dir=opendir(path.c_str()); if(!dir) return;
+static void ScanFiles(ScanResult &result,const std::string &path,int depth,const std::string &extensions,const ScanReporter &progress) {
+    progress.Report(path);
+    DirectoryHandle dir(opendir(path.c_str()),closedir); if(!dir) return;
     std::map<std::string,GameEntry> local;
-    while(auto *entry=readdir(dir)) {
+    while(auto *entry=readdir(dir.get())) {
         std::string name=entry->d_name; if(name=="."||name=="..") continue;
         const auto full=path+"/"+name;
+        progress.Report(full,local.size());
+        const auto mode=DirectoryEntryMode(*entry,full);
         if(VCPackage::IsPackageName(full)){
             GameEntry source,target;
             if(VCPackage::Load(full,source,target)&&MatchesExtension(source.absolutePath,extensions))local[source.absolutePath]=std::move(source);
             continue; // Never scan ROMs/BIOS from inside a package, even if damaged.
         }
-        if(IsDirectory(full)) { if(depth>0) ScanFiles(result,full,depth-1,extensions); continue; }
-        if(MatchesExtension(name,extensions)&&IsFile(full)){
+        if(S_ISDIR(mode)) { if(depth>0) ScanFiles(result,full,depth-1,extensions,progress); continue; }
+        if(MatchesExtension(name,extensions)&&S_ISREG(mode)){
             if(RomArchive::Ext(name)==".zip"&&extensions.find(".nes")!=std::string::npos&&VCSystems::File(full)!="nes")continue;
             GameEntry game;game.platform=Platform::Files;game.name=name.substr(0,name.find_last_of('.'));game.folder=name;game.absolutePath=full;
             local.emplace(full,std::move(game)); // Package metadata wins in either directory order.
         }
     }
-    closedir(dir);
     for(auto &[path,game]:local)result.games.push_back(std::move(game));
 }
 
-ScanResult ScanLibrary() {
+ScanResult ScanLibrary(const ScanObserver &observer) {
     ScanResult result;
+    ScanReporter progress{observer,result,"READING INSTALLED GAMES"};
+    progress.Report("");
     UpdateMetadata updates;
     EnsureDirectory(std::string(kDevice) + "/wiiu/raw-saves");
     EnsureDirectory(kAppDirectory);
     ScanInstalledGames(result);
+    progress.stage="READING LIBRARY SETTINGS";progress.Report("");
     const auto libraries=LoadLibraries();
     const auto legacyInjections=VCPackage::LegacySources();
-    for (const auto &source : LoadContentSources()) {
+    const auto sources=LoadContentSources();
+    const auto enabled=std::count_if(sources.begin(),sources.end(),[](const auto &s){return s.enabled;});
+    std::size_t sourceIndex=0;
+    for (const auto &source : sources) {
+        if(source.enabled){progress.stage="SCANNING SOURCE "+std::to_string(++sourceIndex)+" OF "+std::to_string(enabled);progress.Report(source.path);}
         if (!source.enabled || !IsDirectory(source.path)) continue;
         auto definition=std::find_if(libraries.begin(),libraries.end(),[&](const auto &l){return l.id==source.libraryId;});
         if(definition!=libraries.end()&&!definition->enabled) continue;
         const auto parser=definition==libraries.end()?source.platform:definition->parser;
         const auto firstNew = result.games.size();
-        if (parser == Platform::WiiU) ScanWiiURoot(result, updates, source.path, source.depth);
+        if (parser == Platform::WiiU) ScanWiiURoot(result, updates, source.path, source.depth,progress);
         else if(parser==Platform::Files) {
             const auto extensions=definition==libraries.end()?"":definition->extensions;
-            ScanFiles(result,source.path,source.depth,extensions);
+            ScanFiles(result,source.path,source.depth,extensions,progress);
             auto prefix=source.path;while(!prefix.empty()&&prefix.back()=='/')prefix.pop_back();prefix+='/';
             for(const auto &saved:legacyInjections){
                 if(saved.absolutePath.rfind(prefix,0)!=0||!MatchesExtension(saved.absolutePath,extensions))continue;
@@ -709,13 +729,14 @@ ScanResult ScanLibrary() {
                 if(std::none_of(result.games.begin()+firstNew,result.games.end(),[&](const auto &g){return g.absolutePath==saved.absolutePath;}))result.games.push_back(saved);
             }
         }
-        else ScanDiscRoot(result, parser, source.path, source.depth);
+        else ScanDiscRoot(result, parser, source.path, source.depth,progress);
         for(size_t i=firstNew;i<result.games.size();++i) {
             result.games[i].launcher=source.launcher;
             result.games[i].libraryId=source.libraryId.empty() ? DefaultLibraryId(source.platform) : source.libraryId;
         }
     }
 
+    progress.stage="RESOLVING GAME METADATA";progress.Report("");
     std::set<std::string> installedIds;
     for (const auto &game : result.games) if (game.installed && !game.titleId.empty()) installedIds.insert(game.titleId);
     result.games.erase(std::remove_if(result.games.begin(), result.games.end(), [&](const GameEntry &game) {
@@ -724,6 +745,7 @@ ScanResult ScanLibrary() {
 
     const auto favorites = LoadFavoriteKeys();
     for (auto &game : result.games) {
+        progress.Report(game.absolutePath);
         if (!game.installed && game.platform == Platform::WiiU) {
             const auto update = updates.find(game.titleId);
             if (update != updates.end()) {
@@ -736,7 +758,8 @@ ScanResult ScanLibrary() {
         }
         game.favorite = favorites.contains(FavoriteKey(game));
     }
-    EnrichLibraryMedia(result.games);
+    EnrichLibraryMedia(result.games,observer);
+    progress.stage="SORTING LIBRARY";progress.Report("");
     std::sort(result.games.begin(), result.games.end(), [](const GameEntry &left, const GameEntry &right) {
         const std::string leftName = Lower(left.name);
         const std::string rightName = Lower(right.name);
@@ -746,6 +769,7 @@ ScanResult ScanLibrary() {
     result.games.erase(std::unique(result.games.begin(), result.games.end(), [](const GameEntry &left, const GameEntry &right) {
         return left.absolutePath == right.absolutePath;
     }), result.games.end());
+    progress.Report("");
     return result;
 }
 

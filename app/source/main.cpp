@@ -28,6 +28,7 @@
 #include "cover_transition.hpp"
 #include "artwork_worker.hpp"
 #include "browser_worker.hpp"
+#include "scan_worker.hpp"
 #include "music.hpp"
 #include "video.hpp"
 #include "glass_background.hpp"
@@ -1005,6 +1006,7 @@ public:
 #endif
     }
     ~Dashboard() {
+        scanWorker_.Stop();
         browserWorker_.reset(); // join directory I/O before storage teardown
         video_.Stop();
         glassBackground_.Stop();
@@ -1138,6 +1140,35 @@ public:
         return result;
     }
 #ifdef UFLOW_HOST_PREVIEW
+    bool CheckScanDialog(const std::string &output) {
+        VisualPreview("settings");scanApplied_=true;scanOpen_=true;
+        for(int skin=0;skin<2;++skin){
+            preferences_.skin=skin;
+            scanState_={};scanState_.progress={"SCANNING SOURCE 1 OF 3","usb1:/Decrypted/A very long game folder/code/app.xml",173,0,0};scanElapsed_=82;
+            ScanInput(true);if(!scanOpen_)return false;
+            if(!Render(0,output+"-"+std::to_string(skin)+"-discovery.png"))return false;
+            CancelScan();if(!scanCancelling_ || !scanOpen_)return false;
+            if(!Render(0,output+"-"+std::to_string(skin)+"-cancel.png"))return false;
+            scanCancelling_=false;
+            scanState_.progress={"MATCHING ARTWORK","usb1:/Decrypted/Game",1000,350,1000};
+            if(!Render(0,output+"-"+std::to_string(skin)+"-artwork.png"))return false;
+            scanState_.finished=true;scanState_.cacheSaved=true;scanState_.progress={"SCAN COMPLETE","",1000,1,1};
+            if(!Render(0,output+"-"+std::to_string(skin)+"-complete.png"))return false;
+            scanState_.cacheSaved=false;
+            if(!Render(0,output+"-"+std::to_string(skin)+"-cache-warning.png"))return false;
+            scanState_.error="SCAN FAILED - LIBRARY UNCHANGED";
+            if(!Render(0,output+"-"+std::to_string(skin)+"-error.png"))return false;
+        }
+        ScanInput(true);if(scanOpen_)return false;
+        // Exercise the actual worker-to-dashboard handoff, including cache-save
+        // result and opening the modal without requiring the settings screen.
+        StartScan();if(!ScanOpen())return false;
+        const auto start=SDL_GetTicks();
+        while(!scanApplied_ && SDL_GetTicks()-start<10000){PollScan();SDL_Delay(1);}
+        if(!scanApplied_ || !scanState_.finished || !scanState_.error.empty())return false;
+        ScanInput(true);if(ScanOpen())return false;
+        SDL_Log("PASS: scan popup discovery, measured artwork progress, success, cache warning, error, modal input and both skins");return true;
+    }
     bool CheckAsyncBrowser(const std::string &output) {
         VisualPreview("directories");
         browserWorker_=std::make_unique<BrowserWorker>();
@@ -2065,7 +2096,36 @@ public:
         if(CurrentLibraryId()!=kFavoritesLibraryId || tab_!=0 || !visible_.empty())return false;
         std::puts("PASS: Glass Flow default, one-time welcome, empty/fill/hide tabs and removed-tab clamping");return true;
     }
-    bool OverlayOpen() const { return updateOpen_ || WelcomeOpen() || InjectionDialogOpen() || CoverInspectOpen() || details_ || settings_ || sourceManager_ || sourceEditor_ || directoryBrowser_; }
+    bool OverlayOpen() const { return scanOpen_ || updateOpen_ || WelcomeOpen() || InjectionDialogOpen() || CoverInspectOpen() || details_ || settings_ || sourceManager_ || sourceEditor_ || directoryBrowser_; }
+    bool ScanOpen() const {return scanOpen_;}
+    void StartScan() {
+        if(scanOpen_)return;
+        FlushSettingsSave(true);BrowserCancel();DismissVideo();StopMusic();
+        scanState_={};scanState_.progress.stage="STARTING SCAN";scanApplied_=false;scanCancelling_=false;
+        scanOpen_=true;scanStarted_=SDL_GetTicks();scanElapsed_=0;detailsBackdropReady_=false;
+        scanWorker_.Start();
+    }
+    void StopScan(){scanWorker_.Stop();}
+    void CancelScan(){
+        if(scanOpen_ && !scanState_.finished && scanState_.progress.stage!="SAVING LIBRARY"){
+            scanCancelling_=true;scanWorker_.RequestCancel();
+        }
+    }
+    void ScanInput(bool close) {
+        if(scanOpen_ && scanState_.finished && close){scanOpen_=false;detailsBackdropReady_=false;ApplyMusic();}
+    }
+    void PollScan() {
+        if(!scanOpen_ || scanApplied_)return;
+        scanState_=scanWorker_.Poll();scanElapsed_=(SDL_GetTicks()-scanStarted_)/1000;
+        if(scanState_.finished){
+            scanApplied_=true;
+            if(scanState_.error.empty()){
+                auto result=scanWorker_.Take();
+                scanInvalid_=result.invalidWiiU;
+                ReplaceGames(std::move(result.games));
+            }
+        }
+    }
     bool UpdateOpen() const {return updateOpen_;}
     void UpdateState(const UFlowUpdate::Snapshot &s){
         const bool wants=s.state==UFlowUpdate::State::Available||UFlowUpdate::Busy(s.state)||s.state==UFlowUpdate::State::Success||s.state==UFlowUpdate::State::Error;
@@ -3153,6 +3213,7 @@ public:
         const Uint64 performanceStart=SDL_GetPerformanceCounter();
         textures_.BeginFrame();
         PumpBrowser();
+        PollScan();
         if (preview_) deltaSeconds = 0; // deterministic transition samples, not performance measurements
         gSmoothText = preferences_.skin == 1;
         gGlassOverVideo=false;
@@ -3179,14 +3240,14 @@ public:
         const GameEntry *selected = Selected();
         UpdateVideo(selected);
         glassBackground_.Update(preferences_.skin==1,
-            !preferences_.backgroundMotion||updateOpen_||WelcomeOpen()||InjectionDialogOpen()||settings_||details_||
+            !preferences_.backgroundMotion||scanOpen_||updateOpen_||WelcomeOpen()||InjectionDialogOpen()||settings_||details_||
             detailsProgress_>.01f||settingsProgress_>.01f,
             videoPending_||video_.Active(),!video_.Active()&&video_.CanStart());
         Color accent = selected ? AccentFor(selected->platform, preferences_.theme)
                                 : AccentFor(Platform::WiiU, preferences_.theme);
         if (preferences_.skin == 1) accent = {45, 174, 222, 255};
 
-        const float overlayProgress = std::max({detailsProgress_, settingsProgress_,(InjectionDialogOpen()||WelcomeOpen()||updateOpen_)?1.f:0.f});
+        const float overlayProgress = std::max({detailsProgress_, settingsProgress_,(scanOpen_||InjectionDialogOpen()||WelcomeOpen()||updateOpen_)?1.f:0.f});
         if (overlayProgress <= .01f && !video_.Active()) PrefetchArtwork();
         // Overlay content changes every frame, but the obscured library does not.
         // Freeze it after the first blurred frame for both skins; settings changes
@@ -3292,10 +3353,11 @@ public:
         if (InjectionDialogOpen()) DrawInjectionDialog(accent);
         if (WelcomeOpen()) DrawWelcome(accent);
         if (updateOpen_) DrawUpdate(accent);
+        if (scanOpen_) DrawScan(accent);
         gGlassBackdrop = nullptr;
         if (videoOptions_.foreground) video_.Draw(kWidth,kHeight);
         if (!status_.empty() && SDL_TICKS_PASSED(SDL_GetTicks(), statusUntil_)) status_.clear();
-        if (!status_.empty()&&!InjectionDialogOpen()&&!WelcomeOpen()&&!updateOpen_) DrawToast(accent);
+        if (!status_.empty()&&!scanOpen_&&!InjectionDialogOpen()&&!WelcomeOpen()&&!updateOpen_) DrawToast(accent);
         const bool captured = capturePath.empty() || SaveVisualFrame(renderer_, capturePath);
         SDL_RenderPresent(renderer_);
 #ifndef UFLOW_HOST_PREVIEW
@@ -3307,7 +3369,7 @@ public:
         FlushSettingsSave(false);
         // Only upload a completed CPU decode here; storage and decompression
         // run on the artwork worker. Include upload time in frame statistics.
-        if (!video_.Active()&&!InjectionDialogOpen()) textures_.PumpOne();
+        if (!video_.Active()&&!scanOpen_&&!InjectionDialogOpen()) textures_.PumpOne();
         const double elapsedMs=1000.0*(SDL_GetPerformanceCounter()-performanceStart)/SDL_GetPerformanceFrequency();
         ++performanceFrames_; performanceTotalMs_+=elapsedMs;
         performanceMaxMs_=std::max(performanceMaxMs_,elapsedMs);
@@ -3332,7 +3394,7 @@ private:
 #endif
         const bool decoderAvailable = video_.Active() || video_.CanStart();
         const bool eligible = decoderAvailable && realLibrary && !videoInputActive_ && selected && videoConfigured_ && !selected->previewPath.empty() &&
-            preferences_.usePreviews && !updateOpen_ && !WelcomeOpen() && !InjectionDialogOpen() && !settings_ && !details_ && !sourceManager_ && !sourceEditor_ &&
+            preferences_.usePreviews && !scanOpen_ && !updateOpen_ && !WelcomeOpen() && !InjectionDialogOpen() && !settings_ && !details_ && !sourceManager_ && !sourceEditor_ &&
             !directoryBrowser_ && detailsProgress_<=.01f && settingsProgress_<=.01f &&
             (!CoverInspectOpen() || !videoOptions_.foreground) &&
             !libraryFadePhase_;
@@ -4523,6 +4585,42 @@ private:
             DrawText(renderer_,working?"B  CANCEL":"A / B  CLOSE",640,475,2,ink,true);
         }
     }
+    void DrawScan(Color accent) {
+        const bool glass=preferences_.skin==1;
+        const PopupTextGlowScope glow(glass);
+        const Color ink=glass?Color{42,53,62,255}:Color{238,244,252,255};
+        FillRoundedRect(renderer_,{270,160,740,410},24,glass?Color{239,246,248,245}:Color{20,31,49,250});
+        if(glass)DrawGlassSurface(renderer_,{270,160,740,410},24,accent,100,true);
+        const auto &p=scanState_.progress;
+        DrawText(renderer_,!scanState_.error.empty()?"SCAN STOPPED":scanState_.finished?"SCAN COMPLETE":"SCANNING LIBRARY",640,190,3,ink,true);
+        DrawFittedText(renderer_,!scanState_.error.empty()?scanState_.error:scanCancelling_&&!scanState_.finished?"CANCELLING SCAN...":p.stage,310,240,660,2,ink);
+        // Keep the end of long paths visible so the changing file/folder is clear.
+        std::string path=p.path;
+        while(!path.empty() && TextWidth("..."+path,1)>660){
+            std::size_t next=1;while(next<path.size() && (static_cast<unsigned char>(path[next])&0xc0)==0x80)++next;
+            path.erase(0,next);
+        }
+        if(path!=p.path)path="..."+path;
+        DrawFittedText(renderer_,path,310,284,660,1,ink);
+        FillRoundedRect(renderer_,{320,330,640,20},8,{accent.r,accent.g,accent.b,45});
+        if(p.total){
+            const int width=static_cast<int>(640.0*std::min(p.completed,p.total)/p.total);
+            if(width)FillRoundedRect(renderer_,{320,330,width,20},8,accent);
+        }else if(!scanState_.finished)FillRoundedRect(renderer_,{320+int((SDL_GetTicks()/8)%500),330,140,20},8,accent);
+        DrawText(renderer_,std::to_string(p.games)+" GAMES FOUND  |  "+std::to_string(scanElapsed_/60)+"m "+std::to_string(scanElapsed_%60)+"s",640,374,2,ink,true);
+        if(!scanState_.finished){
+            const std::string detail=p.total?std::to_string(p.completed)+" / "+std::to_string(p.total)+" GAMES PROCESSED":"DISCOVERING FILES - TOTAL NOT YET KNOWN";
+            DrawText(renderer_,detail,640,417,1,ink,true);
+            DrawText(renderer_,p.stage=="SAVING LIBRARY"?"SAVING - PLEASE KEEP THE CONSOLE ON":scanCancelling_?"WAITING FOR CURRENT READ TO FINISH":"B  CANCEL SCAN",640,507,1,ink,true);
+        }else{
+            const std::string detail=!scanState_.error.empty()?"Your previous library has been kept.":
+                !scanState_.cacheSaved?"LIBRARY UPDATED; CACHE COULD NOT BE SAVED":
+                scanInvalid_?std::to_string(scanInvalid_)+" INCOMPLETE WII U FOLDERS SKIPPED":"Library saved successfully.";
+            DrawFittedText(renderer_,detail,310,417,660,1,ink);
+            FillRoundedRect(renderer_,{490,482,300,52},14,{accent.r,accent.g,accent.b,90});
+            DrawText(renderer_,"A / B  CLOSE",640,502,2,ink,true);
+        }
+    }
     void DrawUpdate(Color accent) {
         const bool glass=preferences_.skin==1;
         const PopupTextGlowScope glow(glass);
@@ -4679,6 +4777,11 @@ private:
     bool defaultFileBrowser_ = false;
     bool defaultFileChosen_ = false;
     bool scanRequested_ = false;
+    ScanWorker scanWorker_;
+    ScanWorker::Status scanState_;
+    bool scanOpen_=false,scanApplied_=false,scanCancelling_=false;
+    Uint32 scanStarted_=0,scanElapsed_=0;
+    std::size_t scanInvalid_=0;
     std::string status_;
     Uint32 statusUntil_ = 0;
     SDL_Texture *sceneTexture_ = nullptr;
@@ -4774,17 +4877,12 @@ int main(int, char **) {
     InitSmoothFonts();
     Trace("fonts-ready");
 
-    ScanResult scan;
     USBStorage::Mount();
     std::vector<GameEntry> games;
     const bool loadedLibraryCache = mounted && LoadLibraryCache(games);
     if (loadedLibraryCache && RefreshInstalledGames(games)) SaveLibraryCache(games);
-    if (!loadedLibraryCache && mounted) {
-        scan = ScanLibrary();
-        games = std::move(scan.games);
-        SaveLibraryCache(games);
-    }
-    Trace(loadedLibraryCache ? "library-cache-loaded" : "library-scan-complete");
+    const bool initialScanNeeded=!loadedLibraryCache && mounted;
+    Trace(loadedLibraryCache ? "library-cache-loaded" : "library-scan-pending");
     bool launchRequested=false;
     bool running=true;
     bool foreground=true;
@@ -4799,6 +4897,7 @@ int main(int, char **) {
         std::to_string(games.size())+" GAMES" : "SOURCE DRIVE COULD NOT BE MOUNTED", mounted ? 3500 : 10000);
     loaderStatus=mounted?RPXLoader_InitLibrary():RPX_LOADER_RESULT_NOT_AVAILABLE;
     LaunchLooseFn launchLoose=loaderStatus==RPX_LOADER_RESULT_SUCCESS?LoadLaunchFunction(&launchLooseModule):nullptr;
+    if(initialScanNeeded)dashboard.StartScan();
     Uint64 previousCounter=SDL_GetPerformanceCounter();
     const double counterFrequency=static_cast<double>(SDL_GetPerformanceFrequency());
     int heldHorizontal=0;
@@ -4815,12 +4914,14 @@ int main(int, char **) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
+                dashboard.StopScan();
                 updater.Stop();if(updateHomeBlocked){OSEnableHomeButtonMenu(true);updateHomeBlocked=false;}
                 Trace("sdl-quit-event");
                 running = false;
                 dashboard.StopMusic();
                 Trace("system-quit-media-stop-complete");
             } else if (event.type == SDL_APP_WILLENTERBACKGROUND) {
+                dashboard.StopScan();
                 updater.Stop();
                 Trace("sdl-background-event");
                 dashboard.PrepareSystemBackground();
@@ -4876,6 +4977,15 @@ int main(int, char **) {
             continue;
         }
         if(updateHomeBlocked&&!UFlowUpdate::Busy(updateStatus.state)){OSEnableHomeButtonMenu(true);updateHomeBlocked=false;}
+        if(dashboard.ScanOpen()){
+            bool tapped=false;VPADTouchData point{};
+            if(gamePadReady){VPADGetTPCalibratedPointEx(VPAD_CHAN_0,VPAD_TP_1280X720,&point,&input.tpNormal);
+                tapped=point.touched && point.validity==VPAD_VALID && !touchHeld && point.x>=490 && point.x<790 && point.y>=482 && point.y<534;
+                touchHeld=point.touched;}
+            if(input.trigger&VPAD_BUTTON_B)dashboard.CancelScan();
+            dashboard.ScanInput((input.trigger&(VPAD_BUTTON_A|VPAD_BUTTON_B)) || tapped);
+            heldHorizontal=heldVertical=0;dashboard.Render(delta);continue;
+        }
         if(dashboard.UpdateOpen()){
             int x=-1,y=-1;VPADTouchData point{};
             if(gamePadReady){VPADGetTPCalibratedPointEx(VPAD_CHAN_0,VPAD_TP_1280X720,&point,&input.tpNormal);
@@ -5139,9 +5249,7 @@ int main(int, char **) {
                 } else dashboard.SetStatus(RPXLoader_GetStatusStr(prepared),10000);
             }
             if (running && !launchRequested && dashboard.ConsumeScanRequest()) {
-                dashboard.SetStatus("SCANNING CONTENT SOURCES...", 20000); dashboard.Render(delta);
-                scan=ScanLibrary(); SaveLibraryCache(scan.games); dashboard.ReplaceGames(std::move(scan.games));
-                dashboard.SetStatus("SCAN COMPLETE  "+std::to_string(games.size())+" GAMES");
+                dashboard.StartScan();
             }
         }
         if (running && !launchRequested) dashboard.Render(delta);
@@ -5192,7 +5300,8 @@ int main(int argc, char **argv) {
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND); InitSmoothFonts();
     bool ok;
     { std::vector<GameEntry> games; Dashboard dashboard(renderer, games);
-      if(std::string(argv[1])=="asyncbrowserchecks")ok=dashboard.CheckAsyncBrowser(argv[2]);
+      if(std::string(argv[1])=="scanchecks")ok=dashboard.CheckScanDialog(argv[2]);
+      else if(std::string(argv[1])=="asyncbrowserchecks")ok=dashboard.CheckAsyncBrowser(argv[2]);
       else if(std::string(argv[1])=="asyncartworkchecks")ok=dashboard.CheckAsyncArtwork(argv[2]);
       else if(std::string(argv[1])=="glassbackgroundchecks")ok=dashboard.CheckGlassBackground(argv[2]);
       else if(std::string(argv[1])=="coverfacechecks")ok=dashboard.CheckCoverFaces(argv[2]);

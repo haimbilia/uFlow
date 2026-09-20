@@ -289,3 +289,17 @@ browser_path/library/media tests, and asyncbrowserchecks/browserchecks/
 mediadefaultchecks host previews. Rebuild app and native installer; keep the tested
 USB module and Mocha unchanged. Hardware retest target: usb1:/Decrypted; host tests
 do not establish responsiveness of a failing physical disk or firmware I/O call.
+
+Scan progress (sequence 2026092102): Scan Now and uncached startup run the scanner
+on a worker. The modal reports stage, current path, games found and elapsed time;
+unknown discovery totals use an animated bar, artwork matching uses completed /
+total games. Do not fabricate a whole-scan percentage. Input/settings changes and
+launches are blocked while scanning, but rendering and system events continue.
+B requests cooperative cancellation before the cache commit; interrupted/failed
+scans never replace the displayed library or save partial scan results. System
+background/exit joins the worker before storage teardown. Final cache-save failure
+is reported separately from successful in-memory discovery (including the existing
+8192-entry cache bound). Directory handles are RAII-owned across observer unwinds.
+Run tools/test-scan-worker.ps1, library/media/browser regressions and scanchecks
+GPU preview in both skins; rebuild and test the native installer. The USB module
+and Mocha are unchanged. Physical USB scan timing/progress requires console testing.
