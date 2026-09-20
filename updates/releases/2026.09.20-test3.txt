@@ -1,0 +1,3 @@
+Fixed the updater helper inheriting uFlow's locked content mount.
+The helper explicitly releases that mount before recovery or installation.
+Installation stops safely if the mount cannot be released.

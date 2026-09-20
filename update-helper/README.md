@@ -14,7 +14,12 @@ are recorded in `cache/update/helper-error.txt`; no ROM/config paths are targets
 
 `app/Makefile` builds this helper and embeds its RPX automatically. Native payload
 sync therefore includes it in every app/installer update, not as a separately
-installed public menu entry. The helper has no WUHB content mount of its own.
+installed public menu entry. Aroma deliberately remounts the previous WUHB when
+launching a bare RPX for hot-reloading support. The helper therefore calls
+`RPXLoader_UnmountCurrentRunningBundle` before any recovery or file replacement.
+Detaching only by exiting the previous process is insufficient. Its embedded
+font remains usable without the inherited content mount. Detach failure stops
+installation before it touches the target.
 
 Host tests cover signed handoff creation/consumption, tampering, unchanged active
 app before handoff and journal recovery. Actual Aroma title transitions and

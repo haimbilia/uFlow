@@ -160,3 +160,10 @@ dependency and handoff tests when changing packaging. The corrected test pair is
 helper-enabled sequence 2026092001 on SD and release 2026092002 on the server;
 the refreshed native installer contains 2026092002. Both the SD and installer
 must include the embedded helper. Do not ship the previous no-helper bootstrap.
+
+Test2 exposed Aroma's intentional inherited content remount for bare RPX hot
+reloads. The helper must explicitly call RPXLoader_UnmountCurrentRunningBundle
+before recovery/commit and stop on failure. Its font/code are self-contained.
+Test3 checks this ordering and failure gating on host; the SD bootstrap now has
+sequence 2026092002 and the server/installer have 2026092003. A host pass does not
+establish that console bundle handles have been released; hardware retest is required.

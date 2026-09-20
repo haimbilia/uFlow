@@ -1,5 +1,6 @@
 #include "update_transaction.hpp"
 #include "update_trust.hpp"
+#include "update_handoff.hpp"
 #include "glass_ttf.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
@@ -7,8 +8,8 @@
 #include <coreinit/systeminfo.h>
 #include <rpxloader/rpxloader.h>
 #include <vpad/input.h>
-// A bare RPX deliberately has no WUHB content mount. The old uFlow title must
-// finish exiting before this process can rename its still-intact executable.
+// Aroma can remount the previous WUHB even for a bare RPX. Explicitly detach
+// that inherited mount; this helper's code and embedded font do not need it.
 int main(int,char **){
     if(!WHBMountSdCard())return 1;
     if(SDL_Init(SDL_INIT_VIDEO)!=0){WHBUnmountSdCard();return 1;}
@@ -26,8 +27,10 @@ int main(int,char **){
     RPXLoader_InitLibrary();OSEnableHomeButtonMenu(false);
     try{
         Setup::Need(renderer&&font,"Cannot display update installer");draw("Verifying downloaded update...");
-        UFlowUpdate::Transaction tx("fs:/vol/external01",UFlowUpdate::PublicKey,"stable");
-        tx.InstallPrepared([&](int point){draw(point<3?"Installing verified update...":"Confirming installation...");});
+        UFlowUpdate::InstallDetached([]{return RPXLoader_UnmountCurrentRunningBundle()==RPX_LOADER_RESULT_SUCCESS;},[&]{
+            UFlowUpdate::Transaction tx("fs:/vol/external01",UFlowUpdate::PublicKey,"stable");
+            tx.InstallPrepared([&](int point){draw(point<3?"Installing verified update...":"Confirming installation...");});
+        });
         draw("Update installed. Opening uFlow...");
     }catch(const std::exception &e){failed=true;error=e.what();draw(error);
         if(FILE *log=std::fopen("fs:/vol/external01/wiiu/apps/uFlow/cache/update/helper-error.txt","wb")){std::fprintf(log,"%s\n",error.c_str());std::fclose(log);}}

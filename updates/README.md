@@ -73,7 +73,9 @@ These are host tests, not proof of successful Wii U networking or power-cut reco
 The update is downloaded under `wiiu/apps/uFlow/cache/update`, verified, then
 handed to a separate bare-RPX helper. Aroma holds the active WUHB open; replacing
 it inside the original process fails. The helper starts after that process exits
-and replaces the app using a journal. The previous executable temporarily remains as
+and explicitly unmounts the inherited content bundle before replacing the app
+using a journal. Without that explicit unmount, Aroma remounts the original WUHB
+for bare-RPX hot-reloading and leaves it locked. The previous executable temporarily remains as
 `wiiu/apps/uFlow-Recovery.wuhb`. If power is lost between file renames and uFlow
 is missing, launch this recovery entry from the Wii U Menu. Startup reconciles
 the transaction before checking for another update. Do not delete this entry or
@@ -88,7 +90,7 @@ it verifies upload hashes and promotes the channel manifest last. Private signin
 keys never leave the PC. Do not publish an older sequence to an existing channel.
 
 For the corrected console test, the SD receives a helper-enabled bootstrap at
-sequence 2026092001 and the server offers 2026092002 (`2026.09.20-test2`). The
+sequence 2026092002 and the server offers 2026092003 (`2026.09.20-test3`). The
 native installer contains the latest app with the helper embedded. The first
 test release exposed the running-WUHB rename failure; it was not a successful
 hardware update. Do not deploy the original no-helper bootstrap again.

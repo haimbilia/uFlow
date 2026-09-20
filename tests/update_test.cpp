@@ -1,5 +1,6 @@
 #include "update_transaction.hpp"
 #include "update_trust.hpp"
+#include "update_handoff.hpp"
 #include <filesystem>
 #include <iostream>
 #include <cassert>
@@ -9,6 +10,9 @@ std::string B64(const std::string &s){const char *c="ABCDEFGHIJKLMNOPQRSTUVWXYZa
 std::string Envelope(const std::string &body,const uint8_t *sk){uint8_t sig[64];crypto_ed25519_sign(sig,sk,(const uint8_t*)body.data(),body.size());return "{\"manifest\":\""+B64(body)+"\",\"signature\":\""+B64(std::string((char*)sig,64))+"\"}";}
 template<class F>void Fails(F f){bool failed=false;try{f();}catch(const std::exception &){failed=true;}assert(failed);}
 int main(int argc,char **argv){
+    bool detached=false,installed=false;
+    InstallDetached([&]{detached=true;return true;},[&]{assert(detached);installed=true;});assert(installed);
+    installed=false;Fails([&]{InstallDetached([]{return false;},[&]{installed=true;});});assert(!installed);
     if(argc==3){auto r=Parse(ReadSmall(argv[1]),PublicKey,"stable");assert(Setup::Size(argv[2])==r.size&&Setup::HashFile(argv[2],{},"")==r.sha);std::cout<<"PASS: Python-signed release accepted by production C++ verifier: "<<r.version<<"\n";return 0;}
     uint8_t seed[32]={7},sk[64],pk[32];crypto_ed25519_key_pair(sk,pk,seed);
     const std::string binary="new verified uFlow test binary",hash=Setup::Hash(binary);
