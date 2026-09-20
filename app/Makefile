@@ -17,7 +17,7 @@ include $(DEVKITPRO)/wut/share/wut_rules
 WUMS_ROOT := $(DEVKITPRO)/wums
 TARGET := uFlow
 BUILD := build
-SOURCES := source vendor/monocypher
+SOURCES := source vendor/monocypher vendor/fatfs
 DATA := data
 INCLUDES :=
 

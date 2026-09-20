@@ -8,12 +8,18 @@ int main(){
     assert(Parent("fs:/vol/external01")=="fs:/vol");
     assert(Parent("fs:/vol")=="fs:/");
     assert(Parent("fs:/")=="fs:/");
+    assert(Parent("usb1:/")=="fs:/");
+    assert(Parent("usb1:/games")=="usb1:/");
+    assert(Normalize("usb1:/")=="usb1:/");
+    assert(Child("usb1:/","Media")=="usb1:/Media");
     assert(Child("fs:/","vol")=="fs:/vol");
     assert(Child("fs:/vol/","external02")=="fs:/vol/external02");
     assert(Container("fs:/vol/")&&Container("fs:/")&&!Container("fs:/vol/external02"));
     std::vector<std::string> names;
     AddNamespaceEntries("fs:/",names,[](const auto &){return false;});
     assert(names==std::vector<std::string>{"vol"});
+    AddNamespaceEntries("fs:/",names,[](const auto &p){return p=="usb1:/";});
+    assert((names==std::vector<std::string>{"vol","usb1:/"}));
     names={"external01","custom_mount"};
     AddNamespaceEntries("fs:/vol",names,[](const auto &p){return p=="fs:/vol/external01"||p=="fs:/vol/external02";});
     assert((names==std::vector<std::string>{"external01","custom_mount","external02"}));

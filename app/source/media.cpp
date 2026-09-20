@@ -117,7 +117,7 @@ bool MediaFileMatches(MediaType type,const std::string &path) {
 std::vector<std::string> ListMediaFiles(const std::string &path,MediaType type) {
     if(BrowserPath::Container(path)){
         auto directories=ListDirectories(path);
-        for(auto &name:directories)name+="/";
+        for(auto &name:directories)if(name.back()!='/')name+="/";
         return directories;
     }
     std::vector<std::string> directories,files;

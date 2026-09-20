@@ -1,5 +1,8 @@
 #include "library.hpp"
 #include "browser_path.hpp"
+#ifndef UFLOW_HOST_PREVIEW
+#include "usb_storage.hpp"
+#endif
 #include "vc_launch.hpp"
 #include "injection_dialog.hpp"
 #include "update_model.hpp"
@@ -3020,7 +3023,7 @@ public:
                 const auto slash=file.find_last_of('/');
                 if(slash!=std::string::npos && DirectoryExists(file.substr(0,slash))) browserPath_=file.substr(0,slash);
             }
-            if (browserPath_.rfind("fs:/", 0) != 0) browserPath_ = "fs:/vol";
+            if (browserPath_.rfind("fs:/", 0) != 0 && browserPath_.rfind("usb1:/",0)!=0) browserPath_ = "fs:/vol";
             browserPath_=BrowserPath::Normalize(browserPath_);
             RefreshBrowser();
             directoryBrowser_ = true;
@@ -3061,6 +3064,7 @@ public:
         if (browserDirectories_.empty()) return;
         const auto &name=browserDirectories_[browserRow_];
         if(name=="../"){BrowserBack();return;}
+        if(name=="usb1:/"){browserPath_=name;RefreshBrowser();return;}
         if(defaultFileBrowser_) {
             if(name=="AUTO (DEFAULT.PNG)"||name=="NONE (NO DEFAULT)") { draftMediaSource_.defaultFile.clear(); defaultFileChosen_=true; BrowserCancel(); return; }
             if(name.back()!='/') {
@@ -4682,6 +4686,7 @@ int main(int, char **) {
     Trace("fonts-ready");
 
     ScanResult scan;
+    USBStorage::Mount();
     std::vector<GameEntry> games;
     const bool loadedLibraryCache = mounted && LoadLibraryCache(games);
     if (loadedLibraryCache && RefreshInstalledGames(games)) SaveLibraryCache(games);
@@ -5075,6 +5080,7 @@ int main(int, char **) {
     // Keep the SD mounted through SDL shutdown so an incomplete exit leaves a
     // precise checkpoint in uflow.log. SDL owns the Menu request and ProcUI drain.
     Trace("sdl-quit-begin");
+    USBStorage::Unmount();
     SDL_Quit();
     Trace("sdl-quit-complete");
     if(mounted) {

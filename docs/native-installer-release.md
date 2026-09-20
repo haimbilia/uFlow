@@ -198,3 +198,12 @@ This Wii U Menu shortcut needs the existing vWii DWFA channel and SD WiiFlow;
 it skips Wii Menu/Wiimote prompts but does not emulate GamePad controls. Keep
 normal vWii mode for the USB diagnostic, not Wii VC injection mode. No NAND
 installation is performed when deploying this WUHB to an already configured console.
+
+USB access test7 embeds a read-only FatFs driver in uFlow. It reads one FAT32
+USB disk via libmocha raw-sector reads and exposes usb1:/ at the browser root.
+It does not mount FAT over a system volume, write sectors, alter the SD mount,
+or extend the game launchers yet. 512-byte sector disks are the initial target.
+All filesystem calls are serialized; aligned sector buffers handle arbitrary
+caller alignment. usb-storage.log on SD records mount/read failures. Use
+tools/test-usb-storage.sh and browserchecks; test physical USB browsing before
+claiming support. The embedded code follows the app into fresh native installs.
