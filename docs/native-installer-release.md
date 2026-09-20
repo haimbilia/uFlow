@@ -181,3 +181,10 @@ Back traverses to fs:/ and stays there; X/Cancel exits. Container roots cannot b
 saved as library folders. Default-file selection remains independent of the
 parent row. Run browser_path and browserchecks plus mediadefaultchecks before
 release. This is navigation only, not new USB filesystem or mounting support.
+
+Test6 adds a virtual vol entry at fs:/ even when namespace enumeration fails.
+At fs:/vol, known external volume paths are probed with opendir and merged with
+enumerated entries, without listing inaccessible drives or mounting anything.
+Library and default-media pickers share this behavior. browser_path tests cover
+unlistable parents, absent volumes and deduplication; browserchecks enters vol
+from the real listing instead of injecting a synthetic root fixture.

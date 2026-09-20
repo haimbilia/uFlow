@@ -2054,6 +2054,9 @@ public:
         if(browserDirectories_.empty()||browserDirectories_[0]!="../")return false;
         BrowserOpenSelected();if(browserPath_!="fs:/vol"||!directoryBrowser_)return false;
         BrowserBack();if(browserPath_!="fs:/"||!directoryBrowser_)return false;
+        if(browserDirectories_.empty()||browserDirectories_[0]!="vol")return false;
+        BrowserOpenSelected();if(browserPath_!="fs:/vol")return false;
+        BrowserBack();
         BrowserBack();if(browserPath_!="fs:/"||!directoryBrowser_)return false;
         const auto before=DraftPath();BrowserSelectCurrent();if(!directoryBrowser_||DraftPath()!=before)return false;
         browserPath_="fs:/vol";browserDirectories_={"../","external01","external02"};browserRow_=2;

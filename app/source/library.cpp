@@ -616,17 +616,25 @@ bool SaveContentSources(const std::vector<ContentSource> &sources) {
 
 std::vector<std::string> ListDirectories(const std::string &path) {
     std::vector<std::string> directories;
+    const auto canOpen=[](const std::string &candidate){
+        DIR *dir=opendir(candidate.c_str());if(!dir)return false;
+        closedir(dir);return true;
+    };
+    BrowserPath::AddNamespaceEntries(path,directories,canOpen);
     DIR *directory = opendir(path.c_str());
-    if (!directory) return directories;
+    if (directory) {
     while (dirent *entry = readdir(directory)) {
         const std::string name = entry->d_name;
         if (name == "." || name == "..") continue;
-        if (IsDirectory(BrowserPath::Child(path,name))) directories.push_back(name);
+        const auto child=BrowserPath::Child(path,name);
+        if (IsDirectory(child)||(BrowserPath::Container(path)&&canOpen(child))) directories.push_back(name);
     }
     closedir(directory);
+    }
     std::sort(directories.begin(), directories.end(), [](const std::string &left, const std::string &right) {
         return Lower(left) < Lower(right);
     });
+    directories.erase(std::unique(directories.begin(),directories.end()),directories.end());
     return directories;
 }
 
