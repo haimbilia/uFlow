@@ -89,20 +89,26 @@ WUMS_INITIALIZE() {
 WUMS_APPLICATION_ENDS() {
     RawLauncherTrace("application ends");
     RL_UnmountCurrentRunningBundle();
+    RawLauncherTrace("application ends: bundle/layers released");
 
     gReplacementInfo.rpxReplacementInfo.isRPXReplaced = false;
 
     RPXLoadingCleanUp();
+    RawLauncherTrace("application ends: file readers released");
     // Raw FSA clients belong to the outgoing process; reopen on game start.
     int usbRemoved=-1;
     ContentRedirection_RemoveDevice("ufusb:",&usbRemoved);
+    RawLauncherTrace("application ends: USB redirection device removed");
     USBStorage::Unmount();
+    RawLauncherTrace("application ends: USB unmounted");
 
     deinitLogging();
 }
 
 WUMS_APPLICATION_STARTS() {
+    OSReport("uFlow loader: application-start entry pid=%u\n", OSGetUPID());
     UFlowReturnApplicationStarts();
+    OSReport("uFlow loader: return gate initialized\n");
     uint32_t upid = OSGetUPID();
     char traceLine[192];
     snprintf(traceLine, sizeof(traceLine),

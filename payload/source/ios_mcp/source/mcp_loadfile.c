@@ -105,6 +105,7 @@ static bool gRawTitleProfileActive = false;
 static char gRawTitleExecutable[65];
 static RawRplScope gRawRplScope;
 static bool gRawUsbScope;
+static unsigned gMenuLoadTrace;
 
 
 // Dynamic replacements have priority over default replacements
@@ -478,17 +479,29 @@ bool hasHomebrewReplacements() {
 
 int _MCP_LoadFile_patch(ipcmessage *msg) {
     MCPLoadFileRequest *request = (MCPLoadFileRequest *) msg->ioctl.buffer_in;
+    if (strncmp(request->name, "men.rpx", sizeof(request->name)) == 0 && request->pos == 0)
+        gMenuLoadTrace = 96;
+    const bool traceMenu = gMenuLoadTrace != 0;
+    if (traceMenu) {
+        --gMenuLoadTrace;
+        DEBUG_FUNCTION_LINE("Menu load begin pid=%lu type=%lu name=%.64s pos=%lu len=%lu\n",
+                            (unsigned long) request->cafe_pid, (unsigned long) request->type, request->name,
+                            (unsigned long) request->pos, (unsigned long) msg->ioctl.length_io);
+    }
 
     // we only care about Foreground app/COS-MASTER for now.
     if (request->cafe_pid != 7) {
         // DEBUG_FUNCTION_LINE("Not for pid 7, lets ignore\n");
-        return real_MCP_LoadFile(msg);
+        int nativeResult = real_MCP_LoadFile(msg);
+        if (traceMenu) DEBUG_FUNCTION_LINE("Menu native pid result=%d\n", nativeResult);
+        return nativeResult;
     }
 
     bool requestIsRPX = EndsWith(request->name, ".rpx");
 
     // Check if a fresh RPX is loaded
     if (request->pos == 0 && requestIsRPX) {
+        if (traceMenu) DEBUG_FUNCTION_LINE("Menu load reset scope begin\n");
         RawRplBeginExecutable(&gRawRplScope, request->name);
         if(!gRawRplScope.prepared){RawUsbClear();gRawUsbScope=false;}
         // DEBUG_FUNCTION_LINE("fresh RPX load\n");
@@ -497,14 +510,17 @@ int _MCP_LoadFile_patch(ipcmessage *msg) {
         // Increase of the all replacements when we load a new RPX!
         IncreaseApplicationStartCounter();
         sReplacedLastRPX = false;
+        if (traceMenu) DEBUG_FUNCTION_LINE("Menu load reset scope complete\n");
     }
 
     int res;
+    if (traceMenu) DEBUG_FUNCTION_LINE("Menu replacement lookup begin\n");
     if ((res = MCPLoadFileReplacement(msg, request)) >= 0) {
         if (requestIsRPX) {
             sReplacedLastRPX = true;
             RawRplExecutableLoaded(&gRawRplScope);
         }
+        if (traceMenu) DEBUG_FUNCTION_LINE("Menu replacement result=%d\n", res);
         return res;
     }
 
@@ -519,7 +535,9 @@ int _MCP_LoadFile_patch(ipcmessage *msg) {
                                 request->pos, false);
         if (res >= 0) return res;
     }
+    if (traceMenu) DEBUG_FUNCTION_LINE("Menu native fallback begin\n");
     res = real_MCP_LoadFile(msg);
+    if (traceMenu) DEBUG_FUNCTION_LINE("Menu native fallback result=%d\n", res);
     return res;
 }
 

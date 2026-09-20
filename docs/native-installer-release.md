@@ -234,3 +234,12 @@ opens remain unchanged. tools/test-usb-raw.ps1 includes raw_native_path_test.cpp
 with the captured alldata.psb.m/code paths and USB-title SD save regression.
 This correction needs a rebuilt module and native installer; existing test8 app
 and Mocha binaries remain compatible. Fully reboot Aroma after replacing the module.
+
+Menu-exit investigation: hardware traces show completed application/USB cleanup
+but a stall before Menu's app-entry callback, including with USB disconnected
+and the Menu return hook disabled. Raw filesystem/save/frame hooks now target
+FP_TARGET_PROCESS_GAME, not every system process. Their active-title guards
+remain in place within that process. The Menu-only return hook is enabled again.
+Run tests/test_raw_hook_scope.py and tools/test-return-hook.ps1 with USB/SD tests.
+Retain startup/shutdown trace checkpoints until hardware confirms Menu entry and
+game return; host tests alone do not establish that this fixes the observed hang.
