@@ -13,10 +13,13 @@ import shutil
 ENTRY = re.compile(r'    \{"([^"\n]+)","([0-9a-f]{64})",(\d+)ULL,(\d+)u,\'([rkb])\'\},')
 RAW = 1017  # Wii U and DS/NES/SNES/GBA/N64/PCE/MSX VC selections.
 REGION = "wiiu/environments/aroma/plugins/regionfree.wps"
+PLUGIN_BACKEND = "wiiu/environments/aroma/modules/PluginBackend.wms"
+PLUGIN_BACKEND_HASH = "aa564fa55f3e82d8c69df07e5e85b8072949c5fefe3e45a74b7a3064ceae0c5d"
 WIIFLOW_BINS = ("app_booter.bin", "ext_loader.bin", "ext_booter.bin")
 WIIFLOW_BIN_PATHS = {f"apps/wiiflow/bins/{name}" for name in WIIFLOW_BINS}
 WIIFLOW_FORWARDER = "wiiu/apps/WiiFlow.wuhb"
 RETURN_RUNTIME = {
+    PLUGIN_BACKEND,
     "wiiu/environments/aroma/modules/RPXLoadingModule.wms",
     "wiiu/environments/aroma/modules/uFlowRawKernel.wms",
     "wiiu/environments/aroma/modules/setup/00_mocha.rpx",
@@ -46,6 +49,7 @@ def inputs(project, sources):
         "wiiu/environments/aroma/modules/uFlowRawKernel.wms": project / "kernel/uFlowRawKernel.wms",
         "wiiu/environments/aroma/modules/setup/00_mocha.rpx": project / "payload/00_mocha.rpx",
         REGION: sources / "region_free_plugin/regionfree.wps",
+        PLUGIN_BACKEND: sources / "WiiUPluginLoaderBackend/PluginBackend.wms",
         "wiiu/environments/aroma/modules/setup/99_autoboot.rpx": sources / "AutobootModule/99_autoboot.rpx",
         "apps/wiiflow/boot.dol": sources / "wiiflow-lite/out/boot.dol",
         WIIFLOW_FORWARDER: sources / "Boot2vWii/uFlow-WiiFlow.wuhb",
@@ -78,13 +82,17 @@ def synchronize(project, sources, sync=False):
         hashed, size = digest(source), source.stat().st_size
         if path == REGION and hashed != REGION_PATCH_HASH:
             raise ValueError("Region Free input lacks the uFlow raw-metadata fix")
+        if path == PLUGIN_BACKEND and hashed != PLUGIN_BACKEND_HASH:
+            raise ValueError("Plugin backend input differs from tested exit-trace build")
         old = entries.get(path)
-        if old is None and path not in (REGION, WIIFLOW_FORWARDER) and path not in cover_paths() and path not in WIIFLOW_BIN_PATHS:
+        if old is None and path not in (REGION, PLUGIN_BACKEND, WIIFLOW_FORWARDER) and path not in cover_paths() and path not in WIIFLOW_BIN_PATHS:
             raise ValueError(f"Required component missing from manifest: {path}")
         if path in WIIFLOW_BIN_PATHS or path == WIIFLOW_FORWARDER:
             mask, mode = 6, "r"  # Both Wii and GameCube need WiiFlow's external booters.
         elif path in cover_paths():
             mask, mode = cover_paths()[path], "k"  # Never replace a user's sleeve.
+        elif path == PLUGIN_BACKEND:
+            mask, mode = 1 << 31, "r"
         else:
             mask, mode = (RAW, "r") if path == REGION else (int(old[4]), old[5])
         if path in RETURN_RUNTIME:

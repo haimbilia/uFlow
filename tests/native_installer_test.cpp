@@ -113,6 +113,7 @@ int main(int argc,char **argv){
     if(argc>=2){
         const uint32_t bits=argc==3?std::stoul(argv[2]):All;
         const auto actual=root+"/actual";Aroma(actual);
+        Put(actual+"/wiiu/environments/aroma/modules/PluginBackend.wms","stock plugin backend");
         Put(actual+"/"+regionPlugin,"stock Aroma region plugin");
         Put(actual+"/"+regionConfig,"preserve these region choices");
         auto files=BundledFiles();auto ready=Prepare(actual,argv[1],files,bits,{});
@@ -121,7 +122,7 @@ int main(int argc,char **argv){
             assert(std::any_of(files.begin(),files.end(),[&](const auto &f){return f.path==path&&f.mask==6u&&f.mode=='r';}));
         }
         for(const auto &p:{wiiuCover,dsCover,wiiCover,gcCover,nesCover,snesCover,gbaCover,n64Cover,pceCover,msxCover})assert(std::any_of(files.begin(),files.end(),[&](const auto &f){return f.path==p&&f.mode=='k';}));
-        for(const char *path:{"wiiu/environments/aroma/modules/RPXLoadingModule.wms","wiiu/environments/aroma/modules/uFlowRawKernel.wms","wiiu/environments/aroma/modules/setup/00_mocha.rpx"})
+        for(const char *path:{"wiiu/environments/aroma/modules/PluginBackend.wms","wiiu/environments/aroma/modules/RPXLoadingModule.wms","wiiu/environments/aroma/modules/uFlowRawKernel.wms","wiiu/environments/aroma/modules/setup/00_mocha.rpx"})
             assert(std::any_of(files.begin(),files.end(),[&](const auto &f){return f.path==path&&f.mask==Core&&f.mode=='r';}));
         assert(std::any_of(files.begin(),files.end(),[&](const auto &f){return f.path==regionPlugin&&f.mask==1017u&&f.mode=='r';}));
         std::cout<<"Real bundle: "<<ready.items.size()<<" files, "<<ready.bytes<<" bytes\n"<<std::flush;

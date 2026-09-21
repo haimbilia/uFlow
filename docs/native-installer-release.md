@@ -344,3 +344,19 @@ rebuild/test the native installer. Deploy the module and installer to the verifi
 SD, then fully reboot Aroma and capture live syslog while reproducing the exit.
 Leave the hardware-confirmed bounded-path Mocha payload unchanged. Once the
 blocking boundary is identified, implement and hardware-test the actual fix.
+
+Port11 hardware result: ProcUIShutdown returns twice, coreinit _Exit is entered,
+and module-end-return is logged. all-module-end-callbacks-done is never reached.
+The loaded module order puts WiiUPluginLoaderBackend after RPXLoadingModule.
+The next diagnostic build adds per-plugin enter/return logs for APPLICATION_ENDS,
+socket/devoptab finalization, and acquired-RPL release in PluginBackend 0.4.1.
+It does not disable plugins, skip callbacks, change their order or force exit.
+Reproduce the patch with tools/prepare-plugin-exit-trace.py against upstream
+revision e3e67f8a8ebee77b351a43ff79561ecb6955dea6 (v0.4.1); --apply refuses any
+non-stock/non-patched source. Without --apply it checks exact patch equivalence.
+Build using that revision's Dockerfile and make -j4. The tested diagnostic binary
+is hash-pinned by sync-native-payload.py, installed as Core in replace mode, and
+covered by the native path allowlist and actual-bundle replacement/rerun tests.
+Keep the port11 RPX loader and current Mocha unchanged for this isolated test.
+This is still diagnostic: obtain the plugin-specific last checkpoint on hardware
+before claiming the underlying exit hang is resolved.

@@ -43,6 +43,9 @@ class PayloadSyncTest(unittest.TestCase):
         original = sync.REGION_PATCH_HASH
         self.addCleanup(setattr, sync, "REGION_PATCH_HASH", original)
         sync.REGION_PATCH_HASH = sync.digest(self.sources / "region_free_plugin/regionfree.wps")
+        original_backend = sync.PLUGIN_BACKEND_HASH
+        self.addCleanup(setattr, sync, "PLUGIN_BACKEND_HASH", original_backend)
+        sync.PLUGIN_BACKEND_HASH = sync.digest(self.sources / "WiiUPluginLoaderBackend/PluginBackend.wms")
 
     def run_sync(self, update=False):
         with contextlib.redirect_stdout(io.StringIO()):
@@ -90,6 +93,20 @@ class PayloadSyncTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "raw-metadata fix"):
             self.run_sync(True)
         self.assertFalse((self.payload / sync.REGION).exists())
+
+    def test_plugin_backend_added_as_core_and_wrong_build_refused(self):
+        text = self.manifest.read_text()
+        self.manifest.write_text(sync.ENTRY.sub(lambda m: "" if m[1] == sync.PLUGIN_BACKEND else m[0], text))
+        (self.payload / sync.PLUGIN_BACKEND).unlink()
+        self.run_sync(True)
+        self.run_sync()
+        entry = next(m for m in sync.ENTRY.finditer(self.manifest.read_text()) if m[1] == sync.PLUGIN_BACKEND)
+        self.assertEqual((entry[4], entry[5]), (str(1 << 31), "r"))
+        before = self.manifest.read_bytes()
+        (self.sources / "WiiUPluginLoaderBackend/PluginBackend.wms").write_bytes(b"unexpected build")
+        with self.assertRaisesRegex(ValueError, "tested exit-trace build"):
+            self.run_sync(True)
+        self.assertEqual(before, self.manifest.read_bytes())
 
     def test_changed_base_refused_without_changes(self):
         before = self.manifest.read_bytes()
