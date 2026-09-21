@@ -318,20 +318,20 @@ identical metadata; this is not a physical-console elapsed-time claim. Rebuild
 the app and native installer, run actual-bundle install/rerun tests, and measure
 the user's usb1:/Decrypted scan on hardware before claiming a timing improvement.
 
-Wii VC direct launch: a decrypted Wii VC `code/content/meta` tree is a complete
-Wii U title, not a Wii ROM. It now follows the normal raw-title launch path so its
-original Wii VC wrapper, GamePad setting, patches and metadata remain active.
-Do not automatically extract its NFS into WBFS or send it through WiiFlow/vWii;
-that discards wrapper features and GamePad-as-Classic-Controller support. Existing
-prepared WBFS cache files are left untouched but are no longer selected by title
-launch. Normal `.iso`/`.wbfs` Wii library entries still use WiiFlow. The retained
-converter is covered as a separate fallback utility: its cancellation pump accepts
-B/touch/system exit at every progress slice and never alters the source. The launch
-regression test checks that main contains no `WiiVC::Prepare` call and emits the
-direct-title trace. Run test-wii-vc-cancel, raw USB/return tests, rebuild the app
-and installer, then test a GamePad-enabled inject on hardware. GamePad input still
-depends on how the inject was authored and whether the Wii game supports Classic
-Controller input (or was patched for it).
+Wii VC loose-title safety (sequence 2026092105): a decrypted Wii VC
+`code/content/meta` tree cannot use the normal FAT32 raw-title path. Hardware trace
+from `nn_hai_user.rpl` shows `Get block address of </vol/content/hif_000000.nfs>:
+-6`, followed by `Hai image files are not found` and fatal 160-0791. Content
+redirection supplies ordinary file operations but not the physical WFS block
+addresses required by HAI. Keep the explicit `WiiVC::IsRaw` branch before generic
+raw Wii U launch, prepare a private WBFS copy, and launch it through the proven vWii
+path. This preserves source files and prevents the fatal error. Installed Wii VC
+titles still launch directly with their wrapper and can retain GamePad support;
+loose FAT32 copies cannot retain that wrapper through content redirection. The
+preparation progress/cancellation pump accepts B/touch/system exit at each slice
+and removes only partial staging files. Run test-wii-vc-cancel, raw USB/return
+tests, rebuild the app and installer, then hardware-test both a loose Wii VC title
+and an installed Wii VC title.
 
 Freedom Planet Event Preview exit investigation (2026-09-21): the reproduced
 USB-game hang reaches every raw-loader cleanup checkpoint, including USB unmount,
