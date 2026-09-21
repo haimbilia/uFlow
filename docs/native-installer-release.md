@@ -303,3 +303,17 @@ is reported separately from successful in-memory discovery (including the existi
 Run tools/test-scan-worker.ps1, library/media/browser regressions and scanchecks
 GPU preview in both skins; rebuild and test the native installer. The USB module
 and Mocha are unchanged. Physical USB scan timing/progress requires console testing.
+
+USB scan cache (sequence 2026092103): the app's read-only FatFs sector reader now
+keeps a bounded 2 MiB, four-way cache. Absolute metadata paths previously reread
+the large parent directory for each lookup. Cache only requested sectors, preserve
+bounded multi-sector reads and aligned firmware buffers, and invalidate on failed
+reads or raw-device close/remount. All access remains under the filesystem mutex.
+This is app-only: do not change the hardware-confirmed game module or Mocha.
+Scan-start/end diagnostics record cumulative cache hits and physical reads in
+usb-storage.log. Run tools/test-usb-read-cache.ps1 (ASan/UBSan plus production
+FatFs against 3,000 long-name folders), USB storage and scan-worker/library tests.
+The synthetic fixture reduced physical read calls from 27,075,002 to 10,138 with
+identical metadata; this is not a physical-console elapsed-time claim. Rebuild
+the app and native installer, run actual-bundle install/rerun tests, and measure
+the user's usb1:/Decrypted scan on hardware before claiming a timing improvement.

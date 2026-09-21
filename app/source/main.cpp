@@ -2103,6 +2103,9 @@ public:
         FlushSettingsSave(true);BrowserCancel();DismissVideo();StopMusic();
         scanState_={};scanState_.progress.stage="STARTING SCAN";scanApplied_=false;scanCancelling_=false;
         scanOpen_=true;scanStarted_=SDL_GetTicks();scanElapsed_=0;detailsBackdropReady_=false;
+#ifndef UFLOW_HOST_PREVIEW
+        USBStorage::LogReadStats("scan-start");
+#endif
         scanWorker_.Start();
     }
     void StopScan(){scanWorker_.Stop();}
@@ -2118,6 +2121,9 @@ public:
         if(!scanOpen_ || scanApplied_)return;
         scanState_=scanWorker_.Poll();scanElapsed_=(SDL_GetTicks()-scanStarted_)/1000;
         if(scanState_.finished){
+#ifndef UFLOW_HOST_PREVIEW
+            USBStorage::LogReadStats("scan-end");
+#endif
             scanApplied_=true;
             if(scanState_.error.empty()){
                 auto result=scanWorker_.Take();

@@ -1,0 +1,4 @@
+$ErrorActionPreference='Stop'
+$project=Split-Path $PSScriptRoot -Parent
+docker run --rm --mount "type=bind,source=$project,target=/project,readonly" gcc:14-bookworm sh -c 'set -eu; testdir=$(mktemp -d); g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined -I/project/app/source /project/tests/usb_read_cache_test.cpp -o "$testdir/check"; "$testdir/check"; gcc -O2 -I/project/app/vendor/fatfs -c /project/app/vendor/fatfs/ff.c -o "$testdir/ff.o"; gcc -O2 -I/project/app/vendor/fatfs -c /project/app/vendor/fatfs/ffunicode.c -o "$testdir/unicode.o"; g++ -std=c++20 -O2 -I/project/app/source -I/project/app/vendor/fatfs /project/tests/usb_scan_cache_benchmark.cpp "$testdir/ff.o" "$testdir/unicode.o" -o "$testdir/benchmark"; "$testdir/benchmark"'
+if($LASTEXITCODE -ne 0){throw 'USB read cache checks failed'}

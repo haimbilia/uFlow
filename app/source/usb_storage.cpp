@@ -14,6 +14,9 @@
 #include <limits>
 #include <limits.h>
 #include <cctype>
+#ifndef UFLOW_USB_LOADER
+#include "usb_read_cache.hpp"
+#endif
 #ifdef UFLOW_USB_LOADER
 #include <content_redirection/redirection.h>
 #include <coreinit/ios.h>
@@ -36,6 +39,9 @@ std::mutex mutex;
 bool registered=false;
 unsigned rawDevice=0;
 alignas(64) unsigned char bounce[64*1024];
+#ifndef UFLOW_USB_LOADER
+USBReadCache<> readCache;
+#endif
 void Log(const char *phase,int code){
     if(FILE *f=fopen("fs:/vol/external01/wiiu/apps/uFlow/usb-storage.log","a")){
         fprintf(f,"%s=%d\n",phase,code);fclose(f);
@@ -89,18 +95,32 @@ int DirNext(_reent *r,DIR_ITER *it,char *name,struct stat *s){
 }
 int DirReset(_reent *r,DIR_ITER *it){std::lock_guard lock(mutex);auto v=f_readdir(static_cast<FATDIR*>(it->dirStruct),nullptr);return v==FR_OK?0:Fail(r,v);}
 int DirClose(_reent *r,DIR_ITER *it){std::lock_guard lock(mutex);auto v=f_closedir(static_cast<FATDIR*>(it->dirStruct));return v==FR_OK?0:Fail(r,v);}
-void CloseRaw(){if(handle>=0){FSAEx_RawCloseEx(client,handle);handle=-1;}if(client>=0){FSADelClient(client);client=-1;}}
+void CloseRaw(){
+#ifndef UFLOW_USB_LOADER
+    readCache.Reset();
+#endif
+    if(handle>=0){FSAEx_RawCloseEx(client,handle);handle=-1;}if(client>=0){FSADelClient(client);client=-1;}
+}
 }
 extern "C" DSTATUS disk_status(BYTE n){return n==0&&handle>=0?0:STA_NOINIT;}
 extern "C" DSTATUS disk_initialize(BYTE n){return disk_status(n);}
 extern "C" DRESULT disk_read(BYTE n,BYTE *data,LBA_t sector,UINT count){
     if(n||handle<0||!count)return RES_PARERR;
+#ifndef UFLOW_USB_LOADER
+    return readCache.ReadSectors(data,sector,count,[](unsigned char *target,std::uint32_t start,std::uint32_t size){
+        const auto result=FSAEx_RawReadEx(client,bounce,512,size,start,handle);
+        if(result!=FS_ERROR_OK){Log("read-error",result);return false;}
+        if(target!=bounce)memcpy(target,bounce,size*512);
+        return true;
+    })?RES_OK:RES_ERROR;
+#else
     while(count){const UINT batch=std::min<UINT>(count,sizeof(bounce)/512);
         auto result=FSAEx_RawReadEx(client,bounce,512,batch,sector,handle);
         if(result!=FS_ERROR_OK){Log("read-error",result);return RES_ERROR;}
         if(data!=bounce)memcpy(data,bounce,batch*512);
         data+=batch*512;sector+=batch;count-=batch;
     }return RES_OK;
+#endif
 }
 extern "C" DRESULT disk_ioctl(BYTE,BYTE command,void*){return command==CTRL_SYNC?RES_OK:RES_PARERR;}
 bool USBStorage::Mount(){
@@ -126,6 +146,18 @@ bool USBStorage::Mount(){
     }return false;
 }
 void USBStorage::Unmount(){std::lock_guard lock(mutex);if(registered){RemoveDevice(USB_NAME ":");registered=false;}f_mount(nullptr,"0:",0);CloseRaw();}
+
+#ifndef UFLOW_USB_LOADER
+void USBStorage::LogReadStats(const char *phase){
+    std::lock_guard lock(mutex);const auto s=readCache.Statistics();
+    if(FILE *file=fopen("fs:/vol/external01/wiiu/apps/uFlow/usb-storage.log","a")){
+        fprintf(file,"cache-%s requested=%llu hits=%llu raw-calls=%llu raw-sectors=%llu errors=%llu\n",phase,
+            static_cast<unsigned long long>(s.requested),static_cast<unsigned long long>(s.hits),
+            static_cast<unsigned long long>(s.reads),static_cast<unsigned long long>(s.sectors),static_cast<unsigned long long>(s.errors));
+        fclose(file);
+    }
+}
+#endif
 
 #ifdef UFLOW_USB_LOADER
 namespace {
