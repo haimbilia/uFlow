@@ -318,18 +318,20 @@ identical metadata; this is not a physical-console elapsed-time claim. Rebuild
 the app and native installer, run actual-bundle install/rerun tests, and measure
 the user's usb1:/Decrypted scan on hardware before claiming a timing improvement.
 
-Wii VC cancellation (sequence 2026092104): raw Wii VC preparation shares the
-controller/touch/system-event pump with cartridge injection. Poll at every progress
-checkpoint, independently of the 80 ms rendering throttle; accept B held or newly
-pressed, and re-arm the neutral-input gate after preparation. Check cancellation
-during source inspection and each 256 KiB conversion/readback slice. Cancel/error
-closes and removes only the current conversion's partial staging files, never the
-source, saves or a published cache. Run tools/test-wii-vc-cancel.ps1 against the
-actual preparer with synthetic encrypted NFS under ASan/UBSan, plus injectionchecks
-in both skins. Rebuild the app and native installer and test the actual payload.
-GamePad/Wii Remote/Pro B and touch cancel require console retesting; an in-flight
-firmware read/write must still return before cooperative cancellation can run.
-This does not change vWii launch, GamePad support inside Wii games or return hooks.
+Wii VC direct launch: a decrypted Wii VC `code/content/meta` tree is a complete
+Wii U title, not a Wii ROM. It now follows the normal raw-title launch path so its
+original Wii VC wrapper, GamePad setting, patches and metadata remain active.
+Do not automatically extract its NFS into WBFS or send it through WiiFlow/vWii;
+that discards wrapper features and GamePad-as-Classic-Controller support. Existing
+prepared WBFS cache files are left untouched but are no longer selected by title
+launch. Normal `.iso`/`.wbfs` Wii library entries still use WiiFlow. The retained
+converter is covered as a separate fallback utility: its cancellation pump accepts
+B/touch/system exit at every progress slice and never alters the source. The launch
+regression test checks that main contains no `WiiVC::Prepare` call and emits the
+direct-title trace. Run test-wii-vc-cancel, raw USB/return tests, rebuild the app
+and installer, then test a GamePad-enabled inject on hardware. GamePad input still
+depends on how the inject was authored and whether the Wii game supports Classic
+Controller input (or was patched for it).
 
 Freedom Planet Event Preview exit investigation (2026-09-21): the reproduced
 USB-game hang reaches every raw-loader cleanup checkpoint, including USB unmount,

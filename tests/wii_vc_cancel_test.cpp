@@ -27,6 +27,7 @@ int main(){
     for(unsigned i=0;i<64;++i){Key iv{};Put32(iv.data()+12,i);aes.Crypt(nfs.data()+512+i*Sector,Sector,iv,false);}
     WriteAll("source/content/hif_000000.nfs",nfs);
     GameEntry original{};original.platform=Platform::WiiU;original.absolutePath="source";original.titleId="0005000012345678";
+    assert(WiiVC::IsRaw(original)); // Complete decrypted Wii U VC title: direct-launch candidate.
     const std::string base="fs:/vol/external01/wiiu/apps/uFlow/wii-vc-cache-v2/"+original.titleId;
     for(int cancelAt=0;cancelAt<5;++cancelAt){
         GameEntry game=original;InjectionDialog dialog;dialog.Start("Test Wii VC");

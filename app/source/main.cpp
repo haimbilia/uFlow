@@ -5173,31 +5173,6 @@ int main(int, char **) {
                     if(!UFlowReturn::Arm()){dashboard.ApplyMusic();dashboard.SetStatus("CANNOT SAVE RETURN-TO-UFLOW REQUEST",10000);continue;}
                     _SYSLaunchTitleByPathFromLauncher(launchPath.c_str(),static_cast<uint32_t>(launchPath.size()));
                     launchRequested=true;
-                } else if(WiiVC::IsRaw(game)) {
-                    Trace(("wii-vc-prepare-selected path=" + game.absolutePath + " title=" + game.titleId).c_str());
-                    GameEntry prepared = game;
-                    dashboard.BeginWiiVCPreparation(game.name);
-                    dashboard.Render(.08f);
-                    const auto prepareError = WiiVC::Prepare(prepared, prepareProgress);
-                    dashboard.FinishInjection(prepareError);
-                    inputResume.Arm();heldHorizontal=heldVertical=0;touchHeld=false;
-                    if (!prepareError.empty()) {
-                        Trace(("wii-vc-prepare-failed " + prepareError).c_str());
-                        continue;
-                    }
-                    WiiRequest::Request request;
-                    const auto error = PrepareWiiLaunch(prepared, request);
-                    if (!error.empty()) {
-                        Trace(("wii-vc-preflight-failed " + error).c_str());
-                        dashboard.SetStatus(error, 10000);
-                        continue;
-                    }
-                    dashboard.SetStatus("LAUNCHING WII VC GAME...", 10000); dashboard.Render(delta);
-                    dashboard.StopMusic();
-                    if(!UFlowReturn::Arm()){dashboard.ApplyMusic();dashboard.SetStatus("CANNOT SAVE RETURN-TO-UFLOW REQUEST",10000);continue;}
-                    const auto launchError = LaunchWiiGame(request);
-                    if (launchError.empty()) { Trace("wii-vc-forwarder-launch-accepted"); launchRequested = true; }
-                    else { UFlowReturn::Clear(); Trace(("wii-vc-launch-failed " + launchError).c_str()); dashboard.ApplyMusic(); dashboard.SetStatus(launchError, 10000); }
                 } else if(game.platform==Platform::Wii || game.platform==Platform::GameCube) {
                     WiiRequest::Request request;
                     const bool gc = game.platform==Platform::GameCube;
@@ -5222,10 +5197,11 @@ int main(int, char **) {
                     }
                 } else if(game.platform!=Platform::WiiU) dashboard.SetStatus(std::string(PlatformName(game.platform))+" LAUNCH ADAPTER IS NEXT");
                 else {
-                    Trace(("raw-launch-selected path=" + game.absolutePath + " title=" + game.titleId).c_str());
+                    const bool directWiiVC=WiiVC::IsRaw(game);
+                    Trace(((directWiiVC?"wii-vc-direct-selected path=":"raw-launch-selected path=") + game.absolutePath + " title=" + game.titleId).c_str());
                     const auto validation = ValidateRawGame(game);
                     if (!validation.empty()) {
-                        Trace(("raw-launch-preflight-failed " + validation).c_str());
+                        Trace(((directWiiVC?"wii-vc-direct-preflight-failed ":"raw-launch-preflight-failed ") + validation).c_str());
                         dashboard.SetStatus(validation, 10000);
                         continue;
                     }
@@ -5235,7 +5211,7 @@ int main(int, char **) {
                         dashboard.SetStatus("RAW LAUNCH BACKEND IS NOT INSTALLED", 10000);
                         continue;
                     }
-                    dashboard.SetStatus("LAUNCHING "+Ellipsize(game.name,38),10000); dashboard.Render(delta);
+                    dashboard.SetStatus((directWiiVC?"LAUNCHING WII VC INJECT  ":"LAUNCHING ")+Ellipsize(game.name,38),10000); dashboard.Render(delta);
                     dashboard.StopMusic();
                     if(!UFlowReturn::Arm()){dashboard.ApplyMusic();dashboard.SetStatus("CANNOT SAVE RETURN-TO-UFLOW REQUEST",10000);continue;}
                     const RPXLoaderStatus result=launchLoose(game.rpxRelative.c_str(),game.contentRelative.c_str(),game.codeRelative.c_str(),
