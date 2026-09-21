@@ -61,7 +61,7 @@ inline bool Allowed(const std::string &p){
     for(const char *prefix:{"wiiu/apps/uFlow/","wiiu/apps/noods/","wiiu/vc-bases/","apps/wiiflow/","apps/usbloader_gx/","apps/nintendont/","apps/d2x-cios-installer-vwii/","apps/wiiflow_channel_installer/","wiiflow/"})if(p.rfind(prefix,0)==0)return true;
     return p=="wiiu/apps/compat_installer.wuhb"||p=="wiiu/environments/aroma/modules/RPXLoadingModule.wms"||p=="wiiu/environments/aroma/modules/PluginBackend.wms"||
         p=="wiiu/environments/aroma/modules/uFlowRawKernel.wms"||p=="wiiu/environments/aroma/modules/setup/00_mocha.rpx"||p=="wiiu/environments/aroma/modules/setup/99_autoboot.rpx"||
-        p=="wiiu/environments/aroma/plugins/regionfree.wps";
+        p=="wiiu/environments/aroma/plugins/regionfree.wps"||p=="wiiu/environments/aroma/plugins/ftpiiu.wps";
 }
 inline std::string Path(const std::string &root,const std::string &rel){
     Need(Safe(rel),"Unsafe installer path");std::string p=root;struct stat st{};
@@ -110,6 +110,8 @@ inline Plan Prepare(const std::string &sd,const std::string &bundle,const std::v
     for(const char *required:{"wiiu/environments/aroma/root.rpx","wiiu/environments/aroma/modules/setup/10_wums_loader.rpx","wiiu/environments/aroma/modules/ContentRedirectionModule.wms","wiiu/environments/aroma/modules/WUHBUtilsModule.wms"})Need(File(Path(sd,required)),"Aroma prerequisite missing");
     for(const auto &f:files){
         Need(Safe(f.path)&&Allowed(f.path)&&seen.insert(f.path).second,"Unsafe or duplicate package entry");
+        // Repair an existing FTP service, never introduce one or change its settings.
+        if(f.path=="wiiu/environments/aroma/plugins/ftpiiu.wps"&&!File(Path(sd,f.path)))continue;
         // The integrated backend reads its modules from WUHB content. Do not
         // install redundant standalone setup apps onto a fresh user's SD.
         if(f.path=="wiiu/apps/compat_installer.wuhb" || f.path.starts_with("apps/d2x-cios-installer-vwii/") ||

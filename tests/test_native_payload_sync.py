@@ -46,6 +46,21 @@ class PayloadSyncTest(unittest.TestCase):
         original_backend = sync.PLUGIN_BACKEND_HASH
         self.addCleanup(setattr, sync, "PLUGIN_BACKEND_HASH", original_backend)
         sync.PLUGIN_BACKEND_HASH = sync.digest(self.sources / "WiiUPluginLoaderBackend/PluginBackend.wms")
+        original_ftp = sync.FTPIIU_PATCH_HASH
+        self.addCleanup(setattr, sync, "FTPIIU_PATCH_HASH", original_ftp)
+        sync.FTPIIU_PATCH_HASH = sync.digest(self.sources / "ftpiiu_plugin/ftpiiu.wps")
+
+    def test_ftp_added_and_unapproved_build_refused(self):
+        self.manifest.write_text(sync.ENTRY.sub(lambda m: "" if m[1] == sync.FTPIIU else m[0], self.manifest.read_text()))
+        self.run_sync(True)
+        self.run_sync()
+        entry = next(m for m in sync.ENTRY.finditer(self.manifest.read_text()) if m[1] == sync.FTPIIU)
+        self.assertEqual((entry[4], entry[5]), (str(1 << 31), "r"))
+        before = self.manifest.read_bytes()
+        (self.sources / "ftpiiu_plugin/ftpiiu.wps").write_bytes(b"unexpected build")
+        with self.assertRaisesRegex(ValueError, "tested early-exit build"):
+            self.run_sync(True)
+        self.assertEqual(before, self.manifest.read_bytes())
 
     def run_sync(self, update=False):
         with contextlib.redirect_stdout(io.StringIO()):

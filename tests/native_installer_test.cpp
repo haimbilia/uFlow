@@ -24,6 +24,10 @@ int main(int argc,char **argv){
     const std::string regionPlugin="wiiu/environments/aroma/plugins/regionfree.wps";
     const std::string regionConfig="wiiu/environments/aroma/plugins/config/region_free_plugin.json";
     asset(regionPlugin,1017u,'r');
+    const std::string ftpPlugin="wiiu/environments/aroma/plugins/ftpiiu.wps";
+    const std::string ftpConfig="wiiu/environments/aroma/plugins/config/ftpiiu.json";
+    asset(ftpPlugin,Core,'r');
+    Put(sd+"/"+ftpPlugin,"stock FTP");Put(sd+"/"+ftpConfig,"disabled user FTP settings");
     asset("apps/nintendont/boot.dol",1u<<2,'r');
     const std::string dsCover="wiiu/apps/uFlow/media/ds/fullcovers/Default.png";
     const std::string wiiuCover="wiiu/apps/uFlow/media/wiiu/fullcovers/Default.png";
@@ -53,6 +57,9 @@ int main(int argc,char **argv){
     assert(HashFile(sd+"/wiiu/apps/uFlow/libraries.cfg",{},"")==Hash("custom"));
     assert(HashFile(sd+"/"+regionPlugin,{},"")==Hash("payload "+regionPlugin));
     assert(HashFile(sd+"/"+regionConfig,{},"")==Hash("saved user region choices"));
+    assert(HashFile(sd+"/"+ftpPlugin,{},"")==Hash("payload "+ftpPlugin));
+    assert(HashFile(sd+"/"+ftpConfig,{},"")==Hash("disabled user FTP settings"));
+    assert(!Allowed(ftpConfig));
     assert(!Allowed(regionConfig)&&!Allowed("wiiu/environments/aroma/plugins/unrelated.wps"));
     assert(HashFile(sd+"/.uflow-setup/test/backup/wiiu/environments/aroma/modules/RPXLoadingModule.wms",{},"")==Hash("original"));
     assert(Prepare(sd,bundle,defs,All,{}).bytes==0);
@@ -64,6 +71,7 @@ int main(int argc,char **argv){
     Install(fresh,bundle,minimal,"minimal",{});assert(Size(fresh+"/wiiu/apps/uFlow/libraries.cfg")==0);
     assert(!File(fresh+"/apps/nintendont/boot.dol"));
     assert(!File(fresh+"/"+regionPlugin));
+    assert(!File(fresh+"/"+ftpPlugin));
     for(int bit=0;bit<13;++bit){
         const auto selected=Prepare(fresh,bundle,defs,1u<<bit,{});
         const bool hasPlugin=std::any_of(selected.items.begin(),selected.items.end(),[&](const auto &i){return i.file.path==regionPlugin;});
@@ -78,6 +86,7 @@ int main(int argc,char **argv){
         assert(contains(msxCover)==(bit==9));
         assert(contains(pceCover)==(bit==8));
         assert(contains(forwarder)==(bit==1||bit==2));
+        assert(!contains(ftpPlugin));
     }
     std::vector<std::string> dirs;auto config=Configs(1u<<10,dirs);assert(config[0].second.find("\tnoods\t")!=std::string::npos&&config[0].second.find("ds-vc")==std::string::npos);
     auto nesConfig=Configs(1u<<4,dirs);assert(nesConfig[0].second.find("\t.nes,.unf,.unif,.zip\t")!=std::string::npos);
@@ -116,6 +125,7 @@ int main(int argc,char **argv){
         Put(actual+"/wiiu/environments/aroma/modules/PluginBackend.wms","stock plugin backend");
         Put(actual+"/"+regionPlugin,"stock Aroma region plugin");
         Put(actual+"/"+regionConfig,"preserve these region choices");
+        Put(actual+"/"+ftpPlugin,"stock FTP");Put(actual+"/"+ftpConfig,"preserve FTP choices");
         auto files=BundledFiles();auto ready=Prepare(actual,argv[1],files,bits,{});
         for(const char *name:{"app_booter.bin","ext_loader.bin","ext_booter.bin"}) {
             const auto path=std::string("apps/wiiflow/bins/")+name;
@@ -137,6 +147,8 @@ int main(int argc,char **argv){
         assert(!File(actual+"/apps/wiiflow_channel_installer/boot.dol"));
         assert(HashFile(actual+"/"+regionPlugin,{},"")==HashFile(std::string(argv[1])+"/payload/"+regionPlugin,{},""));
         assert(HashFile(actual+"/"+regionConfig,{},"")==Hash("preserve these region choices"));
+        assert(HashFile(actual+"/"+ftpPlugin,{},"")==HashFile(std::string(argv[1])+"/payload/"+ftpPlugin,{},""));
+        assert(HashFile(actual+"/"+ftpConfig,{},"")==Hash("preserve FTP choices"));
         assert(Prepare(actual,argv[1],files,bits,{}).bytes==0);
         std::cout<<"PASS: selected actual native payload files installed and verified; rerun unchanged (mask "<<bits<<"). "<<result<<'\n';
     }

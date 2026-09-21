@@ -374,3 +374,23 @@ compiled with ASan/UBSan), exit-trace/return-hook tests and USB raw regressions.
 Rebuild/test the installer and deploy only the port12 loader plus installer.
 Keep the plugin tracing backend for the next capture. This removes late logging;
 whether it resolves the console hang still requires the user's hardware test.
+
+Port12 capture identifies the blocking callback: raw-loader cleanup returns,
+then Aroma Base and Homebrew on Menu end callbacks return, but FTPiiU's end
+callback does not. FTPiiU 0.4.5 early-exit candidate stops/joins its server and
+unmounts its paths on APPLICATION_REQUESTS_EXIT while the runtime is alive.
+APPLICATION_ENDS retains its normal idempotent fallback; no worker is forcibly
+terminated and no save flushing is skipped. OSReport marks join/unmount phases.
+This identifies the callback, not yet the exact internal blocking operation;
+the early-exit candidate still needs a full-reboot hardware test.
+
+Reproduce with tools/prepare-ftpiiu-exit.py --apply against FTPiiU upstream
+c2fc7310526124a9d63a8c28feaaca9356d504a6 (v0.4.5), initialize its pinned GSL
+submodule, build its Dockerfile, then make -j4 in that image. Run
+tools/test-ftpiiu-exit.ps1 for actual lifecycle extraction under ASan/UBSan.
+Payload sync pins the tested binary. Setup replaces ftpiiu.wps only when that
+exact plugin path already exists: fresh cards without FTP stay without FTP.
+No FTP configuration is installed/overwritten; disabled service remains disabled.
+Native host tests cover present/absent FTP, preserved configuration, real payload
+replacement and idempotent rerun. Rebuild the installer and deploy only the FTP
+plugin and refreshed installer; retain port12, tracing backend and current Mocha.
