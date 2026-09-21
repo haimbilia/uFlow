@@ -317,3 +317,16 @@ The synthetic fixture reduced physical read calls from 27,075,002 to 10,138 with
 identical metadata; this is not a physical-console elapsed-time claim. Rebuild
 the app and native installer, run actual-bundle install/rerun tests, and measure
 the user's usb1:/Decrypted scan on hardware before claiming a timing improvement.
+
+Wii VC cancellation (sequence 2026092104): raw Wii VC preparation shares the
+controller/touch/system-event pump with cartridge injection. Poll at every progress
+checkpoint, independently of the 80 ms rendering throttle; accept B held or newly
+pressed, and re-arm the neutral-input gate after preparation. Check cancellation
+during source inspection and each 256 KiB conversion/readback slice. Cancel/error
+closes and removes only the current conversion's partial staging files, never the
+source, saves or a published cache. Run tools/test-wii-vc-cancel.ps1 against the
+actual preparer with synthetic encrypted NFS under ASan/UBSan, plus injectionchecks
+in both skins. Rebuild the app and native installer and test the actual payload.
+GamePad/Wii Remote/Pro B and touch cancel require console retesting; an in-flight
+firmware read/write must still return before cooperative cancellation can run.
+This does not change vWii launch, GamePad support inside Wii games or return hooks.

@@ -103,7 +103,7 @@ std::string Prepare(GameEntry &game, VCInject::Progress progress) {
             return {};
         }
 
-        Image::Source source(game.absolutePath);
+        Image::Source source(game.absolutePath,progress);
         const auto staging = Base(game) + ".staging";
         std::remove((staging + ".wbfs").c_str());
         std::remove((staging + ".wbf1").c_str());

@@ -5,6 +5,7 @@
 #endif
 #include "vc_launch.hpp"
 #include "injection_dialog.hpp"
+#include "preparation_progress.hpp"
 #include "update_model.hpp"
 #ifndef UFLOW_HOST_PREVIEW
 #include "updater.hpp"
@@ -5125,11 +5126,12 @@ int main(int, char **) {
                 if(!dialogLaunch&&dashboard.GateInjection(game)){dashboard.Render(delta);continue;}
                 if(dashboard.InjectionDialogOpen())dashboard.Render(delta);
                 std::string emulatorPath,romRequest;
-                Uint32 injectionFrame=0;bool progressTouch=false;
-                const auto adapterError=dashboard.ConfigureLaunch(game,emulatorPath,&romRequest,
-                    [&](const std::string &phase,unsigned long long bytes,unsigned long long total){
-                        const Uint32 now=SDL_GetTicks();if(now-injectionFrame<80)return running&&foreground&&!dashboard.InjectionCancelled();
-                        injectionFrame=now;
+                PreparationProgress preparationProgress;bool progressTouch=false;
+                // Share the live event/input pump with Wii VC conversion. Merely
+                // redrawing its popup never delivers B/touch to the cancel flag.
+                const auto prepareProgress=[&](const std::string &phase,unsigned long long bytes,unsigned long long total){
+                    const Uint32 now=SDL_GetTicks();
+                    return preparationProgress.Tick(now,[&]{
                         SDL_Event pending;
                         while(SDL_PollEvent(&pending)) {
                             if(pending.type==SDL_QUIT){running=false;dashboard.StopMusic();return false;}
@@ -5139,13 +5141,16 @@ int main(int, char **) {
                         const bool ready=VPADRead(VPAD_CHAN_0,&pad,1,&error)>0&&error==VPAD_READ_SUCCESS;
                         if(!ready)pad={};
                         wiiRemote.Merge(pad,now);
-                        if(pad.trigger&VPAD_BUTTON_B)dashboard.InjectionInput(0,false,true);
+                        if((pad.trigger|pad.hold)&VPAD_BUTTON_B)dashboard.InjectionInput(0,false,true);
                         VPADTouchData point{};if(ready)VPADGetTPCalibratedPointEx(VPAD_CHAN_0,VPAD_TP_1280X720,&point,&pad.tpNormal);
                         if(point.touched&&point.validity==VPAD_VALID&&!progressTouch)dashboard.InjectionTouch(point.x,point.y);
                         progressTouch=point.touched;
-                        dashboard.InjectionProgress(phase,bytes,total);
-                        dashboard.Render(.08f);return running&&foreground&&!dashboard.InjectionCancelled();
+                        return running&&foreground&&!dashboard.InjectionCancelled();
+                    },[&]{
+                        if(running&&foreground){dashboard.InjectionProgress(phase,bytes,total);dashboard.Render(.08f);}
                     });
+                };
+                const auto adapterError=dashboard.ConfigureLaunch(game,emulatorPath,&romRequest,prepareProgress);
                 dashboard.FinishInjection(adapterError);
                 inputResume.Arm();heldHorizontal=heldVertical=0;touchHeld=false;
                 if(!adapterError.empty())continue;
@@ -5173,12 +5178,9 @@ int main(int, char **) {
                     GameEntry prepared = game;
                     dashboard.BeginWiiVCPreparation(game.name);
                     dashboard.Render(.08f);
-                    const auto prepareError = WiiVC::Prepare(prepared, [&](const std::string &phase, unsigned long long bytes, unsigned long long total) {
-                        dashboard.InjectionProgress(phase, bytes, total);
-                        dashboard.Render(.08f);
-                        return running && foreground && !dashboard.InjectionCancelled();
-                    });
+                    const auto prepareError = WiiVC::Prepare(prepared, prepareProgress);
                     dashboard.FinishInjection(prepareError);
+                    inputResume.Arm();heldHorizontal=heldVertical=0;touchHeld=false;
                     if (!prepareError.empty()) {
                         Trace(("wii-vc-prepare-failed " + prepareError).c_str());
                         continue;

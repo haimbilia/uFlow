@@ -69,7 +69,8 @@ public:
     std::vector<Range> ranges;
     uint64_t sectors=0;
     std::string identity;
-    explicit Source(const std::string &root){
+    explicit Source(const std::string &root,const Progress &progress={}){
+        Tick(progress,"READING WII VC SOURCE",0,0);
         std::array<Byte,512> header{};File first(root+"/content/hif_000000.nfs");first.Read(0,header.data(),header.size());
         Need(!std::memcmp(header.data(),"EGGS",4)&&!std::memcmp(header.data()+508,"SGGE",4),"INVALID NFS HEADER");
         const auto count=U32(header.data()+16);Need(count>0&&count<=61,"INVALID NFS EXTENT COUNT");
@@ -82,6 +83,7 @@ public:
         }
         const uint64_t packed=512+sectors*Sector,parts=(packed+Chunk-1)/Chunk;
         for(uint64_t i=0;i<parts;++i){
+            Tick(progress,"READING WII VC SOURCE",i,parts);
             char leaf[40];std::snprintf(leaf,sizeof(leaf),"/content/hif_%06u.nfs",unsigned(i));
             const auto path=root+leaf;const auto bytes=Size(path);
             Need(i+1<parts?bytes==Chunk:bytes>=packed-i*Chunk&&bytes<=Chunk,"TRUNCATED NFS CHUNK");
@@ -155,14 +157,23 @@ inline Result Convert(Source &source,const std::string &base,const Progress &pro
     std::copy(discHeader.begin(),discHeader.end(),buffer.begin()+512);
     unsigned physical=1;
     for(unsigned block:blocks){buffer[768+block*2]=Byte(physical>>8);buffer[769+block*2]=Byte(physical);++physical;}
+    // Remove only this conversion's private outputs on cancellation/error. The
+    // writer is destroyed before cleanup, so open files are closed first.
+    struct StagingCleanup {
+        std::vector<std::string> paths;bool complete=false;
+        ~StagingCleanup(){if(!complete)for(const auto &path:paths)std::remove(path.c_str());}
+    } cleanup;
+    constexpr uint64_t slice=256*1024;
     std::unique_ptr<File> out;uint64_t written=0;SHA digest;unsigned openPart=~0u;
     auto write=[&](const Byte *p,size_t n){
-        while(n){const auto part=unsigned(written/Split);if(part!=openPart){if(out)out->Close();out=std::make_unique<File>(PartPath(base,part),"wb");openPart=part;}
-            const auto take=std::min<uint64_t>(n,Split-written%Split);out->Write(p,take);digest.Add(p,take);written+=take;p+=take;n-=take;}
+        while(n){const auto part=unsigned(written/Split);if(part!=openPart){if(out)out->Close();const auto path=PartPath(base,part);out=std::make_unique<File>(path,"wb");cleanup.paths.push_back(path);openPart=part;}
+            Tick(progress,"PREPARING WII GAME (ONE TIME)",written,result.bytes);
+            const auto take=std::min({uint64_t(n),Split-written%Split,slice});out->Write(p,take);digest.Add(p,take);written+=take;p+=take;n-=take;}
     };
     write(buffer.data(),buffer.size());
     for(unsigned block:blocks){
         for(unsigned i=0;i<64;++i){
+            if(i%8==0)Tick(progress,"PREPARING WII GAME (ONE TIME)",written,result.bytes);
             const uint64_t off=uint64_t(block)*Block+i*Sector;auto *p=buffer.data()+i*Sector;source.Read(off,p,Sector);
             if(off==0)p[0x61]=0;
         }
@@ -172,7 +183,7 @@ inline Result Convert(Source &source,const std::string &base,const Progress &pro
     // Only the initial conversion is read back; subsequent launches use metadata.
     SHA verify;uint64_t checked=0;
     for(unsigned i=0;checked<result.bytes;++i){File f(PartPath(base,i));const auto n=std::min<uint64_t>(Split,result.bytes-checked);
-        for(uint64_t at=0;at<n;){const auto take=std::min<uint64_t>(buffer.size(),n-at);f.Read(at,buffer.data(),take);verify.Add(buffer.data(),take);at+=take;checked+=take;Tick(progress,"CHECKING PREPARED COPY (ONE TIME)",checked,result.bytes);}}
-    Need(verify.Hex()==result.hash,"PREPARED GAME READBACK FAILED - CHECK SD CARD");return result;
+        for(uint64_t at=0;at<n;){const auto take=std::min<uint64_t>(slice,n-at);f.Read(at,buffer.data(),take);verify.Add(buffer.data(),take);at+=take;checked+=take;Tick(progress,"CHECKING PREPARED COPY (ONE TIME)",checked,result.bytes);}}
+    Need(verify.Hex()==result.hash,"PREPARED GAME READBACK FAILED - CHECK SD CARD");cleanup.complete=true;return result;
 }
 }

@@ -13,7 +13,7 @@ inline bool IsRaw(const GameEntry &game) {
     return false;
 }
 bool HasPrepared(const GameEntry &game);
-// Creates a private, split WBFS beside the source; never edits the source or saves.
+// Creates a private, split WBFS in the SD cache; never edits the source or saves.
 // On success only the transient launch target changes. The library entry is retained.
 std::string Prepare(GameEntry &game, VCInject::Progress progress = {});
 }
