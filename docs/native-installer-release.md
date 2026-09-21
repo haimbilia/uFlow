@@ -360,3 +360,17 @@ covered by the native path allowlist and actual-bundle replacement/rerun tests.
 Keep the port11 RPX loader and current Mocha unchanged for this isolated test.
 This is still diagnostic: obtain the plugin-specific last checkpoint on hardware
 before claiming the underlying exit hang is resolved.
+
+Next hardware capture (plugin tracing enabled) stops inside raw-loader teardown,
+before module-end-return or backend-end-enter. Plugin blame is not established;
+the observed stopping boundary varies. Port12 removes five late SD log appends
+from APPLICATION_ENDS and prevents profile-clear logging from opening the SD.
+Those checkpoints now use OSReport. Real layer/file/device/profile cleanup and
+its ordering are preserved; game saves are not skipped. Earlier callbacks already
+stop ContentRedirection workers, so adding fresh diagnostic file I/O here is
+unnecessary and prolongs the sensitive exit interval. Run
+tools/test-raw-exit-cleanup.ps1 (actual callback and profile logging extracted and
+compiled with ASan/UBSan), exit-trace/return-hook tests and USB raw regressions.
+Rebuild/test the installer and deploy only the port12 loader plus installer.
+Keep the plugin tracing backend for the next capture. This removes late logging;
+whether it resolves the console hang still requires the user's hardware test.

@@ -22,7 +22,7 @@
 #include <wuhb_utils/utils.h>
 #include <wums.h>
 
-#define VERSION "v0.3.6-raw-port11-exit-trace"
+#define VERSION "v0.3.6-raw-port12-exit-logging"
 
 static void RawLauncherTrace(const char *message) {
     FILE *file = fopen("fs:/vol/external01/wiiu/raw-launcher.log", "a");
@@ -89,20 +89,19 @@ WUMS_INITIALIZE() {
 
 WUMS_APPLICATION_ENDS() {
     RawExitTracePoint("module-end-enter");
-    RawLauncherTrace("application ends");
     RL_UnmountCurrentRunningBundle();
-    RawLauncherTrace("application ends: bundle/layers released");
+    RawExitTracePoint("bundle-layers-released");
 
     gReplacementInfo.rpxReplacementInfo.isRPXReplaced = false;
 
     RPXLoadingCleanUp();
-    RawLauncherTrace("application ends: file readers released");
+    RawExitTracePoint("file-readers-released");
     // Raw FSA clients belong to the outgoing process; reopen on game start.
     int usbRemoved=-1;
     ContentRedirection_RemoveDevice("ufusb:",&usbRemoved);
-    RawLauncherTrace("application ends: USB redirection device removed");
+    RawExitTracePoint("usb-redirection-device-removed");
     USBStorage::Unmount();
-    RawLauncherTrace("application ends: USB unmounted");
+    RawExitTracePoint("usb-unmounted");
 
     deinitLogging();
     RawExitTracePoint("module-end-return");

@@ -717,7 +717,11 @@ static bool SendRawTitleProfile(const char *codePath, const char *rpxPath, bool 
     }
     const int result = IOS_Ioctl(mcp, 100, &request, sizeof(request), response, sizeof(uint32_t));
     IOS_Close(mcp);
-    if (FILE *log = fopen("fs:/vol/external01/wiiu/raw-launcher.log", "a")) {
+    OSReport("uFlow raw profile: enabled=%d title=%08X%08X ipc=%d response=%08X\n", enabled,
+             static_cast<uint32_t>(profile.titleId >> 32), static_cast<uint32_t>(profile.titleId), result, response[0]);
+    // Clearing the profile also runs during late process teardown. Keep SD
+    // diagnostics only for preparation, never open a new log while shutting down.
+    if (enabled) if (FILE *log = fopen("fs:/vol/external01/wiiu/raw-launcher.log", "a")) {
         fprintf(log,"profile enabled=%d title=%08X%08X ipc=%d response=%08X\n", enabled,
                 static_cast<uint32_t>(profile.titleId >> 32), static_cast<uint32_t>(profile.titleId), result, response[0]);
         fclose(log);
