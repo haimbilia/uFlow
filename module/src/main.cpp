@@ -1,6 +1,7 @@
 #include "FileUtils.h"
 #include "RPXLoading.h"
 #include "RawSourcePath.h"
+#include "RawExitTrace.h"
 #include "../../app/source/usb_storage.hpp"
 #include "RawTitleKernel.h"
 #include "globals.h"
@@ -21,7 +22,7 @@
 #include <wuhb_utils/utils.h>
 #include <wums.h>
 
-#define VERSION "v0.3.6-raw-port10-return-to-uflow"
+#define VERSION "v0.3.6-raw-port11-exit-trace"
 
 static void RawLauncherTrace(const char *message) {
     FILE *file = fopen("fs:/vol/external01/wiiu/raw-launcher.log", "a");
@@ -87,6 +88,7 @@ WUMS_INITIALIZE() {
 }
 
 WUMS_APPLICATION_ENDS() {
+    RawExitTracePoint("module-end-enter");
     RawLauncherTrace("application ends");
     RL_UnmountCurrentRunningBundle();
     RawLauncherTrace("application ends: bundle/layers released");
@@ -103,9 +105,24 @@ WUMS_APPLICATION_ENDS() {
     RawLauncherTrace("application ends: USB unmounted");
 
     deinitLogging();
+    RawExitTracePoint("module-end-return");
+}
+
+WUMS_APPLICATION_REQUESTS_EXIT() {
+    RawExitTracePoint("exit-request-callback");
+}
+
+WUMS_ALL_APPLICATION_REQUESTS_EXIT_DONE() {
+    RawExitTracePoint("all-exit-request-callbacks-done");
+}
+
+WUMS_ALL_APPLICATION_ENDS_DONE() {
+    // Only OSReport here: WUT filesystem teardown may already have started.
+    RawExitTracePoint("all-module-end-callbacks-done");
 }
 
 WUMS_APPLICATION_STARTS() {
+    RawExitTraceBegin(gLooseTitleInfo.pending);
     OSReport("uFlow loader: application-start entry pid=%u\n", OSGetUPID());
     UFlowReturnApplicationStarts();
     OSReport("uFlow loader: return gate initialized\n");

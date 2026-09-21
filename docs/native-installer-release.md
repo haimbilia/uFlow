@@ -330,3 +330,17 @@ in both skins. Rebuild the app and native installer and test the actual payload.
 GamePad/Wii Remote/Pro B and touch cancel require console retesting; an in-flight
 firmware read/write must still return before cooperative cancellation can run.
 This does not change vWii launch, GamePad support inside Wii games or return hooks.
+
+Freedom Planet Event Preview exit investigation (2026-09-21): the reproduced
+USB-game hang reaches every raw-loader cleanup checkpoint, including USB unmount,
+but never reaches Menu application-start or consumes the return request. Loader
+raw-port11 adds raw-session-latched OSReport checkpoints around ProcUIShutdown,
+coreinit _Exit, module-end completion and the all-modules exit boundaries. The
+hooks are game-process-only and forward calls, arguments and statuses unchanged.
+Do not force termination, skip save flushing or alter USB/MCP routing based only
+on the generic Menu icon. These diagnostics are NOT a confirmed hang fix.
+Run tools/test-raw-exit-trace.ps1, tools/test-return-hook.ps1 and the USB raw suite;
+rebuild/test the native installer. Deploy the module and installer to the verified
+SD, then fully reboot Aroma and capture live syslog while reproducing the exit.
+Leave the hardware-confirmed bounded-path Mocha payload unchanged. Once the
+blocking boundary is identified, implement and hardware-test the actual fix.

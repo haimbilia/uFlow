@@ -1,5 +1,6 @@
 #include "RPXLoading.h"
 #include "RawSourcePath.h"
+#include "RawExitTrace.h"
 #include "../../app/source/usb_storage.hpp"
 #include "../../payload/source/common/raw_usb_map.h"
 #include "RawTitleKernel.h"
@@ -16,6 +17,8 @@
 #include "utils/logger.h"
 #include <coreinit/cache.h>
 #include <coreinit/debug.h>
+#include <coreinit/exit.h>
+#include <coreinit/thread.h>
 #include <coreinit/ios.h>
 #include <coreinit/messagequeue.h>
 #include <coreinit/title.h>
@@ -123,6 +126,30 @@ DECL_FUNCTION(ProcUIStatus, UFlow_ProcUIProcessMessages, BOOL block) {
         }
     }
     return status;
+}
+
+// Diagnostic boundaries. Forward every call/argument/status unchanged; never
+// perform filesystem I/O, wait, cancel threads or force process exit here.
+static RawExitTraceState sRawExitTrace;
+void RawExitTraceBegin(bool raw){sRawExitTrace.Begin(raw);}
+void RawExitTracePoint(const char *point){
+    if(sRawExitTrace.Enabled())OSReport("uFlow exit-trace v1: %s thread=%p\n",point,OSGetCurrentThread());
+}
+DECL_FUNCTION(ProcUIStatus, Raw_TraceProcUIProcessMessages, BOOL block){
+    const auto result=real_Raw_TraceProcUIProcessMessages(block);
+    if(sRawExitTrace.Changed(static_cast<int>(result)))
+        OSReport("uFlow exit-trace v1: procui-status=%d thread=%p\n",static_cast<int>(result),OSGetCurrentThread());
+    return result;
+}
+DECL_FUNCTION(void, Raw_TraceProcUIShutdown){
+    RawExitTracePoint("procui-shutdown-enter");
+    real_Raw_TraceProcUIShutdown();
+    RawExitTracePoint("procui-shutdown-return");
+}
+DECL_FUNCTION(void, Raw_TraceExit, int code){
+    RawExitTracePoint("coreinit-exit-enter");
+    real_Raw_TraceExit(code);
+    RawExitTracePoint("coreinit-exit-return");
 }
 
 static std::atomic<uint32_t> sRawReadSamples{0};
@@ -372,6 +399,9 @@ DECL_FUNCTION(void, _SYSLaunchTitleWithStdArgsInNoSplash, uint64_t titleId, void
 
 function_replacement_data_t rpx_utils_function_replacements[] = {
         REPLACE_FUNCTION_FOR_PROCESS(UFlow_ProcUIProcessMessages, LIBRARY_PROC_UI, ProcUIProcessMessages, FP_TARGET_PROCESS_WII_U_MENU),
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_TraceProcUIProcessMessages, LIBRARY_PROC_UI, ProcUIProcessMessages, FP_TARGET_PROCESS_GAME),
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_TraceProcUIShutdown, LIBRARY_PROC_UI, ProcUIShutdown, FP_TARGET_PROCESS_GAME),
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_TraceExit, LIBRARY_COREINIT, _Exit, FP_TARGET_PROCESS_GAME),
         // Raw-title handles, saves and frame instrumentation belong only to
         // the game process. Do not interpose on Root/Menu loader/bootstrap I/O.
         REPLACE_FUNCTION_FOR_PROCESS(Raw_FSFlushQuota, LIBRARY_COREINIT, FSFlushQuota, FP_TARGET_PROCESS_GAME),

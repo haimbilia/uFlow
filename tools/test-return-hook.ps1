@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot -Parent
 $source = Get-Content -LiteralPath (Join-Path $project 'module/src/RPXLoading.cpp') -Raw
 $start = $source.IndexOf('static UFlowReturn::MenuGate sCheckUFlowReturn;')
-$end = $source.IndexOf('static std::atomic<uint32_t> sRawReadSamples', $start)
+$end = $source.IndexOf('// Diagnostic boundaries.', $start)
 if ($start -lt 0 -or $end -le $start) { throw 'Return hook boundaries not found' }
 if (!$source.Contains('REPLACE_FUNCTION_FOR_PROCESS(UFlow_ProcUIProcessMessages, LIBRARY_PROC_UI, ProcUIProcessMessages, FP_TARGET_PROCESS_WII_U_MENU)')) { throw 'Return hook is not restricted to Wii U Menu' }
 $fixture = Get-Content -LiteralPath (Join-Path $project 'tests/return_hook_test.cpp') -Raw
