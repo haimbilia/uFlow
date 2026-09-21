@@ -6,21 +6,20 @@ import subprocess
 REVISION = "c2fc7310526124a9d63a8c28feaaca9356d504a6"
 EARLY_EXIT = '''ON_APPLICATION_REQUESTS_EXIT ()
 {
-	// Join the FTP worker and close its files while filesystem workers and
-	// the game's runtime are still alive. APPLICATION_ENDS is too late for
-	// titles whose exit path has already stopped those services.
-	OSReport ("uFlow ftpiiu exit1: early-shutdown-enter\\n");
-	stop_server ();
-	OSReport ("uFlow ftpiiu exit1: early-shutdown-return\\n");
+	// Join the FTP worker while the runtime is alive. Keep its filesystem
+	// mounts until APPLICATION_ENDS so earlier modules can finish cleanup.
+	OSReport ("uFlow ftpiiu exit2: early-server-join-enter\\n");
+	server.reset ();
+	OSReport ("uFlow ftpiiu exit2: early-server-join-return\\n");
 }
 
 '''
 EDITS = [
-    ('#define VERSION "v0.4.5"', '#define VERSION "v0.4.5-uflow-exit1"'),
+    ('#define VERSION "v0.4.5"', '#define VERSION "v0.4.5-uflow-exit2"'),
     ('void stop_server ()\n{\n\tserver.reset ();',
-     'void stop_server ()\n{\n\tOSReport ("uFlow ftpiiu exit1: server-stop-enter\\n");\n\tserver.reset ();\n\tOSReport ("uFlow ftpiiu exit1: server-joined\\n");'),
+     'void stop_server ()\n{\n\tOSReport ("uFlow ftpiiu exit2: server-stop-enter\\n");\n\tserver.reset ();\n\tOSReport ("uFlow ftpiiu exit2: server-joined\\n");'),
     ('\tIOAbstraction::clear ();\n}\n\nstatic void gFTPServerRunningChanged',
-     '\tIOAbstraction::clear ();\n\tOSReport ("uFlow ftpiiu exit1: server-stop-return\\n");\n}\n\nstatic void gFTPServerRunningChanged'),
+     '\tIOAbstraction::clear ();\n\tOSReport ("uFlow ftpiiu exit2: server-stop-return\\n");\n}\n\nstatic void gFTPServerRunningChanged'),
     ('ON_APPLICATION_ENDS ()', EARLY_EXIT + 'ON_APPLICATION_ENDS ()'),
 ]
 

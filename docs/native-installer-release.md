@@ -407,3 +407,18 @@ hardware-confirmed Mocha payload. The bundle unmount now reports mutex-entry and
 acquisition boundaries. Run test-raw-exit-cleanup, exit-trace, return-hook and the
 USB raw suite, rebuild the module/installer, and fully reboot before hardware test.
 This remains a candidate until the Event Preview title returns successfully.
+
+Port13 hardware result: every early uFlow and FTP cleanup checkpoint returned,
+then Core2 immediately fetched instruction address 0 with LR 0 after ProcUI's
+Exit message. This is a crash, even though the visible Menu icon resembles the
+earlier hang. The title's other threads were still alive, so removing uFlow's
+redirection/device at APPLICATION_REQUESTS_EXIT was unsafe. Port14 restores the
+full uFlow cleanup to APPLICATION_ENDS. FTPiiU exit2 performs only server.reset
+(worker join) during the early request, retaining its Mocha/devoptab mounts and
+IOAbstraction state. Final ordering is therefore: join FTP worker early; uFlow
+removes bundle layers/readers/ufusb during its earlier module-end callback; then
+FTPiiU's later plugin-end callback releases its mounts. Its final stop remains a
+fallback if no exit request was delivered. Host lifecycle tests assert this exact
+split and settings preservation. Rebuild both FTPiiU and RPXLoadingModule, pin
+the new FTP binary, rebuild/test the native installer, and fully reboot for the
+Event Preview retest. Do not deploy or restore the crashing port13 module.

@@ -18,11 +18,12 @@ void wiiu_init(){if(sFTPServerEnabled){server=std::make_unique<Server>();sMochaP
 // PRODUCTION_LIFECYCLE
 int main(){
     Start();assert(server);
-    RequestExit();assert(!server&&!sMochaPathsWereMounted&&joined==1&&unmounted==8);
-    servicesAlive=false;End();End();assert(joined==1&&unmounted==8); // no late join/unmount
+    RequestExit();assert(!server&&sMochaPathsWereMounted&&joined==1&&unmounted==0&&cleared==0);
+    End();assert(!server&&!sMochaPathsWereMounted&&joined==1&&unmounted==8&&cleared==1);
+    servicesAlive=false;End();assert(joined==1&&unmounted==8); // repeated final cleanup is safe
     servicesAlive=true;Start();assert(server&&sFTPServerEnabled); // FTP restored on next app
     End();assert(!server&&joined==2&&unmounted==16); // fallback for direct exits
     sFTPServerEnabled=false;Start();assert(!server);RequestExit();End();
-    assert(!sFTPServerEnabled&&joined==2&&unmounted==16&&cleared==6);
-    puts("PASS: actual FTPiiU lifecycle joins/unmounts before teardown, handles repeated cleanup, restarts normally and preserves disabled setting.");
+    assert(!sFTPServerEnabled&&joined==2&&unmounted==16&&cleared==4);
+    puts("PASS: actual FTPiiU lifecycle joins early, keeps mounts through preceding module cleanup, finalizes once, restarts normally and preserves disabled setting.");
 }

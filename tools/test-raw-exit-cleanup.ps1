@@ -1,11 +1,11 @@
 $ErrorActionPreference='Stop'
 $project=Split-Path $PSScriptRoot -Parent
 $source=Get-Content (Join-Path $project 'module/src/main.cpp') -Raw
-$start=$source.IndexOf('static std::atomic<bool> sApplicationCleanupDone')
-$end=$source.IndexOf('WUMS_ALL_APPLICATION_REQUESTS_EXIT_DONE()', $start)
+$start=$source.IndexOf('WUMS_APPLICATION_ENDS() {')
+$end=$source.IndexOf('WUMS_APPLICATION_REQUESTS_EXIT()', $start)
 if($start -lt 0 -or $end -le $start){throw 'Shutdown boundaries missing'}
 $fixture=Get-Content (Join-Path $project 'tests/raw_exit_cleanup_test.cpp') -Raw
-$fixture=$fixture.Replace('// PRODUCTION_SHUTDOWN_CALLBACKS',$source.Substring($start,$end-$start))
+$fixture=$fixture.Replace('// PRODUCTION_END_CALLBACK',$source.Substring($start,$end-$start))
 $source=Get-Content (Join-Path $project 'module/src/RPXLoading.cpp') -Raw
 $start=$source.IndexOf('    OSReport("uFlow raw profile:')
 $end=$source.IndexOf('    bool success =', $start)
