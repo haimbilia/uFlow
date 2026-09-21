@@ -394,3 +394,16 @@ No FTP configuration is installed/overwritten; disabled service remains disabled
 Native host tests cover present/absent FTP, preserved configuration, real payload
 replacement and idempotent rerun. Rebuild the installer and deploy only the FTP
 plugin and refreshed installer; retain port12, tracing backend and current Mocha.
+
+Hardware result: FTPiiU's early callback joined its server and returned in 18 ms,
+but the same title still stalled after RPXLoadingModule entered its final callback
+and before its first cleanup checkpoint. Port13 therefore performs the module's
+existing cleanup sequence during APPLICATION_REQUESTS_EXIT, before FTPiiU and
+before final filesystem teardown: remove bundle layers, close readers, remove the
+ufusb device, unmount its read-only disk and stop logging. An atomic one-shot guard
+makes APPLICATION_ENDS an idempotent fallback for exits without the early request.
+It does not omit any prior cleanup, terminate a worker, alter saves, or change the
+hardware-confirmed Mocha payload. The bundle unmount now reports mutex-entry and
+acquisition boundaries. Run test-raw-exit-cleanup, exit-trace, return-hook and the
+USB raw suite, rebuild the module/installer, and fully reboot before hardware test.
+This remains a candidate until the Event Preview title returns successfully.

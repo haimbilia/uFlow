@@ -9,6 +9,7 @@
 #include "utils/logger.h"
 #include "version.h"
 #include <content_redirection/redirection.h>
+#include <atomic>
 #include <coreinit/cache.h>
 #include <coreinit/debug.h>
 #include <coreinit/title.h>
@@ -22,7 +23,7 @@
 #include <wuhb_utils/utils.h>
 #include <wums.h>
 
-#define VERSION "v0.3.6-raw-port12-exit-logging"
+#define VERSION "v0.3.6-raw-port13-early-cleanup"
 
 static void RawLauncherTrace(const char *message) {
     FILE *file = fopen("fs:/vol/external01/wiiu/raw-launcher.log", "a");
@@ -87,8 +88,14 @@ WUMS_INITIALIZE() {
     deinitLogging();
 }
 
-WUMS_APPLICATION_ENDS() {
-    RawExitTracePoint("module-end-enter");
+static std::atomic<bool> sApplicationCleanupDone{false};
+
+static void CleanupApplication() {
+    if (sApplicationCleanupDone.exchange(true)) {
+        RawExitTracePoint("cleanup-already-done");
+        return;
+    }
+    RawExitTracePoint("cleanup-enter");
     RL_UnmountCurrentRunningBundle();
     RawExitTracePoint("bundle-layers-released");
 
@@ -104,11 +111,21 @@ WUMS_APPLICATION_ENDS() {
     RawExitTracePoint("usb-unmounted");
 
     deinitLogging();
+    RawExitTracePoint("cleanup-return");
+}
+
+WUMS_APPLICATION_ENDS() {
+    RawExitTracePoint("module-end-enter");
+    CleanupApplication();
     RawExitTracePoint("module-end-return");
 }
 
 WUMS_APPLICATION_REQUESTS_EXIT() {
     RawExitTracePoint("exit-request-callback");
+    // Release redirection workers, file readers and the raw USB device while
+    // the outgoing title runtime is still alive. Final APPLICATION_ENDS is too
+    // late on titles that tear down filesystem services before module callbacks.
+    CleanupApplication();
 }
 
 WUMS_ALL_APPLICATION_REQUESTS_EXIT_DONE() {
@@ -121,6 +138,7 @@ WUMS_ALL_APPLICATION_ENDS_DONE() {
 }
 
 WUMS_APPLICATION_STARTS() {
+    sApplicationCleanupDone.store(false);
     RawExitTraceBegin(gLooseTitleInfo.pending);
     OSReport("uFlow loader: application-start entry pid=%u\n", OSGetUPID());
     UFlowReturnApplicationStarts();

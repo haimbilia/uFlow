@@ -1,4 +1,5 @@
 #include <cassert>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -13,7 +14,8 @@ namespace USBStorage {void Unmount(){calls.emplace_back("unmount-usb");}}
 void deinitLogging(){calls.emplace_back("deinit-logger");}
 void OSReport(const char *,...){}
 #define WUMS_APPLICATION_ENDS() void EndApplication()
-// PRODUCTION_END_CALLBACK
+#define WUMS_APPLICATION_REQUESTS_EXIT() void RequestExit()
+// PRODUCTION_SHUTDOWN_CALLBACKS
 static int opens=0;
 FILE *TestOpen(const char *,const char *){++opens;return nullptr;}
 #define fopen TestOpen
@@ -23,12 +25,18 @@ void ProfileLog(bool enabled){
     // PRODUCTION_PROFILE_LOG
 }
 int main(){
+    RequestExit();
     EndApplication();
-    assert((calls==std::vector<std::string>{"module-end-enter","unmount-bundle","bundle-layers-released",
+    assert((calls==std::vector<std::string>{"exit-request-callback","cleanup-enter","unmount-bundle","bundle-layers-released",
         "close-readers","file-readers-released","remove-device","usb-redirection-device-removed",
-        "unmount-usb","usb-unmounted","deinit-logger","module-end-return"}));
+        "unmount-usb","usb-unmounted","deinit-logger","cleanup-return","module-end-enter",
+        "cleanup-already-done","module-end-return"}));
+    calls.clear();sApplicationCleanupDone.store(false);EndApplication();
+    assert((calls==std::vector<std::string>{"module-end-enter","cleanup-enter","unmount-bundle","bundle-layers-released",
+        "close-readers","file-readers-released","remove-device","usb-redirection-device-removed",
+        "unmount-usb","usb-unmounted","deinit-logger","cleanup-return","module-end-return"}));
     ProfileLog(false);assert(opens==0);
     ProfileLog(true);assert(opens==1);
     ProfileLog(false);assert(opens==1);
-    puts("PASS: actual shutdown callback preserves full cleanup order without SD log writes; disabled profile never opens a log.");
+    puts("PASS: actual callbacks clean up early exactly once, retain final fallback, avoid SD writes, and disabled profile never opens a log.");
 }

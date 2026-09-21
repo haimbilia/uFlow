@@ -946,7 +946,9 @@ RPXLoaderStatus RL_EnableContentRedirection() {
 }
 
 RPXLoaderStatus RL_UnmountCurrentRunningBundle() {
+    RawExitTracePoint("bundle-lock-enter");
     std::lock_guard<std::mutex> lock(mutex);
+    RawExitTracePoint("bundle-lock-acquired");
     const bool bundleMounted = gReplacementInfo.contentReplacementInfo.bundleMountInformation.isMounted;
     const bool looseActive   = gLooseTitleInfo.active;
     const bool hasLayers     = contentLayerHandle != 0 || codeLayerHandle != 0 || metaLayerHandle != 0 || saveLayerHandle != 0;
