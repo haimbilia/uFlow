@@ -260,11 +260,13 @@ int main(int argc,char **argv){
             assert(std::any_of(files.begin(),files.end(),[&](const auto &f){return f.path==path&&f.mask==6u&&f.mode=='r';}));
         }
         for(const auto &p:{wiiuCover,dsCover,wiiCover,gcCover,nesCover,snesCover,gbaCover,n64Cover,pceCover,msxCover})assert(std::any_of(files.begin(),files.end(),[&](const auto &f){return f.path==p&&f.mode=='k';}));
-        for(const char *path:{"wiiu/environments/aroma/modules/PluginBackend.wms","wiiu/environments/aroma/modules/RPXLoadingModule.wms","wiiu/environments/aroma/modules/uFlowRawKernel.wms","wiiu/environments/aroma/modules/setup/00_mocha.rpx"})
+        for(const char *path:{"wiiu/environments/aroma/modules/ContentRedirectionModule.wms","wiiu/environments/aroma/modules/PluginBackend.wms","wiiu/environments/aroma/modules/RPXLoadingModule.wms","wiiu/environments/aroma/modules/uFlowRawKernel.wms","wiiu/environments/aroma/modules/setup/00_mocha.rpx"})
             assert(std::any_of(files.begin(),files.end(),[&](const auto &f){return f.path==path&&f.mask==Core&&f.mode=='r';}));
         assert(std::any_of(files.begin(),files.end(),[&](const auto &f){return f.path==regionPlugin&&f.mask==1017u&&f.mode=='r';}));
         std::cout<<"Real bundle: "<<ready.items.size()<<" files, "<<ready.bytes<<" bytes\n"<<std::flush;
         auto result=Install(actual,argv[1],ready,"real-bundle",{});
+        const std::string contentModule="wiiu/environments/aroma/modules/ContentRedirectionModule.wms";
+        assert(HashFile(actual+"/"+contentModule,{},"")==HashFile(std::string(argv[1])+"/payload/"+contentModule,{},""));
         for(const char *name:{"app_booter.bin","ext_loader.bin","ext_booter.bin"}) {
             const auto path=std::string("apps/wiiflow/bins/")+name;
             assert(File(actual+"/"+path)==bool(bits&6u));

@@ -17,10 +17,13 @@ FTPIIU = "wiiu/environments/aroma/plugins/ftpiiu.wps"
 FTPIIU_PATCH_HASH = "438f9a18f20f0341757e207ea0c1e6d6459ea5cf5764ad78693f8a15db17e1b6"
 PLUGIN_BACKEND = "wiiu/environments/aroma/modules/PluginBackend.wms"
 PLUGIN_BACKEND_HASH = "aa564fa55f3e82d8c69df07e5e85b8072949c5fefe3e45a74b7a3064ceae0c5d"
+CONTENT_REDIRECTION = "wiiu/environments/aroma/modules/ContentRedirectionModule.wms"
+CONTENT_REDIRECTION_HASH = "5944f0394e16d09227843abe2ba27044d653441502bb0b58467e4c2c8065017c"
 WIIFLOW_BINS = ("app_booter.bin", "ext_loader.bin", "ext_booter.bin")
 WIIFLOW_BIN_PATHS = {f"apps/wiiflow/bins/{name}" for name in WIIFLOW_BINS}
 WIIFLOW_FORWARDER = "wiiu/apps/WiiFlow.wuhb"
 RETURN_RUNTIME = {
+    CONTENT_REDIRECTION,
     PLUGIN_BACKEND,
     "wiiu/environments/aroma/modules/RPXLoadingModule.wms",
     "wiiu/environments/aroma/modules/uFlowRawKernel.wms",
@@ -77,6 +80,7 @@ def inputs(project, sources):
         REGION: sources / "region_free_plugin/regionfree.wps",
         FTPIIU: sources / "ftpiiu_plugin/ftpiiu.wps",
         PLUGIN_BACKEND: sources / "WiiUPluginLoaderBackend/PluginBackend.wms",
+        CONTENT_REDIRECTION: sources / "ContentRedirectionModule/ContentRedirectionModule.wms",
         "wiiu/environments/aroma/modules/setup/99_autoboot.rpx": sources / "AutobootModule/99_autoboot.rpx",
         "apps/wiiflow/boot.dol": sources / "wiiflow-lite/out/boot.dol",
         WIIFLOW_FORWARDER: sources / "Boot2vWii/uFlow-WiiFlow.wuhb",
@@ -115,13 +119,15 @@ def synchronize(project, sources, sync=False):
             raise ValueError("Region Free input lacks the uFlow raw-metadata fix")
         if path == PLUGIN_BACKEND and hashed != PLUGIN_BACKEND_HASH:
             raise ValueError("Plugin backend input differs from tested exit-trace build")
+        if path == CONTENT_REDIRECTION and hashed != CONTENT_REDIRECTION_HASH:
+            raise ValueError("ContentRedirection input differs from tested missing-file removal build")
         old = entries.get(path)
         if path == FTPIIU and hashed != FTPIIU_PATCH_HASH:
             raise ValueError("FTPiiU input differs from tested early-exit build")
         if path in RETROARCH_INPUTS and hashed != RETROARCH_INPUTS[path][1]:
             raise ValueError(f"RetroArch input differs from the hardware-verified build: {path}")
         new_component = path in RETROARCH_INPUTS or path in RETROARCH_MODULES
-        if old is None and not new_component and path not in (REGION, FTPIIU, PLUGIN_BACKEND, WIIFLOW_FORWARDER) and path not in cover_paths() and path not in WIIFLOW_BIN_PATHS:
+        if old is None and not new_component and path not in (REGION, FTPIIU, PLUGIN_BACKEND, CONTENT_REDIRECTION, WIIFLOW_FORWARDER) and path not in cover_paths() and path not in WIIFLOW_BIN_PATHS:
             raise ValueError(f"Required component missing from manifest: {path}")
         if path in RETROARCH_INPUTS:
             mask, mode = RETROARCH_INPUTS[path][2], "k"  # never replace a user's own RetroArch
@@ -131,7 +137,7 @@ def synchronize(project, sources, sync=False):
             mask, mode = 6, "r"  # Both Wii and GameCube need WiiFlow's external booters.
         elif path in cover_paths():
             mask, mode = cover_paths()[path], "k"  # Never replace a user's sleeve.
-        elif path in (PLUGIN_BACKEND, FTPIIU):
+        elif path in (PLUGIN_BACKEND, FTPIIU, CONTENT_REDIRECTION):
             mask, mode = 1 << 31, "r"
         else:
             mask, mode = (RAW, "r") if path == REGION else (int(old[4]), old[5])

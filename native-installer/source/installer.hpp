@@ -67,7 +67,7 @@ inline bool Allowed(const std::string &p){
     for(const char *core:{"pcsx_rearmed","snes9x","nestopia","mgba"})
         if(p==std::string("retroarch/cores/")+core+"_libretro.rpx"||p==std::string("retroarch/cores/info/")+core+"_libretro.info")return true;
     for(const char *prefix:{"wiiu/apps/uFlow/","wiiu/apps/noods/","wiiu/vc-bases/","apps/wiiflow/","apps/usbloader_gx/","apps/nintendont/","apps/d2x-cios-installer-vwii/","apps/wiiflow_channel_installer/","wiiflow/"})if(p.rfind(prefix,0)==0)return true;
-    return p=="wiiu/apps/compat_installer.wuhb"||p=="wiiu/environments/aroma/modules/RPXLoadingModule.wms"||p=="wiiu/environments/aroma/modules/PluginBackend.wms"||
+    return p=="wiiu/apps/compat_installer.wuhb"||p=="wiiu/environments/aroma/modules/RPXLoadingModule.wms"||p=="wiiu/environments/aroma/modules/PluginBackend.wms"||p=="wiiu/environments/aroma/modules/ContentRedirectionModule.wms"||
         p=="wiiu/environments/aroma/modules/uFlowRawKernel.wms"||p=="wiiu/environments/aroma/modules/setup/00_mocha.rpx"||p=="wiiu/environments/aroma/modules/setup/99_autoboot.rpx"||
         p=="wiiu/environments/aroma/plugins/regionfree.wps"||p=="wiiu/environments/aroma/plugins/ftpiiu.wps";
 }

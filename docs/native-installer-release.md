@@ -1,5 +1,23 @@
 # Native installer release workflow
 
+Angry Birds Trilogy save creation (2026-09-26): live console syslog identifies
+ContentRedirection's FSRemoveWrapper mapping ENOENT for
+`/vol/save/80000007/saves/tmp/fs0.fs` to MEDIA_ERROR, making the game's FS client
+fatal while its rendering continues. Return NOT_FOUND for ENOENT; preserve
+successful removal, read-only restrictions, layer routing and other errors.
+Reproduce with `tools/prepare-content-remove-fix.py --apply` against
+ContentRedirectionModule revision `31b319b6b4370caf4ab173f0db91cf838c6819d0`.
+Build that checkout's Dockerfile and run `make -j4` in the resulting image.
+Run `tools/test-content-remove.ps1`: it compiles the actual patched wrapper,
+tests real missing/existing files and repeated cleanup, and injects other errors
+under ASan/UBSan. Payload sync hash-pins this dependency as a Core replacement;
+the native installer allowlist, defaults/component selection, actual-bundle
+replacement and preserved-settings rerun tests include it. Rebuild/test the
+installer but keep it local. Deploy only ContentRedirectionModule.wms to the
+verified SD, fully reboot Aroma, then retest save creation and reopening the
+game. Host success does not establish console success. Never delete game saves
+to work around this missing-file error.
+
 Startup reveal (2026-09-26): embed the user-supplied `uflow_startup.mp4` as
 `app/content/ui/startup.mp4`, converted to H.264 High Level 3.1, 1280x720,
 30 fps with the original AAC audio stream copied unchanged. STARTUP VIDEO is

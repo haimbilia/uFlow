@@ -46,6 +46,9 @@ class PayloadSyncTest(unittest.TestCase):
         original_backend = sync.PLUGIN_BACKEND_HASH
         self.addCleanup(setattr, sync, "PLUGIN_BACKEND_HASH", original_backend)
         sync.PLUGIN_BACKEND_HASH = sync.digest(self.sources / "WiiUPluginLoaderBackend/PluginBackend.wms")
+        original_content = sync.CONTENT_REDIRECTION_HASH
+        self.addCleanup(setattr, sync, "CONTENT_REDIRECTION_HASH", original_content)
+        sync.CONTENT_REDIRECTION_HASH = sync.digest(self.sources / "ContentRedirectionModule/ContentRedirectionModule.wms")
         # The RetroArch components are pinned the same way as the other tested builds.
         original_retroarch = dict(sync.RETROARCH_INPUTS)
         self.addCleanup(setattr, sync, "RETROARCH_INPUTS", original_retroarch)
@@ -64,6 +67,18 @@ class PayloadSyncTest(unittest.TestCase):
         before = self.manifest.read_bytes()
         (self.sources / "ftpiiu_plugin/ftpiiu.wps").write_bytes(b"unexpected build")
         with self.assertRaisesRegex(ValueError, "tested early-exit build"):
+            self.run_sync(True)
+        self.assertEqual(before, self.manifest.read_bytes())
+
+    def test_content_redirection_added_as_core_and_wrong_build_refused(self):
+        self.manifest.write_text(sync.ENTRY.sub(lambda m: "" if m[1] == sync.CONTENT_REDIRECTION else m[0], self.manifest.read_text()))
+        self.run_sync(True)
+        self.run_sync()
+        entry = next(m for m in sync.ENTRY.finditer(self.manifest.read_text()) if m[1] == sync.CONTENT_REDIRECTION)
+        self.assertEqual((entry[4], entry[5]), (str(1 << 31), "r"))
+        before = self.manifest.read_bytes()
+        (self.sources / "ContentRedirectionModule/ContentRedirectionModule.wms").write_bytes(b"stock build")
+        with self.assertRaisesRegex(ValueError, "tested missing-file removal build"):
             self.run_sync(True)
         self.assertEqual(before, self.manifest.read_bytes())
 
