@@ -29,9 +29,33 @@ RETURN_RUNTIME = {
 # WPS payload is compressed: validate the tested patched artifact, not strings.
 # Update this pin only after testing a replacement Region Free build.
 REGION_PATCH_HASH = "30560de32d190999faddd37a6ac88b430b7bc9f3e7a026adbeac7d439aaca49f"
+# Optional RetroArch components: the Aroma RetroArch build that was
+# hardware-verified with one-press launching (PlayStation, bit 13), and the
+# Snes9x / Nestopia UE / mGBA cores from the same archive (bits 14-16). The
+# frontend ships with any of them. Pinned so a different emulator build can
+# never slip into a release unnoticed. Kept ('k') on the SD so an existing
+# RetroArch install is never overwritten.
+PLAYSTATION, SNES_RETROARCH, NES_RETROARCH, GBA_RETROARCH = 1 << 13, 1 << 14, 1 << 15, 1 << 16
+RETROARCH_SYSTEMS = PLAYSTATION | SNES_RETROARCH | NES_RETROARCH | GBA_RETROARCH
+RETROARCH_INPUTS = {
+    "wiiu/apps/retroarch.wuhb": ("retroarch.wuhb", "487c77a863348c44fa87df34594962cf0390d905594430d09a05e45c67ddc630", RETROARCH_SYSTEMS),
+    "retroarch/cores/pcsx_rearmed_libretro.rpx": ("pcsx_rearmed_libretro.rpx", "1bdcae8ef63ce250c31c75468f53be8095de6e5626c32a2a93f9af6825ca3ac4", PLAYSTATION),
+    "retroarch/cores/info/pcsx_rearmed_libretro.info": ("pcsx_rearmed_libretro.info", "19e8859d2c4b6b09ef2ccf8b0ef8e4ad2bcdbeede063da33a664719e605b8e75", PLAYSTATION),
+    "retroarch/cores/snes9x_libretro.rpx": ("snes9x_libretro.rpx", "33ed3fdad36b59a02e03b0a34b57322b7b4b276cdc422ad742544cdd0349ed95", SNES_RETROARCH),
+    "retroarch/cores/info/snes9x_libretro.info": ("snes9x_libretro.info", "fa62b78d58bc4c30f4e0a4a581f0cb3252447b7f198b55bd6ebe2e4b9bde5cc2", SNES_RETROARCH),
+    "retroarch/cores/nestopia_libretro.rpx": ("nestopia_libretro.rpx", "9f2fd9b96d3ab614e5c1dbabceecfad82f473a0103a6406a0a5cb11cbc73ab3c", NES_RETROARCH),
+    "retroarch/cores/info/nestopia_libretro.info": ("nestopia_libretro.info", "3aedf30570ef2f751eee31d06022243ec5ae13205b1ab17b880a077651c27e87", NES_RETROARCH),
+    "retroarch/cores/mgba_libretro.rpx": ("mgba_libretro.rpx", "fc801cb92ff8c48a82d463a4efa522521d1264d27c7450e87b09a5c5b6517125", GBA_RETROARCH),
+    "retroarch/cores/info/mgba_libretro.info": ("mgba_libretro.info", "64444beb8268d3a57d53a45564c55049f39ff621315401fef86e82f3849042d6", GBA_RETROARCH),
+}
+RETROARCH_MODULES = {
+    f"wiiu/apps/uFlow/launchers/retroarch-{system}.ufmod": (f"retroarch-{system}.ufmod", mask)
+    for system, mask in (("ps1", PLAYSTATION), ("snes", SNES_RETROARCH), ("nes", NES_RETROARCH), ("gba", GBA_RETROARCH))
+}
 # User-provided sleeves are release assets, not machine-specific Media paths.
-# DS also applies when only the alternative NooDS backend is selected.
-DEFAULT_COVERS = {"wiiu": 1 << 0, "ds": (1 << 3) | (1 << 10), "wii": 1 << 1, "gamecube": 1 << 2, "nes": 1 << 4, "snes": 1 << 5, "gba": 1 << 6, "n64": 1 << 7, "pce": 1 << 8, "msx": 1 << 9}
+# DS also applies when only the alternative NooDS backend is selected, and
+# NES/SNES/GBA when only their RetroArch component is.
+DEFAULT_COVERS = {"wiiu": 1 << 0, "ds": (1 << 3) | (1 << 10), "wii": 1 << 1, "gamecube": 1 << 2, "nes": (1 << 4) | NES_RETROARCH, "snes": (1 << 5) | SNES_RETROARCH, "gba": (1 << 6) | GBA_RETROARCH, "n64": 1 << 7, "pce": 1 << 8, "msx": 1 << 9}
 
 
 def cover_paths():
@@ -65,6 +89,10 @@ def inputs(project, sources):
         result[f"wiiu/apps/uFlow/launchers/{name}.ufmod"] = project / f"launcher-modules/{name}.ufmod"
     for name in WIIFLOW_BINS:
         result[f"apps/wiiflow/bins/{name}"] = sources / f"wiiflow-lite/out/bins/{name}"
+    for path, (name, _) in RETROARCH_MODULES.items():
+        result[path] = project / "launcher-modules" / name
+    for path, (name, _, _) in RETROARCH_INPUTS.items():
+        result[path] = sources / "retroarch-aroma" / name
     for system in DEFAULT_COVERS:
         result[f"wiiu/apps/uFlow/media/{system}/fullcovers/Default.png"] = project / f"native-installer/assets/default-covers/{system}.png"
         result[f"wiiu/apps/uFlow/media/{system}/fullcovers/Default.png.layout"] = project / f"native-installer/assets/default-covers/{system}.layout"
@@ -90,9 +118,16 @@ def synchronize(project, sources, sync=False):
         old = entries.get(path)
         if path == FTPIIU and hashed != FTPIIU_PATCH_HASH:
             raise ValueError("FTPiiU input differs from tested early-exit build")
-        if old is None and path not in (REGION, FTPIIU, PLUGIN_BACKEND, WIIFLOW_FORWARDER) and path not in cover_paths() and path not in WIIFLOW_BIN_PATHS:
+        if path in RETROARCH_INPUTS and hashed != RETROARCH_INPUTS[path][1]:
+            raise ValueError(f"RetroArch input differs from the hardware-verified build: {path}")
+        new_component = path in RETROARCH_INPUTS or path in RETROARCH_MODULES
+        if old is None and not new_component and path not in (REGION, FTPIIU, PLUGIN_BACKEND, WIIFLOW_FORWARDER) and path not in cover_paths() and path not in WIIFLOW_BIN_PATHS:
             raise ValueError(f"Required component missing from manifest: {path}")
-        if path in WIIFLOW_BIN_PATHS or path == WIIFLOW_FORWARDER:
+        if path in RETROARCH_INPUTS:
+            mask, mode = RETROARCH_INPUTS[path][2], "k"  # never replace a user's own RetroArch
+        elif path in RETROARCH_MODULES:
+            mask, mode = RETROARCH_MODULES[path][1], "r"
+        elif path in WIIFLOW_BIN_PATHS or path == WIIFLOW_FORWARDER:
             mask, mode = 6, "r"  # Both Wii and GameCube need WiiFlow's external booters.
         elif path in cover_paths():
             mask, mode = cover_paths()[path], "k"  # Never replace a user's sleeve.

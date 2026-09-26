@@ -28,6 +28,7 @@
 #include "svc.h"
 #include "syslogserver.h"
 #include "raw_usb.h"
+#include "raw_hai.h"
 #include <inttypes.h>
 
 #include <mocha/commands.h>
@@ -507,7 +508,7 @@ int _MCP_LoadFile_patch(ipcmessage *msg) {
     if (request->pos == 0 && requestIsRPX) {
         if (traceMenu) DEBUG_FUNCTION_LINE("Menu load reset scope begin\n");
         RawRplBeginExecutable(&gRawRplScope, request->name);
-        if(!gRawRplScope.prepared){RawUsbClear();gRawUsbScope=false;}
+        if(!gRawRplScope.prepared){RawUsbClear();gRawUsbScope=false;RawHaiClear();}
         // DEBUG_FUNCTION_LINE("fresh RPX load\n");
         // Remove any old replacements that should only survive one RPX replacement
         RemoveByLifetime(REPLACEMENT_LIFETIME_DURING_RPX_REPLACEMENT);
@@ -673,6 +674,13 @@ int _MCP_ioctl100_patch(ipcmessage *msg) {
                 msg->ioctl.buffer_io[0]=UFLOW_USB_MAP_MAGIC;
                 return 0;
             }
+            case UFLOW_HAI_ARM_COMMAND: {
+                if(!gRawTitleProfileActive || msg->ioctl.length_in!=sizeof(RawHaiArm)+4 ||
+                   !msg->ioctl.buffer_io || msg->ioctl.length_io<4)return 29;
+                if(RawHaiArmInstall((uint8_t*)msg->ioctl.buffer_in+4,sizeof(RawHaiArm))<0)return 29;
+                msg->ioctl.buffer_io[0]=UFLOW_HAI_MAGIC;
+                return 0;
+            }
             case IPC_CUSTOM_SET_RAW_TITLE_PROFILE: {
                 if (msg->ioctl.length_in < sizeof(RawTitleProfile) + sizeof(uint32_t)) {
                     return 29;
@@ -685,7 +693,7 @@ int _MCP_ioctl100_patch(ipcmessage *msg) {
                 memcpy(gRawTitleExecutable, profile->argstr, sizeof(gRawTitleExecutable) - 1);
                 gRawTitleExecutable[sizeof(gRawTitleExecutable) - 1] = '\0';
                 RawRplReset(&gRawRplScope);
-                RawUsbClear();gRawUsbScope=false;
+                RawUsbClear();gRawUsbScope=false;RawHaiClear();
                 gRawTitleProfileActive = profile->enabled != 0;
                 if (msg->ioctl.buffer_io && msg->ioctl.length_io >= sizeof(uint32_t)) {
                     msg->ioctl.buffer_io[0] = RAW_TITLE_PROFILE_MAGIC;
@@ -702,7 +710,7 @@ int _MCP_ioctl100_patch(ipcmessage *msg) {
                 if (msg->ioctl.length_in >= sizeof(MochaRPXLoadInfo) + 4) {
                     int target = msg->ioctl.buffer_in[0x04 / 0x04];
                     if (target == LOAD_RPX_TARGET_EXTRA_REVERT_PREPARE) {
-                        RawUsbClear();gRawUsbScope=false;
+                        RawUsbClear();gRawUsbScope=false;RawHaiClear();
                         RemoveByLifetime(REPLACEMENT_LIFETIME_ONE_RPX_LAUNCH);
                         return 0;
                     }
@@ -715,7 +723,7 @@ int _MCP_ioctl100_patch(ipcmessage *msg) {
                     const bool usb=target==UFLOW_USB_TARGET;
                     if(usb && (!gRawTitleProfileActive || fileoffset || filesize ||
                        !RawUsbSafePath(str_ptr)||!RawUsbHasFile(str_ptr)))return 29;
-                    if(!usb)RawUsbClear();
+                    if(!usb){RawUsbClear();RawHaiClear();}
                     gRawUsbScope=usb;
 
                     RPXFileReplacements *newReplacement = svcAlloc(0xCAFF, sizeof(RPXFileReplacements));

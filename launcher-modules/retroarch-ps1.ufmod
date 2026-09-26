@@ -1,0 +1,9 @@
+UFLOW-MODULE-1
+id=ps1
+name=PlayStation (RetroArch)
+version=1.0.0
+system=PlayStation
+extensions=.cue,.chd,.pbp
+executable=retroarch/cores/pcsx_rearmed_libretro.rpx
+protocol=retroarch-sysargs-v1
+content_bundle=wiiu/apps/retroarch.wuhb

@@ -1,0 +1,9 @@
+UFLOW-MODULE-1
+id=snes-retroarch
+name=SNES (RetroArch)
+version=1.0.0
+system=SNES
+extensions=.sfc,.smc
+executable=retroarch/cores/snes9x_libretro.rpx
+protocol=retroarch-sysargs-v1
+content_bundle=wiiu/apps/retroarch.wuhb

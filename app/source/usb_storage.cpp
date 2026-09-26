@@ -22,6 +22,7 @@
 #include <coreinit/ios.h>
 #include <vector>
 #include "../../payload/source/common/raw_usb_map.h"
+#include "hai_companion.hpp"
 #define USB_NAME "ufusb"
 #else
 #define USB_NAME "usb1"
@@ -186,6 +187,64 @@ bool AddCodeFile(RawUsbMap &map,const std::string &name) {
     entry.count=map.extentCount-entry.first;++map.fileCount;
     return result==FR_OK;
 }
+}
+bool USBStorage::BuildHaiCompanion(const char *contentDirectory,std::vector<unsigned char> &companion) {
+    companion.clear();
+    if(!contentDirectory||strncmp(contentDirectory,"usb1:/",6)||!Mount())return false;
+    std::lock_guard lock(mutex); /* this FatFs build and raw reads use 512-byte sectors */
+    std::vector<HaiCompanion::File> files;
+    uint64_t imageBytes=0,parts=1;
+    for(unsigned index=0;index<parts;++index) {
+        char name[32];snprintf(name,sizeof(name),"/hif_%06u.nfs",index);
+        const std::string path=std::string(contentDirectory+6)+name;
+        FILINFO info{};
+        if(f_stat(("0:/"+path).c_str(),&info)!=FR_OK||(info.fattrib&AM_DIR)){Log("hai-missing-image",index);return false;}
+        HaiCompanion::File file{};
+        FIL handle{};
+        if(f_open(&handle,("0:/"+path).c_str(),FA_READ)!=FR_OK){Log("hai-open",index);return false;}
+        if(index==0) {
+            unsigned char header[512];UINT got=0;
+            if(f_read(&handle,header,sizeof(header),&got)!=FR_OK||
+               !HaiCompanion::ImageBytes(header,got,imageBytes)) {
+                f_close(&handle);Log("hai-image-header",0);return false;
+            }
+            parts=(imageBytes+HaiCompanion::ImageChunkBytes-1)/HaiCompanion::ImageChunkBytes;
+        }
+        const uint64_t required=std::min(HaiCompanion::ImageChunkBytes,imageBytes-index*HaiCompanion::ImageChunkBytes);
+        if(f_size(&handle)<required||f_size(&handle)>HaiCompanion::ImageChunkBytes) {
+            f_close(&handle);Log("hai-truncated-image",index);return false;
+        }
+        std::vector<DWORD> clusters(UFLOW_USB_EXTENTS*2+2); /* fragments per file, same as code files */
+        clusters[0]=clusters.size();handle.cltbl=clusters.data();
+        auto result=f_lseek(&handle,CREATE_LINKMAP);
+        file.bytes=f_size(&handle);
+        uint64_t remaining=file.bytes/512;
+        for(size_t i=1;result==FR_OK&&i+1<clusters.size()&&clusters[i]&&remaining;i+=2) {
+            const uint64_t sector=uint64_t(volume.database)+uint64_t(clusters[i+1]-2)*volume.csize;
+            const uint64_t count=std::min<uint64_t>(uint64_t(clusters[i])*volume.csize,remaining);
+            if(clusters[i+1]<2||uint64_t(clusters[i+1])+clusters[i]>volume.n_fatent||sector+count>(uint64_t{1}<<32)){result=FR_INT_ERR;break;}
+            file.extents.push_back({uint32_t(sector),uint32_t(count)});
+            remaining-=count;
+        }
+        handle.cltbl=nullptr;f_close(&handle);
+        if(result!=FR_OK||remaining){Log("hai-linkmap",index);return false;}
+        files.push_back(std::move(file));
+    }
+    if(files.empty()){Log("hai-images",0);return false;}
+    /* nn_hai_user requires split images padded to 512 KiB. */
+    for(size_t i=0;i+1<files.size();++i)
+        if(files[i].bytes%0x80000){Log("hai-padding",int(i));return false;}
+    try {
+        companion=HaiCompanion::Build(files,uint64_t(volume.database)+uint64_t(volume.n_fatent-2)*volume.csize);
+    } catch(...) {
+        Log("hai-companion-invalid",int(files.size()));return false;
+    }
+    Log("hai-images",int(files.size()));
+    Log("hai-companion-bytes",int(companion.size()));
+    return true;
+}
+unsigned USBStorage::RawDevice() {
+    std::lock_guard lock(mutex);return registered?rawDevice:0;
 }
 bool USBStorage::PrepareCode(const char *directory) {
     if(strncmp(directory,"usb1:/",6)||!Mount())return false;

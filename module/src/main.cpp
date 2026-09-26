@@ -4,6 +4,8 @@
 #include "RawExitTrace.h"
 #include "../../app/source/usb_storage.hpp"
 #include "RawTitleKernel.h"
+#include "RawHai.h"
+#include "RetroArchLaunch.h"
 #include "globals.h"
 #include "utils/StringTools.h"
 #include "utils/logger.h"
@@ -102,6 +104,8 @@ WUMS_APPLICATION_ENDS() {
     RawExitTracePoint("usb-redirection-device-removed");
     USBStorage::Unmount();
     RawExitTracePoint("usb-unmounted");
+    // Wii (HAI) titles only; keeps the raw-title cleanup order above unchanged.
+    RawHai::RemoveCompanionPatch();
 
     deinitLogging();
     RawExitTracePoint("module-end-return");
@@ -208,6 +212,7 @@ WUMS_APPLICATION_STARTS() {
             OSFatal("Wii U Raw Launcher: failed to install filesystem redirection");
         }
 
+        RawHai::InstallCompanionPatch();
         gLooseTitleInfo.pending = false;
         gLooseTitleInfo.active  = true;
         gActiveSaveRedirectionPath = gLooseTitleInfo.savePath;

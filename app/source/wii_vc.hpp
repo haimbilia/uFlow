@@ -4,6 +4,11 @@
 #include <sys/stat.h>
 
 namespace WiiVC {
+// The existing converter marks decrypted partition clusters as encrypted.
+// Keep both fresh and previously cached conversions away from WiiFlow until
+// real partition re-encryption and hardware validation are implemented.
+inline constexpr bool InjectionAvailable = false;
+inline constexpr const char *InjectionUnavailable = "WII VC INJECTION UNAVAILABLE - CONVERSION NEEDS REPAIR; USE NINTENDO VC ON USB";
 // Check at launch, not per frame. Installed Wii VC still uses the system launcher.
 inline bool IsRaw(const GameEntry &game) {
     if(game.installed || game.platform!=Platform::WiiU)return false;

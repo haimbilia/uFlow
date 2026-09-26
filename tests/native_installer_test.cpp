@@ -41,10 +41,10 @@ int main(int argc,char **argv){
     const std::string gcCover="wiiu/apps/uFlow/media/gamecube/fullcovers/Default.png";
     asset(dsCover,(1u<<3)|(1u<<10),'k');asset(wiiCover,1u<<1,'k');asset(gcCover,1u<<2,'k');
     asset(wiiuCover,1u,'k');
-    asset(gbaCover,1u<<6,'k');
+    asset(gbaCover,(1u<<6)|(1u<<GbaRetroArch),'k');
     asset(n64Cover,1u<<7,'k');
-    asset(snesCover,1u<<5,'k');
-    asset(nesCover,1u<<4,'k');
+    asset(snesCover,(1u<<5)|(1u<<SnesRetroArch),'k');
+    asset(nesCover,(1u<<4)|(1u<<NesRetroArch),'k');
     asset(msxCover,1u<<9,'k');
     asset(pceCover,1u<<8,'k');
     asset("wiiu/vc-bases/nes/default/content/rom.bin",1u<<4,'b');
@@ -72,17 +72,17 @@ int main(int argc,char **argv){
     assert(!File(fresh+"/apps/nintendont/boot.dol"));
     assert(!File(fresh+"/"+regionPlugin));
     assert(!File(fresh+"/"+ftpPlugin));
-    for(int bit=0;bit<13;++bit){
+    for(int bit=0;bit<ComponentCount;++bit){
         const auto selected=Prepare(fresh,bundle,defs,1u<<bit,{});
         const bool hasPlugin=std::any_of(selected.items.begin(),selected.items.end(),[&](const auto &i){return i.file.path==regionPlugin;});
         assert(hasPlugin==bool(1017u&(1u<<bit)));
         auto contains=[&](const std::string &path){return std::any_of(selected.items.begin(),selected.items.end(),[&](const auto &i){return i.file.path==path;});};
         assert(contains(dsCover)==(bit==3||bit==10));assert(contains(wiiCover)==(bit==1));assert(contains(gcCover)==(bit==2));
         assert(contains(wiiuCover)==(bit==0));
-        assert(contains(gbaCover)==(bit==6));
+        assert(contains(gbaCover)==(bit==6||bit==GbaRetroArch));
         assert(contains(n64Cover)==(bit==7));
-        assert(contains(snesCover)==(bit==5));
-        assert(contains(nesCover)==(bit==4));
+        assert(contains(snesCover)==(bit==5||bit==SnesRetroArch));
+        assert(contains(nesCover)==(bit==4||bit==NesRetroArch));
         assert(contains(msxCover)==(bit==9));
         assert(contains(pceCover)==(bit==8));
         assert(contains(forwarder)==(bit==1||bit==2));
@@ -118,6 +118,122 @@ int main(int argc,char **argv){
     Fails([&]{Install(changed,bundle,pp,"changed",{});},"Destination changed");
     assert(HashFile(changed+"/wiiu/apps/uFlow/uFlow.wuhb",{},"")==Hash("user concurrent write"));
     Put(bundle+"/payload/wiiu/apps/uFlow/uFlow.wuhb","corrupt");Fails([&]{Prepare(cancelled,bundle,defs,0,{});},"Incomplete");
+    {   // PlayStation (bit 13): RetroArch files ship only with this component, are
+        // kept when the user already has them, and the generated type never
+        // replaces an existing library configuration.
+        assert(Allowed("wiiu/apps/retroarch.wuhb")&&Allowed("retroarch/cores/pcsx_rearmed_libretro.rpx")&&
+               Allowed("retroarch/cores/info/pcsx_rearmed_libretro.info"));
+        assert(!Allowed("retroarch/retroarch.cfg")&&!Allowed("retroarch/cores/system/scph5501.bin")&&
+               !Allowed("retroarch/cores/gambatte_libretro.rpx")&&!Allowed("retroarch/saves/crash.srm"));
+        assert(ComponentCount==17&&std::string(components[PlayStation].id)=="ps1");
+        assert(std::string(components[11].id)=="startup"&&std::string(components[12].id)=="vwii-tools");
+        // Own bundle: earlier fixture steps deliberately damage the shared one.
+        const std::string psBundle=root+"/ps1-bundle";fs::create_directories(psBundle);
+        std::vector<FileDef> ps1Defs;
+        auto psAsset=[&](const std::string &path,uint32_t mask,char mode){
+            Put(psBundle+"/payload/"+path,"payload "+path);auto text="payload "+path;
+            ps1Defs.push_back({path,Hash(text),text.size(),mask,mode});
+        };
+        psAsset("wiiu/apps/retroarch.wuhb",1u<<PlayStation,'k');
+        psAsset("retroarch/cores/pcsx_rearmed_libretro.rpx",1u<<PlayStation,'k');
+        psAsset("retroarch/cores/info/pcsx_rearmed_libretro.info",1u<<PlayStation,'k');
+        psAsset("wiiu/apps/uFlow/launchers/retroarch-ps1.ufmod",1u<<PlayStation,'r');
+        const auto has=[](const Plan &plan,const std::string &path){
+            return std::any_of(plan.items.begin(),plan.items.end(),[&](const auto &i){return i.file.path==path;});
+        };
+        // PS1 alone.
+        const std::string psOnly=root+"/ps1-only";Aroma(psOnly);
+        auto plan=Prepare(psOnly,psBundle,ps1Defs,1u<<PlayStation,{});
+        assert(has(plan,"wiiu/apps/retroarch.wuhb")&&has(plan,"retroarch/cores/pcsx_rearmed_libretro.rpx"));
+        assert(has(plan,"wiiu/apps/uFlow/launchers/retroarch-ps1.ufmod"));
+        // Not selected: nothing of RetroArch's is touched.
+        auto without=Prepare(psOnly,psBundle,ps1Defs,1u<<4,{});
+        assert(!has(without,"wiiu/apps/retroarch.wuhb")&&!has(without,"retroarch/cores/pcsx_rearmed_libretro.rpx"));
+        std::vector<std::string> psDirs;auto cfg=Configs(1u<<PlayStation,psDirs);
+        assert(cfg[0].second=="ps1\tPlayStation\tfiles\twiiflow\t.cue,.chd,.pbp\t1\t13\tps1\t142\t125\t10\t1\n");
+        assert(cfg[1].second=="files\t1\t3\tfs:/vol/external01/wiiu/roms/ps1\twiiflow\tps1\tps1\n");
+        assert(std::find(psDirs.begin(),psDirs.end(),"wiiu/roms/ps1")!=psDirs.end());
+        // PS1 together with existing systems.
+        auto both=Configs((1u<<PlayStation)|(1u<<3)|(1u<<4),psDirs);
+        assert(both[0].second.find("\nps1\tPlayStation\t")!=std::string::npos);
+        assert(both[0].second.rfind("ds\tNintendo DS\t",0)==0&&both[0].second.find("\nnes\tNES\t")!=std::string::npos);
+        Install(psOnly,psBundle,plan,"ps1-first",{});
+        assert(HashFile(psOnly+"/wiiu/apps/retroarch.wuhb",{},"")==Hash("payload wiiu/apps/retroarch.wuhb"));
+        assert(Prepare(psOnly,psBundle,ps1Defs,1u<<PlayStation,{}).bytes==0); // reinstall changes nothing
+        // A different RetroArch already on the card and the user's own
+        // libraries (their custom PS1 type) both survive a PS1 install.
+        const std::string mine=root+"/ps1-existing";Aroma(mine);
+        const std::string theirs="someone else's RetroArch";
+        const std::string library="custom_1\tPS1\tfiles\twiiflow\t.cue\t1\t10\tps1\t142\t125\t10\t1\n";
+        Put(mine+"/wiiu/apps/retroarch.wuhb",theirs);
+        Put(mine+"/wiiu/apps/uFlow/libraries.cfg",library);
+        auto keep=Prepare(mine,psBundle,ps1Defs,1u<<PlayStation,{});
+        assert(keep.preserved>=2);
+        Install(mine,psBundle,keep,"ps1-keep",{});
+        assert(HashFile(mine+"/wiiu/apps/retroarch.wuhb",{},"")==Hash(theirs));
+        assert(HashFile(mine+"/wiiu/apps/uFlow/libraries.cfg",{},"")==Hash(library));
+        std::cout<<"PASS: PlayStation component - exact RetroArch paths only, PS1-only and combined configs, reinstall, existing RetroArch and libraries kept\n";
+    }
+    {   // SNES, NES and GBA through RetroArch (bits 14-16): exact core paths, the
+        // shared frontend with any RetroArch system, and RetroArch as the type's
+        // default launcher when chosen, with or without the VC injector.
+        struct System {int bit,vcBit;const char *id,*core,*module,*line,*source;};
+        const System systems[]={
+            {SnesRetroArch,5,"snes-retroarch","snes9x","retroarch-snes",
+             "snes\tSNES\tfiles\twiiflow\t.sfc,.smc\t1\t5\tsnes-retroarch\t178\t125\t30\t1\n",
+             "files\t1\t3\tfs:/vol/external01/wiiu/roms/snes\twiiflow\tsnes\tsnes-retroarch\n"},
+            {NesRetroArch,4,"nes-retroarch","nestopia","retroarch-nes",
+             "nes\tNES\tfiles\twiiflow\t.nes,.unf,.unif,.zip\t1\t4\tnes-retroarch\t130\t178\t25\t1\n",
+             "files\t1\t3\tfs:/vol/external01/wiiu/roms/nes\twiiflow\tnes\tnes-retroarch\n"},
+            {GbaRetroArch,6,"gba-retroarch","mgba","retroarch-gba",
+             "gba\tGBA\tfiles\twiiflow\t.gba\t1\t6\tgba-retroarch\t127\t127\t25\t1\n",
+             "files\t1\t3\tfs:/vol/external01/wiiu/roms/gba\twiiflow\tgba\tgba-retroarch\n"}};
+        const uint32_t retroArchBits=(1u<<PlayStation)|(1u<<SnesRetroArch)|(1u<<NesRetroArch)|(1u<<GbaRetroArch);
+        const std::string raBundle=root+"/ra-bundle";fs::create_directories(raBundle);
+        std::vector<FileDef> raDefs;
+        auto raAsset=[&](const std::string &path,uint32_t mask,char mode){
+            Put(raBundle+"/payload/"+path,"payload "+path);auto text="payload "+path;
+            raDefs.push_back({path,Hash(text),text.size(),mask,mode});
+        };
+        raAsset("wiiu/apps/retroarch.wuhb",retroArchBits,'k');
+        raAsset("retroarch/cores/pcsx_rearmed_libretro.rpx",1u<<PlayStation,'k');
+        for(const auto &system:systems) {
+            const std::string core=std::string("retroarch/cores/")+system.core+"_libretro.rpx";
+            const std::string info=std::string("retroarch/cores/info/")+system.core+"_libretro.info";
+            assert(Allowed(core)&&Allowed(info));
+            raAsset(core,1u<<system.bit,'k');raAsset(info,1u<<system.bit,'k');
+            raAsset(std::string("wiiu/apps/uFlow/launchers/")+system.module+".ufmod",1u<<system.bit,'r');
+            assert(std::string(components[system.bit].id)==system.id);
+        }
+        const auto has=[](const Plan &plan,const std::string &path){
+            return std::any_of(plan.items.begin(),plan.items.end(),[&](const auto &i){return i.file.path==path;});
+        };
+        for(const auto &system:systems) {
+            std::vector<std::string> raDirs;
+            auto cfg=Configs(1u<<system.bit,raDirs);
+            assert(cfg[0].second==system.line&&cfg[1].second==system.source);
+            // Chosen together with the VC injector, RetroArch is still the default.
+            auto both=Configs((1u<<system.bit)|(1u<<system.vcBit),raDirs);
+            assert(both[0].second==system.line&&both[1].second==system.source);
+            // The VC injector alone is unchanged.
+            auto vc=Configs(1u<<system.vcBit,raDirs);
+            assert(vc[0].second.find(std::string("\t")+components[system.vcBit].id+"-vc\t")!=std::string::npos);
+            // Only this system's core and module, plus the shared frontend.
+            const std::string card=root+"/ra-"+system.id;Aroma(card);
+            auto plan=Prepare(card,raBundle,raDefs,1u<<system.bit,{});
+            assert(has(plan,"wiiu/apps/retroarch.wuhb")&&has(plan,std::string("retroarch/cores/")+system.core+"_libretro.rpx"));
+            assert(has(plan,std::string("wiiu/apps/uFlow/launchers/")+system.module+".ufmod"));
+            assert(!has(plan,"retroarch/cores/pcsx_rearmed_libretro.rpx"));
+            for(const auto &other:systems)if(&other!=&system)
+                assert(!has(plan,std::string("retroarch/cores/")+other.core+"_libretro.rpx"));
+            Install(card,raBundle,plan,"ra-first",{});
+            assert(Prepare(card,raBundle,raDefs,1u<<system.bit,{}).bytes==0);
+        }
+        // Every RetroArch system at once shares one frontend entry.
+        auto all=Prepare(root+"/ra-snes-retroarch",raBundle,raDefs,retroArchBits,{});
+        assert(std::count_if(all.items.begin(),all.items.end(),[](const auto &i){return i.file.path=="wiiu/apps/retroarch.wuhb";})==1);
+        std::cout<<"PASS: SNES/NES/GBA RetroArch components - exact cores, shared frontend, RetroArch default launcher with or without VC, reinstall unchanged\n";
+    }
     std::cout<<"PASS: SHA-256, selection, DS/NooDS routing, backups, preserved settings/saves, idempotence, path safety, base conflicts, cancellation and races.\n";
     if(argc>=2){
         const uint32_t bits=argc==3?std::stoul(argv[2]):All;
@@ -145,7 +261,8 @@ int main(int argc,char **argv){
         assert(!File(actual+"/wiiu/apps/compat_installer.wuhb"));
         assert(!File(actual+"/apps/d2x-cios-installer-vwii/boot.dol"));
         assert(!File(actual+"/apps/wiiflow_channel_installer/boot.dol"));
-        assert(HashFile(actual+"/"+regionPlugin,{},"")==HashFile(std::string(argv[1])+"/payload/"+regionPlugin,{},""));
+        // Region Free ships only with Wii U and VC systems (mask 1017).
+        if(bits&1017u)assert(HashFile(actual+"/"+regionPlugin,{},"")==HashFile(std::string(argv[1])+"/payload/"+regionPlugin,{},""));
         assert(HashFile(actual+"/"+regionConfig,{},"")==Hash("preserve these region choices"));
         assert(HashFile(actual+"/"+ftpPlugin,{},"")==HashFile(std::string(argv[1])+"/payload/"+ftpPlugin,{},""));
         assert(HashFile(actual+"/"+ftpConfig,{},"")==Hash("preserve FTP choices"));

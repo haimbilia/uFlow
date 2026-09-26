@@ -51,6 +51,9 @@ void mcp_run_patches(u32 ios_elf_start) {
     section_write_word(ios_elf_start, 0x0501dd78, THUMB_BL(0x0501dd78, MCP_ReadCOSXml_patch));
     section_write_word(ios_elf_start, 0x051105ce, THUMB_BL(0x051105ce, MCP_ReadCOSXml_patch));
 
+    // HAI prepare handler: armed uFlow Wii VC launches supply their USB title info.
+    section_write_word(ios_elf_start, 0x0500835A, THUMB_BL(0x0500835A, HAI_GetTitleInfo_patch));
+
     // make sure to unload aroma when not booting into mass effects 3
     section_write_word(ios_elf_start, 0x0501dcaa, THUMB_BL(0x0501dcaa, MassEffect3LaunchDetectedTrampoline));
 

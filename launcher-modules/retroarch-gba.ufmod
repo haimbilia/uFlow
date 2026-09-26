@@ -1,0 +1,9 @@
+UFLOW-MODULE-1
+id=gba-retroarch
+name=Game Boy Advance (RetroArch)
+version=1.0.0
+system=Game Boy Advance
+extensions=.gba
+executable=retroarch/cores/mgba_libretro.rpx
+protocol=retroarch-sysargs-v1
+content_bundle=wiiu/apps/retroarch.wuhb

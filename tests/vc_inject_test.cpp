@@ -24,6 +24,10 @@ int main(int argc,char **argv){try{
     VCInject::ZipROM(sd+"nds/one.nds",base+"content/0010/rom.zip","WUP-N-TEST.srl",1,{});
     const auto original=VCInject::HashFile(base+"content/0010/rom.zip",{});
     check(VCInject::CheckBase(options).empty(),"base validation");check(VCInject::Save("ds-vc",options),"settings save");check(VCInject::Load("ds-vc").base==options.base,"settings reload");
+    const auto config=sd+"wiiu/apps/uFlow/launchers/ds-vc.cfg";
+    fs::rename(config,config+".bak");
+    check(VCInject::Load("ds-vc").base==options.base,"interrupted settings replacement recovery");
+    fs::rename(config+".bak",config);
     GameEntry source;source.name="Test";source.platform=Platform::Files;source.absolutePath=sd+"nds/two.nds";
     GameEntry g=source;auto error=VCInject::Prepare(g,options);check(error.empty(),error.c_str());auto cached=g.absolutePath;
     check(unzip(cached+"/content/0010/rom.zip")==rom(2),"injected ROM bytes");check(VCInject::HashFile(base+"content/0010/rom.zip",{})==original,"base unchanged");

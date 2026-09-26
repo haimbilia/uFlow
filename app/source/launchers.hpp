@@ -2,6 +2,7 @@
 
 #include "library.hpp"
 #include "launcher_modules.hpp"
+#include "saved_file.hpp"
 #include "vc_inject.hpp"
 #include <algorithm>
 #include <cctype>
@@ -18,7 +19,45 @@ struct LauncherDefinition {
     std::string system, extensions, executable;
     bool enabled = true;
     std::string moduleId;
+    // RetroArch launchers: the .wuhb supplying RetroArch's assets. Like the
+    // executable (the core), it is the user's choice; the module only fills in
+    // defaults when nothing valid is saved.
+    std::string contentBundle;
+    // The user set LAUNCH MODULE to NONE: never attach a module automatically.
+    // Stored as "-" in the module field of launchers.cfg.
+    bool moduleOptOut = false;
 };
+// A generic emulator entry that pointed straight at the RetroArch bundle for
+// the same file types this module now launches natively. Name, enabled state
+// and library associations are the user's and stay untouched.
+inline std::string NormalizedExtensions(const std::string &list) {
+    std::set<std::string> parts;std::istringstream stream(list);std::string item;
+    while(std::getline(stream,item,',')) {
+        item.erase(std::remove_if(item.begin(),item.end(),[](unsigned char c){return std::isspace(c);}),item.end());
+        std::transform(item.begin(),item.end(),item.begin(),[](unsigned char c){return std::tolower(c);});
+        if(!item.empty()&&item.front()!='.')item="."+item;
+        if(!item.empty())parts.insert(item);
+    }
+    std::string out;for(const auto &p:parts){if(!out.empty())out+=",";out+=p;}return out;
+}
+inline bool LegacyRetroArchEntry(const LauncherDefinition &existing,const LauncherModule &module) {
+    if(existing.id!=module.id||!module.error.empty())return false;
+    if(existing.kind!=LauncherKind::Emulator)return false;
+    auto executable=existing.executable;
+    for(const char *prefix:{"fs:/vol/external01/","sd:/","/vol/external01/"})
+        if(executable.rfind(prefix,0)==0){executable.erase(0,std::char_traits<char>::length(prefix));break;}
+    if(executable!=module.contentBundle&&executable!=module.executable)return false;
+    return NormalizedExtensions(existing.extensions)==NormalizedExtensions(module.extensions);
+}
+inline bool SdRelativeWithSuffix(const std::string &path,const char *suffix) {
+    const std::string tail(suffix);
+    if(!UFlowRom::RelativePath(path)||path.size()<=tail.size())return false;
+    auto end=path.substr(path.size()-tail.size());
+    std::transform(end.begin(),end.end(),end.begin(),[](unsigned char c){return std::tolower(c);});
+    return end==tail;
+}
+inline bool RetroArchCorePath(const std::string &path){return SdRelativeWithSuffix(path,".rpx");}
+inline bool RetroArchBundlePath(const std::string &path){return SdRelativeWithSuffix(path,".wuhb");}
 inline const std::vector<LauncherModule> &InstalledLauncherModules() {static const auto modules=DiscoverLauncherModules();return modules;}
 inline const LauncherModule *FindLauncherModule(const std::string &id) {for(const auto &m:InstalledLauncherModules())if(m.id==id)return &m;return nullptr;}
 inline std::vector<LauncherDefinition> MergeLauncherModules(std::vector<LauncherDefinition> list) {
@@ -27,8 +66,24 @@ inline std::vector<LauncherDefinition> MergeLauncherModules(std::vector<Launcher
         if(m.id=="native"||m.id=="wiiflow"||m.id=="usbloadergx"||m.id=="nintendont"||m.id.find("vc_")==0)continue;
         auto it=std::find_if(list.begin(),list.end(),[&](const auto &l){return l.id==m.id;});
         const auto kind=!VCSystems::Protocol(m.protocol).empty()?LauncherKind::DSInjection:LauncherKind::Emulator;
-        if(it==list.end())list.push_back({m.id,m.name,kind,m.system,m.extensions,m.executable,true,m.id});
-        else if(it->kind==LauncherKind::Emulator&&(it->moduleId==m.id||it->id=="noods")){it->moduleId=m.id;it->executable=m.executable;it->extensions=m.extensions;}
+        if(it==list.end()){list.push_back({m.id,m.name,kind,m.system,m.extensions,m.executable,true,m.id});list.back().contentBundle=m.contentBundle;}
+        else if(it->kind==LauncherKind::Emulator&&!it->moduleOptOut&&m.protocol==kRetroArchProtocol&&(it->moduleId==m.id||LegacyRetroArchEntry(*it,m))) {
+            // Saved core/bundle paths and extensions win, so files can live
+            // anywhere on the SD; an entry from before the module pointed at the
+            // bundle, not a core.
+            const bool legacy=it->moduleId.empty();
+            it->moduleId=m.id;
+            if(it->extensions.empty())it->extensions=m.extensions;
+            if(legacy||!RetroArchCorePath(it->executable))it->executable=m.executable;
+            if(!RetroArchBundlePath(it->contentBundle))it->contentBundle=m.contentBundle;
+        }
+        else if(it->kind==LauncherKind::Emulator&&!it->moduleOptOut&&
+                (it->moduleId==m.id||(it->id=="noods"&&it->moduleId.empty()))) {
+            // rom-request-v1 hands the ROM to that emulator's own build, so its
+            // executable follows the module; the file types stay the user's.
+            it->moduleId=m.id;it->executable=m.executable;
+            if(it->extensions.empty())it->extensions=m.extensions;
+        }
         else if(it->kind==LauncherKind::DSInjection&&m.protocol=="vc-nes-v1"&&it->extensions==".nes")it->extensions=m.extensions;
     }return list;
 }
@@ -73,19 +128,21 @@ inline bool LauncherExecutableExists(const std::string &relative) {
     return !path.empty() && stat(("fs:/vol/external01/"+path).c_str(),&info)==0 && S_ISREG(info.st_mode);
 }
 inline std::vector<LauncherDefinition> LoadLaunchers() {
-    std::ifstream input(LauncherConfigPath);
+    auto input=SavedFile::Open(LauncherConfigPath);
     if(!input.is_open()) return MergeLauncherModules(DefaultLaunchers());
     std::vector<LauncherDefinition> result; std::set<std::string> ids; std::string line;
     while(std::getline(input,line)) {
         if(!line.empty()&&line.back()=='\r') line.pop_back();
         std::vector<std::string> p; std::size_t start=0,end;
         while((end=line.find('\t',start))!=std::string::npos){p.push_back(line.substr(start,end-start));start=end+1;}
-        p.push_back(line.substr(start)); if(p.size()!=7&&p.size()!=8)continue;
+        p.push_back(line.substr(start)); if(p.size()<7||p.size()>9)continue;
         if(p[0].empty()||p[1].find_first_not_of(' ')==std::string::npos||!ids.insert(p[0]).second)continue;
         if(p[2].size()!=1||p[2][0]<'0'||p[2][0]>'5'||(p[6]!="0"&&p[6]!="1"))continue;
         if(!std::all_of(p.begin(),p.end(),LauncherFieldValid))continue;
         result.push_back({p[0],p[1],static_cast<LauncherKind>(p[2][0]-'0'),p[3],p[4],p[5],p[6]=="1"});
-        result.back().moduleId=p.size()==8?p[7]:p[0]=="noods"?"noods":"";
+        result.back().moduleId=p.size()>=8?p[7]:p[0]=="noods"?"noods":"";
+        if(p.size()==9)result.back().contentBundle=p[8];
+        if(result.back().moduleId=="-"){result.back().moduleId.clear();result.back().moduleOptOut=true;}
     }
     return MergeLauncherModules(result);
 }
@@ -93,19 +150,46 @@ inline bool SaveLaunchers(const std::vector<LauncherDefinition> &list) {
     std::set<std::string> ids;
     for(const auto &l:list) {
         if(l.id.empty()||l.name.find_first_not_of(' ')==std::string::npos||!ids.insert(l.id).second)return false;
-        for(const auto *field:{&l.id,&l.name,&l.system,&l.extensions,&l.executable,&l.moduleId})if(!LauncherFieldValid(*field))return false;
+        for(const auto *field:{&l.id,&l.name,&l.system,&l.extensions,&l.executable,&l.moduleId,&l.contentBundle})if(!LauncherFieldValid(*field))return false;
+        if(!l.contentBundle.empty()&&!RetroArchBundlePath(l.contentBundle))return false;
         if(static_cast<int>(l.kind)<0||static_cast<int>(l.kind)>5)return false;
         if(l.kind==LauncherKind::Emulator&&!l.executable.empty()&&LauncherSDPath(l.executable).empty())return false;
     }
     const std::string temporary=std::string(LauncherConfigPath)+".tmp";
     std::ofstream output(temporary,std::ios::trunc); if(!output)return false;
-    for(const auto &l:list)output<<l.id<<'\t'<<l.name<<'\t'<<static_cast<int>(l.kind)<<'\t'<<l.system<<'\t'<<l.extensions<<'\t'<<l.executable<<'\t'<<l.enabled<<'\t'<<l.moduleId<<'\n';
+    for(const auto &l:list) {
+        output<<l.id<<'\t'<<l.name<<'\t'<<static_cast<int>(l.kind)<<'\t'<<l.system<<'\t'<<l.extensions<<'\t'<<l.executable<<'\t'<<l.enabled<<'\t'<<(l.moduleOptOut?std::string("-"):l.moduleId);
+        if(!l.contentBundle.empty())output<<'\t'<<l.contentBundle;
+        output<<'\n';
+    }
     output.flush(); bool ok=static_cast<bool>(output);output.close();ok=ok&&!output.fail();
-    return ok&&std::rename(temporary.c_str(),LauncherConfigPath)==0;
+    return ok&&SavedFile::Commit(temporary,LauncherConfigPath);
+}
+// What a RetroArch launcher still needs, checked on its own paths; empty when ready.
+inline std::string RetroArchLauncherProblem(const LauncherDefinition &l) {
+    const std::string root="fs:/vol/external01/";
+    if(!RetroArchCorePath(l.executable)||!UFlowRom::File(root+l.executable))return "CORE NOT FOUND - CHOOSE ITS .RPX";
+    if(!RetroArchBundlePath(l.contentBundle)||!UFlowRom::File(root+l.contentBundle))return "RETROARCH NOT FOUND - CHOOSE ITS .WUHB";
+    return {};
+}
+// Modules the user may pick for this launcher. RetroArch's protocol works with
+// any core the user chooses; a rom-request module only with its own emulator.
+inline bool CompatibleLauncherModule(const LauncherModule &m,const LauncherDefinition &l) {
+    if(!m.error.empty()||l.kind!=LauncherKind::Emulator)return false;
+    return m.protocol==kRetroArchProtocol||(m.protocol=="rom-request-v1"&&m.id==l.id);
+}
+inline bool IsRetroArchLauncher(const LauncherDefinition &l) {
+    const auto *m=l.moduleId.empty()?nullptr:FindLauncherModule(l.moduleId);
+    return m&&m->protocol==kRetroArchProtocol;
 }
 inline std::string LauncherReadiness(const LauncherDefinition &l) {
     if(!l.enabled)return "DISABLED";
     if(l.kind==LauncherKind::DSInjection)return "EXPERIMENTAL - CONFIGURE VC BASE";
+    if(const auto *m=FindLauncherModule(l.moduleId);m&&!m->error.empty())return m->error;
+    if(IsRetroArchLauncher(l)) {
+        const auto problem=RetroArchLauncherProblem(l);
+        return problem.empty()?"READY - ONE-PRESS LAUNCH":problem;
+    }
     if(!l.moduleId.empty()) {const auto *m=FindLauncherModule(l.moduleId);if(!m)return "LAUNCH MODULE NOT INSTALLED";const auto error=ModuleReadiness(*m);return error.empty()?"DIRECT ROM LAUNCH / v"+m->version:error;}
     if(l.kind==LauncherKind::Emulator)return LauncherExecutableExists(l.executable)?"APP FOUND / ROM BROWSER":"SELECT INSTALLED RPX / WUHB";
     if(l.kind==LauncherKind::VirtualConsole)return "PREPARED INJECTION REQUIRED";
@@ -138,7 +222,7 @@ inline bool LauncherMatchesFile(const LauncherDefinition &l,const std::string &p
 // content, injects a ROM, writes tickets or substitutes a shared VC base.
 inline std::string ResolveVCInjection(GameEntry &game,const std::vector<GameEntry> &games) {
     if(game.platform==Platform::WiiU)return {};
-    std::ifstream input(game.absolutePath+".uflow-title"); std::string id;
+    auto input=SavedFile::Open(game.absolutePath+".uflow-title"); std::string id;
     std::getline(input,id); if(!id.empty()&&id.back()=='\r')id.pop_back();
     if(id.size()!=16||!std::all_of(id.begin(),id.end(),[](unsigned char c){return std::isxdigit(c);}))return "MAP THIS ROM TO A PREPARED INJECTION (.uflow-title)";
     std::transform(id.begin(),id.end(),id.begin(),[](unsigned char c){return std::tolower(c);});
@@ -158,5 +242,5 @@ inline bool SaveVCMapping(const GameEntry &rom,const GameEntry &injection) {
     const auto target=rom.absolutePath+".uflow-title",temp=target+".tmp";
     std::ofstream output(temp,std::ios::trunc);if(!output)return false;
     output<<id<<'\n';output.flush();bool ok=static_cast<bool>(output);output.close();ok=ok&&!output.fail();
-    return ok&&std::rename(temp.c_str(),target.c_str())==0;
+    return ok&&SavedFile::Commit(temp,target);
 }

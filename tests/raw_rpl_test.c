@@ -4,6 +4,7 @@
 #include "raw_rpl_scope.h"
 #include "raw_title_profile.h"
 #include "raw_usb_map.h"
+#include "raw_hai.h"
 // PRODUCTION_REQUEST_TYPE
 #include "/project/payload/source/ios_mcp/source/ipc_types.h"
 #define DEBUG_FUNCTION_LINE(...) ((void)0)
@@ -20,6 +21,11 @@ static bool allocationFails, registrationFails;
 static bool usbMapAvailable;
 static LoadTargetDevice seenTarget;
 static void RawUsbClear(void){usbMapAvailable=false;}
+static bool haiArmed;
+static void RawHaiClear(void){haiArmed=false;}
+static int RawHaiArmInstall(const void *data,unsigned size){
+    haiArmed=size==sizeof(RawHaiArm)&&RawHaiArmValid((const RawHaiArm*)data);return haiArmed?0:-1;
+}
 static int RawUsbHasFile(const char *path){(void)path;return usbMapAvailable;}
 static int RawUsbInstall(const void *data,unsigned size){(void)data;usbMapAvailable=size==sizeof(RawUsbMap);return usbMapAvailable?0:-1;}
 static void *svcAlloc(uint32_t heap, size_t size) { (void)heap; return allocationFails ? NULL : malloc(size); }
@@ -74,6 +80,25 @@ static void installUsb(void){
     msg.ioctl.buffer_io=&response;msg.ioctl.length_io=4;
     assert(ioctlTest(&msg)==0&&response==UFLOW_USB_MAP_MAGIC);
 }
+static int armHai(const char *path){
+    struct { uint32_t command; RawHaiArm arm; } __attribute__((packed)) packet={UFLOW_HAI_ARM_COMMAND,{0}};
+    packet.arm.magic=UFLOW_HAI_MAGIC;packet.arm.device=1;packet.arm.titleId=0x000500001019CF00ull;
+    strcpy(packet.arm.path,path);
+    uint32_t response=0;ipcmessage msg={0};msg.ioctl.buffer_in=(uint32_t*)&packet;msg.ioctl.length_in=sizeof(packet);
+    msg.ioctl.buffer_io=&response;msg.ioctl.length_io=4;
+    const int result=ioctlTest(&msg);
+    assert(result!=0||response==UFLOW_HAI_MAGIC);
+    return result;
+}
+static void haiArmLifecycle(void){
+    const char *stage=UFLOW_HAI_SD_PREFIX "wiiu/apps/uFlow/hai";
+    profile(false);assert(armHai(stage)==29&&!haiArmed); /* only for an armed raw title */
+    profile(true);assert(armHai("/vol/storage_mlc01/usr/title")==29&&!haiArmed);
+    assert(armHai(stage)==0&&haiArmed);
+    profile(false);assert(!haiArmed); /* clearing the raw title always disarms HAI */
+    profile(true);assert(!haiArmed);
+    profile(false);
+}
 static int load(const char *name, uint32_t pos, uint32_t pid, uint32_t type) {
     MCPLoadFileRequest r = {0}; strcpy(r.name, name); r.pos = pos; r.cafe_pid = pid; r.type = type;
     ipcmessage msg = {0}; msg.ioctl.buffer_in = (uint32_t *)&r; msg.ioctl.length_io = 4096;
@@ -90,6 +115,7 @@ static void start(const char *mainName) {
     replacementResult = -1; localResult = 512;
 }
 int main(void) {
+    haiArmLifecycle();
     replacementResult = -1; assert(load("mvplayer", 0, 7, 0) == 99);
     start("Turbo.rpx");
     assert(load("mvplayer", 0, 7, 0) == 512);
@@ -140,13 +166,21 @@ int main(void) {
     assert(prepare("../bad.rpx",0,UFLOW_USB_TARGET)==29);
     assert(prepare(game,0,UFLOW_USB_TARGET)==0&&gRawUsbScope);
     assert(gDynamicReplacements[0]->relativeTo==PATH_RELATIVE_TO_USB_ROOT);
+    assert(armHai(UFLOW_HAI_SD_PREFIX "wiiu/apps/uFlow/hai")==0&&haiArmed);
     replacementResult=1024;assert(load("Turbo.rpx",0,7,0)==1024&&usbMapAvailable);
+    assert(haiArmed); /* survives this title's executable startup */
     RemoveByLifetime(REPLACEMENT_LIFETIME_ONE_RPX_LAUNCH);
     replacementResult=-1;localResult=512;
     assert(load("mvplayer",4096,7,0)==512&&seenTarget==MOCHA_LOAD_TARGET_DEVICE_USB);
     assert(load("men.rpx",0,7,0)==99&&!usbMapAvailable&&!gRawUsbScope);
+    assert(!haiArmed); /* never hijack the next title's compatibility launch */
     profile(true);installUsb();assert(prepare(game,0,UFLOW_USB_TARGET)==0);
+    assert(armHai(UFLOW_HAI_SD_PREFIX "wiiu/apps/uFlow/hai")==0&&haiArmed);
     assert(prepare("",0,LOAD_RPX_TARGET_EXTRA_REVERT_PREPARE)==0&&!usbMapAvailable&&!gRawUsbScope);
+    assert(!haiArmed);
+    profile(true);assert(armHai(UFLOW_HAI_SD_PREFIX "wiiu/apps/uFlow/hai")==0&&haiArmed);
+    assert(prepare("wiiu/apps/other.rpx",0,LOAD_RPX_TARGET_SD_CARD)==0&&!haiArmed);
+    RemoveByLifetime(REPLACEMENT_LIFETIME_ONE_RPX_LAUNCH);
     start("Turbo.rpx");assert(load("mvplayer",0,7,0)==512&&seenTarget==MOCHA_LOAD_TARGET_DEVICE_SD);
     profile(false);RemoveByLifetime(REPLACEMENT_LIFETIME_ONE_RPX_LAUNCH);
     puts("Raw RPL SD/USB production dispatch/lifecycle regressions PASS (ASan/UBSan)");

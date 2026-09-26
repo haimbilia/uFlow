@@ -35,12 +35,15 @@
 #include "glass_background.hpp"
 #include "media_groups.hpp"
 #include "library_tabs.hpp"
+#include "text_utf8.hpp"
+#include "retroarch_args.hpp"
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #ifndef UFLOW_HOST_PREVIEW
 #include <coreinit/debug.h>
 #include <coreinit/dynload.h>
+#include <coreinit/memory.h>
 #include <coreinit/time.h>
 #include <coreinit/systeminfo.h>
 #include <gx2/event.h>
@@ -82,6 +85,21 @@ constexpr const char *kTracePath = "fs:/vol/external01/wiiu/apps/uFlow/uflow.log
 constexpr const char *kAllLibraryId = "__all";
 constexpr const char *kFavoritesLibraryId = "__favorites";
 
+// How a homebrew launcher receives the selected game.
+struct HomebrewLaunchPlan {
+    enum class Transport { None, Browser, RomRequest, RetroArchArgs };
+    Transport transport = Transport::None;
+    std::string executable;      // SD-relative .rpx/.wuhb to start
+    std::string contentBundle;   // RetroArch only: .wuhb providing /vol/content
+    std::string requestFile;     // rom-request-v1 only
+    std::vector<char> arguments; // RetroArch only: two NUL-terminated strings
+};
+
+// Launch Options (Minus by default) chooses how a title starts, this time only:
+// any compatible launcher, or Nintendo VC / injection for authored Wii VC titles.
+enum class LaunchMethod { Default, NintendoVC, Injection, Launcher };
+struct LaunchOption { std::string title, note; LaunchMethod method = LaunchMethod::Default; std::string launcher; bool available = true; };
+
 #ifndef UFLOW_HOST_PREVIEW
 using LaunchLooseFn = RPXLoaderStatus (*)(const char *, const char *, const char *, const char *,
                                           const char *, const char *, const char *);
@@ -107,16 +125,137 @@ bool gGlassOverVideo = false;
 SDL_Texture *gEllipseShadow = nullptr;
 SDL_Texture *gStockMenuSymbols = nullptr;
 
+constexpr int kSmoothFontSizes[] = {0, 17, 20, 25, 33, 42};
+// glass.ttf is Latin-only. Japanese, Chinese and Korean titles fall back to
+// the console's own system fonts, read in place from shared memory (never
+// copied or shipped). Each face opens on first use.
+struct FallbackFont { const void *data = nullptr; int size = 0; std::array<TTF_Font *, 6> faces{}; };
+std::array<FallbackFont, 4> gFallbackFonts{};
+
+void InitFallbackFonts() {
+#ifndef UFLOW_HOST_PREVIEW
+    // Standard covers Japanese; the others add Chinese and Korean glyphs.
+    const OSSharedDataType order[] = {OS_SHAREDDATATYPE_FONT_STANDARD, OS_SHAREDDATATYPE_FONT_TAIWANESE,
+                                      OS_SHAREDDATATYPE_FONT_CHINESE, OS_SHAREDDATATYPE_FONT_KOREAN};
+    for (std::size_t i = 0; i < gFallbackFonts.size(); ++i) {
+        void *data = nullptr;
+        uint32_t size = 0;
+        if (OSGetSharedData(order[i], 0, &data, &size) && data && size && size < 0x7FFFFFFF)
+            gFallbackFonts[i] = {data, static_cast<int>(size), {}};
+    }
+#else
+    // Host preview: optional CJK font file for visual checks.
+    static std::vector<unsigned char> preview;
+    if (const char *path = std::getenv("UFLOW_PREVIEW_CJK_FONT")) {
+        if (FILE *file = std::fopen(path, "rb")) {
+            std::fseek(file, 0, SEEK_END);
+            preview.resize(static_cast<std::size_t>(std::max(0L, std::ftell(file))));
+            std::fseek(file, 0, SEEK_SET);
+            preview.resize(std::fread(preview.data(), 1, preview.size(), file));
+            std::fclose(file);
+            if (!preview.empty()) gFallbackFonts[0] = {preview.data(), static_cast<int>(preview.size()), {}};
+        }
+    }
+#endif
+}
+
+TTF_Font *FallbackFace(FallbackFont &fallback, int index) {
+    if (!fallback.data) return nullptr;
+    if (!fallback.faces[index]) {
+        SDL_RWops *stream = SDL_RWFromConstMem(fallback.data, fallback.size);
+        fallback.faces[index] = stream ? TTF_OpenFontRW(stream, 1, kSmoothFontSizes[index]) : nullptr;
+        if (!fallback.faces[index]) fallback.data = nullptr; // unusable: do not retry every frame
+    }
+    return fallback.faces[index];
+}
+
 bool InitSmoothFonts() {
     if (TTF_Init() != 0) return false;
-    constexpr int sizes[] = {0, 17, 20, 25, 33, 42};
     const int fontSize = static_cast<int>(glass_ttf_size);
     for (int index = 1; index <= 5; ++index) {
         SDL_RWops *stream = SDL_RWFromConstMem(glass_ttf, fontSize);
-        gSmoothFonts[index] = stream ? TTF_OpenFontRW(stream, 1, sizes[index]) : nullptr;
+        gSmoothFonts[index] = stream ? TTF_OpenFontRW(stream, 1, kSmoothFontSizes[index]) : nullptr;
         if (gSmoothFonts[index] && index <= 2) TTF_SetFontStyle(gSmoothFonts[index], TTF_STYLE_BOLD);
     }
+    InitFallbackFonts();
     return gSmoothFonts[1] != nullptr;
+}
+
+// The UI font, or the first system font that has this character.
+TTF_Font *FontForCodepoint(std::uint32_t cp, int index) {
+    TTF_Font *primary = gSmoothFonts[index];
+    if (cp < 0x80 || TTF_GlyphIsProvided32(primary, cp)) return primary;
+    for (auto &fallback : gFallbackFonts)
+        if (TTF_Font *face = FallbackFace(fallback, index); face && TTF_GlyphIsProvided32(face, cp)) return face;
+    return primary;
+}
+
+// Consecutive characters that render with the same font. Control characters
+// (meta.xml line breaks) become spaces.
+std::vector<std::pair<TTF_Font *, std::string>> TextRuns(const std::string &text, int index) {
+    std::vector<std::pair<TTF_Font *, std::string>> runs;
+    for (std::size_t i = 0; i < text.size();) {
+        const std::size_t start = i;
+        std::uint32_t cp = Utf8::Next(text, i);
+        std::string piece = cp < 32 ? std::string(" ") : text.substr(start, i - start);
+        if (cp < 32) cp = ' ';
+        TTF_Font *font = FontForCodepoint(cp, index);
+        if (runs.empty() || runs.back().first != font) runs.push_back({font, std::move(piece)});
+        else runs.back().second += piece;
+    }
+    return runs;
+}
+
+int RunsWidth(const std::string &text, int index) {
+    int width = 0;
+    for (const auto &[font, run] : TextRuns(text, index)) {
+        int part = 0;
+        TTF_SizeUTF8(font, run.c_str(), &part, nullptr);
+        width += part;
+    }
+    return width;
+}
+
+// One surface for mixed-font text, glyphs aligned on a shared baseline.
+SDL_Surface *RenderTextSurface(const std::string &text, int index) {
+    const SDL_Color white{255, 255, 255, 255};
+    if (!Utf8::HasNonAscii(text)) return TTF_RenderUTF8_Blended(gSmoothFonts[index], text.c_str(), white);
+    const auto runs = TextRuns(text, index);
+    if (runs.size() == 1) return TTF_RenderUTF8_Blended(runs[0].first, runs[0].second.c_str(), white);
+    std::vector<SDL_Surface *> parts;
+    int width = 0, ascent = 0, descent = 0;
+    for (const auto &[font, run] : runs) {
+        SDL_Surface *part = TTF_RenderUTF8_Blended(font, run.c_str(), white);
+        parts.push_back(part);
+        if (!part) continue;
+        width += part->w;
+        ascent = std::max(ascent, TTF_FontAscent(font));
+        descent = std::max(descent, part->h - TTF_FontAscent(font));
+    }
+    SDL_Surface *out = width > 0 && ascent + descent > 0 ?
+        SDL_CreateRGBSurfaceWithFormat(0, width, ascent + descent, 32, SDL_PIXELFORMAT_ARGB8888) : nullptr;
+    if (out) SDL_FillRect(out, nullptr, 0);
+    int x = 0;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (!parts[i]) continue;
+        if (out) {
+            SDL_SetSurfaceBlendMode(parts[i], SDL_BLENDMODE_NONE); // runs never overlap: copy alpha as-is
+            SDL_Rect at{x, ascent - TTF_FontAscent(runs[i].first), parts[i]->w, parts[i]->h};
+            SDL_BlitSurface(parts[i], nullptr, out, &at);
+        }
+        x += parts[i]->w;
+        SDL_FreeSurface(parts[i]);
+    }
+    return out;
+}
+
+// The pixel skin's bitmap font is ASCII-only; other text uses the smooth fonts
+// scaled to roughly the pixel glyph height.
+bool UseSmoothText(const std::string &text, int scale) {
+    return scale >= 1 && scale <= 5 && gSmoothFonts[scale] && (gSmoothText || Utf8::HasNonAscii(text));
+}
+float SmoothTextScale(int scale) {
+    return gSmoothText ? 1.0f : 9.0f * scale / std::max(1, TTF_FontHeight(gSmoothFonts[scale]));
 }
 
 void ShutdownSmoothFonts() {
@@ -127,6 +266,10 @@ void ShutdownSmoothFonts() {
     for (auto &[unused, entry] : gSmoothTextCache) if (entry.texture) SDL_DestroyTexture(entry.texture);
     gSmoothTextCache.clear();
     for (TTF_Font *&font : gSmoothFonts) { if (font) TTF_CloseFont(font); font = nullptr; }
+    for (auto &fallback : gFallbackFonts) {
+        for (TTF_Font *&face : fallback.faces) { if (face) TTF_CloseFont(face); face = nullptr; }
+        fallback = {};
+    }
     TTF_Quit();
 }
 
@@ -325,6 +468,55 @@ struct CaseProfile {
     float widthMm = 135.0f;
     float heightMm = 190.0f;
     float thicknessMm = 14.0f;
+};
+
+// The single camera model for a case. Drawing, carousel layout and the bounds
+// of a cached side case all project through it, so they cannot drift apart.
+struct CaseView {
+    static constexpr float kReferenceHeightMm = 190.f; // shared, so smaller cases stay smaller
+    static constexpr float kCamera = 2.45f;
+    struct Point { SDL_FPoint point; float depth; };
+    float caseWidth, caseHeight, caseDepth, pixelScale, centerX, centerY, camera;
+    float yawSine, yawCosine, pitchSine, pitchCosine, rollSine, rollCosine;
+    CaseView(SDL_Rect rect, const CaseProfile &profile, float yaw, float pitch = 0.f, float roll = 0.f,
+             float cameraDistance = kCamera)
+        : caseWidth(profile.widthMm / kReferenceHeightMm), caseHeight(profile.heightMm / kReferenceHeightMm),
+          caseDepth(profile.thicknessMm / kReferenceHeightMm),
+          pixelScale(std::min(rect.w / std::max(135.f / kReferenceHeightMm, caseWidth),
+                              rect.h / (1.023f * std::max(1.f, caseHeight)))),
+          centerX(rect.x + rect.w * .5f), centerY(rect.y + rect.h * .5f), camera(cameraDistance),
+          yawSine(std::sin(yaw)), yawCosine(std::cos(yaw)), pitchSine(std::sin(pitch)),
+          pitchCosine(std::cos(pitch)), rollSine(std::sin(roll)), rollCosine(std::cos(roll)) {}
+    Point operator()(float x, float y, float z) const {
+        x *= caseWidth;
+        y *= caseHeight;
+        z *= caseDepth;
+        const float yawX = x * yawCosine + z * yawSine;
+        const float yawZ = -x * yawSine + z * yawCosine;
+        const float pitchY = y * pitchCosine - yawZ * pitchSine;
+        const float pitchZ = y * pitchSine + yawZ * pitchCosine;
+        const float rollX = yawX * rollCosine - pitchY * rollSine;
+        const float rollY = yawX * rollSine + pitchY * rollCosine;
+        const float perspective = camera / (camera - pitchZ);
+        return {{centerX + rollX * pixelScale * perspective,
+                 centerY - rollY * pixelScale * perspective}, pitchZ};
+    }
+    // Screen box of the mesh and sleeve: a box projects inside the hull of its corners.
+    SDL_FRect Bounds() const {
+        float left = 1e9f, right = -1e9f, top = 1e9f, bottom = -1e9f;
+        for (const float x : {-.502f, .5f}) for (const float y : {-.5075f, .5153f}) for (const float z : {-.515f, .515f}) {
+            const SDL_FPoint p = (*this)(x, y, z).point;
+            left = std::min(left, p.x); right = std::max(right, p.x);
+            top = std::min(top, p.y); bottom = std::max(bottom, p.y);
+        }
+        return {left, top, right - left, bottom - top};
+    }
+    // Width of the side face turned toward the viewer: the spine for yaw > 0,
+    // the opening edge otherwise.
+    float SideFaceWidth() const {
+        const float x = yawSine > 0.f ? -.502f : .5f;
+        return std::abs((*this)(x, 0.f, .515f).point.x - (*this)(x, 0.f, -.515f).point.x);
+    }
 };
 
 static std::string LowerCopy(const std::string &value) {
@@ -570,26 +762,22 @@ std::array<Uint8, 7> Glyph(char input) {
 }
 
 int TextWidth(const std::string &text, int scale) {
-    if (gSmoothText && scale >= 1 && scale <= 5 && gSmoothFonts[scale]) {
+    if (UseSmoothText(text, scale)) {
         int width = 0;
-        TTF_SizeUTF8(gSmoothFonts[scale], text.c_str(), &width, nullptr);
-        return width;
+        if (Utf8::HasNonAscii(text)) width = RunsWidth(text, scale);
+        else TTF_SizeUTF8(gSmoothFonts[scale], text.c_str(), &width, nullptr);
+        return gSmoothText ? width : static_cast<int>(width * SmoothTextScale(scale) + .5f);
     }
     return text.empty() ? 0 : static_cast<int>(text.size()) * 6 * scale - scale;
 }
 
-std::string Ellipsize(std::string text, std::size_t maximum) {
-    for (char &c : text) if (static_cast<unsigned char>(c) < 32 || static_cast<unsigned char>(c) > 126) c = ' ';
-    if (text.size() <= maximum) return text;
-    if (maximum <= 3) return text.substr(0, maximum);
-    return text.substr(0, maximum - 3) + "...";
-}
+std::string Ellipsize(const std::string &text, std::size_t maximum) { return Utf8::Ellipsize(text, maximum); }
 
 void DrawText(SDL_Renderer *renderer, const std::string &text, int x, int y, int scale, Color color,
               bool centered = false) {
     if(!gPopupTextGlow && gGlassOverVideo && color.r<160 && color.g<175 && color.b<190)
         color={241,248,253,color.a};
-    if (gSmoothText && scale >= 1 && scale <= 5 && gSmoothFonts[scale]) {
+    if (UseSmoothText(text, scale)) {
         const std::string key = std::to_string(scale) + ":" + std::to_string(color.r) + ":" +
                                 std::to_string(color.g) + ":" + std::to_string(color.b) + ":" + text;
         auto found = gSmoothTextCache.find(key);
@@ -602,8 +790,7 @@ void DrawText(SDL_Renderer *renderer, const std::string &text, int x, int y, int
                     gSmoothTextCache.erase(oldest);
                 }
             }
-            SDL_Surface *surface = TTF_RenderUTF8_Blended(gSmoothFonts[scale], text.c_str(),
-                                                          SDL_Color{255,255,255,255});
+            SDL_Surface *surface = RenderTextSurface(text, scale);
             SmoothTextEntry entry;
             if (surface) {
                 entry.width = surface->w; entry.height = surface->h;
@@ -616,8 +803,10 @@ void DrawText(SDL_Renderer *renderer, const std::string &text, int x, int y, int
         found->second.lastUse = SDL_GetTicks();
         if (found->second.texture) {
             SDL_SetTextureAlphaMod(found->second.texture, color.a);
-            if (centered) x -= found->second.width / 2;
-            SDL_Rect destination = {x, y, found->second.width, found->second.height};
+            const float k = SmoothTextScale(scale);
+            const int width = static_cast<int>(found->second.width * k + .5f);
+            if (centered) x -= width / 2;
+            SDL_Rect destination = {x, y, width, static_cast<int>(found->second.height * k + .5f)};
             if(gPopupTextGlow) {
                 // Reuse the glyph alpha mask: soft white outer halo, then a
                 // crisp dark face. No extra textures or per-frame rasterization.
@@ -1089,7 +1278,12 @@ public:
         defaultFileBrowser_=false;
         launcherEditor_=launcherBrowse_=false;vcMapMode_=0;typeManager_=typeText_=false;
         if(screen.rfind("launcher",0)==0){settings_=true;settingsCategory_=5;launcherRow_=0;
-            if(screen!="launchers"){launcherEditor_=true;launcherDraft_=launchers_[screen=="launchervc"?8:3];launcherRow_=5;}}
+            if(screen!="launchers"){launcherEditor_=true;launcherRow_=5;
+                // The built-in list no longer holds VC presets; build the DS injector page.
+                if(screen=="launchervc"){const auto *ds=VCSystems::Find("ds");
+                    launcherDraft_={"ds-vc","Nintendo DS - VC injector",LauncherKind::DSInjection,ds->name,ds->extensions,"",true,"ds-vc"};
+                    injectionDraft_={};injectionDraft_.system="ds";injectionDraft_.base="wiiu/vc-bases/ds/default";}
+                else launcherDraft_=launchers_[std::min<std::size_t>(3,launchers_.size()-1)];}}
         for(const auto &system:VCSystems::all)if(screen==std::string("launcher")+system.id){
             launcherEditor_=true;launcherDraft_={std::string(system.id)+"-vc",std::string(system.name)+" - VC injector",LauncherKind::DSInjection,system.name,system.extensions,"",true,std::string(system.id)+"-vc"};
             injectionDraft_={};injectionDraft_.system=system.id;injectionDraft_.base=std::string("wiiu/vc-bases/")+system.id+"/default";launcherRow_=10;
@@ -1631,73 +1825,95 @@ public:
         return true;
     }
     bool CheckSettingsControls() {
+        const auto failed=[](int line){SDL_Log("Settings control check failed at line %d",line);return false;};
+#ifdef UFLOW_HOST_PREVIEW
+        std::filesystem::create_directories("fs:/vol/external01/wiiu/apps/uFlow");
+#endif
         VisualPreview("settings");
-        SettingsInput(0,1); if(settingsCategory_!=1 || !settingsSidebar_) return false;
-        SettingsInput(1,0,true); if(settingsSidebar_ || sourceEditor_) return false;
-        SettingsInput(0,0,true); if(!sourceEditor_) return false;
+        SettingsInput(0,1); if(settingsCategory_!=1 || !settingsSidebar_) return failed(__LINE__);
+        SettingsInput(1,0,true); if(settingsSidebar_ || sourceEditor_) return failed(__LINE__);
+        SettingsInput(0,1); // row zero manages content types; the first directory is row one
+        SettingsInput(0,0,true); if(!sourceEditor_) return failed(__LINE__);
         SettingsInput(0,1); const auto platform=draftSource_.platform;
         SettingsInput(-1,0); SettingsInput(1,0);
-        if(draftSource_.platform!=platform || !sourceEditor_) return false;
-        SettingsInput(0,0,true); if(!settingsEditing_ || draftSource_.platform!=platform) return false;
-        SettingsInput(1,0); if(draftSource_.platform==platform || settingsSidebar_) return false;
-        SettingsInput(-1,0); if(draftSource_.platform!=platform || settingsSidebar_) return false;
-        SettingsInput(0,0,false,true); if(settingsEditing_ || !sourceEditor_) return false;
+        if(draftSource_.platform!=platform || !sourceEditor_) return failed(__LINE__);
+        SettingsInput(0,0,true); if(!settingsEditing_ || draftSource_.platform!=platform) return failed(__LINE__);
+        SettingsInput(1,0); if(draftSource_.platform==platform || settingsSidebar_) return failed(__LINE__);
+        SettingsInput(-1,0); if(draftSource_.platform!=platform || settingsSidebar_) return failed(__LINE__);
+        SettingsInput(0,0,false,true); if(settingsEditing_ || !sourceEditor_) return failed(__LINE__);
         SettingsInput(0,0,true); SettingsInput(0,1);
-        if(settingsEditing_ || sourceEditorRow_!=2 || settingsSidebar_) return false;
+        if(settingsEditing_ || sourceEditorRow_!=2 || settingsSidebar_) return failed(__LINE__);
         const int depth=draftSource_.depth;
         SettingsInput(0,0,true); SettingsInput(-1,0);
-        if(draftSource_.depth!=std::max(0,depth-1) || settingsSidebar_) return false;
-        SettingsInput(0,-1); if(settingsEditing_ || sourceEditorRow_!=1) return false;
+        if(draftSource_.depth!=std::max(0,depth-1) || settingsSidebar_) return failed(__LINE__);
+        SettingsInput(0,-1); if(settingsEditing_ || sourceEditorRow_!=1) return failed(__LINE__);
         draftSource_.platform=Platform::Wii;
+        draftSource_.libraryId="wii";draftSource_.launcherId="wiiflow";
         sourceEditorRow_=4;
-        SettingsInput(0,0,true); if(!settingsEditing_) return false;
-        SettingsInput(1,0); if(draftSource_.launcher!=GameLauncher::USBLoaderGX) return false;
-        SettingsInput(-1,0); if(draftSource_.launcher!=GameLauncher::WiiFlow) return false;
+        SettingsInput(0,0,true); if(!settingsEditing_) return failed(__LINE__);
+        SettingsInput(1,0); if(draftSource_.launcherId!="usbloadergx") return failed(__LINE__);
+        SettingsInput(-1,0); if(draftSource_.launcherId!="wiiflow") return failed(__LINE__);
         SettingsInput(0,0,false,true);
-        SettingsInput(0,0,false,true); if(sourceEditor_ || !sourceManager_) return false;
+        SettingsInput(0,0,false,true); if(sourceEditor_ || !sourceManager_) return failed(__LINE__);
         // Touch a section, open its path, change a value, then cancel.
-        SettingsTouch(200,330); if(settingsCategory_!=2 || !settingsSidebar_) return false;
-        SettingsTouch(500,290); if(!sourceEditor_ || settingsSidebar_) return false;
+        SettingsTouch(200,330); if(settingsCategory_!=2 || !settingsSidebar_) return failed(__LINE__);
+        FocusMediaSource(0);SettingsInput(1,0);SettingsInput(0,0,true);
+        if(!sourceEditor_ || settingsSidebar_) return failed(__LINE__);
         const auto mediaType=draftMediaSource_.type;
-        SettingsTouch(1030,320); if(draftMediaSource_.type==mediaType) return false;
-        SettingsTouch(900,320); if(draftMediaSource_.type!=mediaType) return false;
-        SettingsTouch(1040,600); if(sourceEditor_) return false;
-        SettingsTouch(500,290,-70); if(sourceRow_!=1 || sourceEditor_) return false;
-        SettingsTouch(200,210); if(settingsCategory_!=0) return false;
+        SettingsTouch(1030,320); if(draftMediaSource_.type==mediaType) return failed(__LINE__);
+        SettingsTouch(900,320); if(draftMediaSource_.type!=mediaType) return failed(__LINE__);
+        SettingsTouch(1040,600); if(sourceEditor_) return failed(__LINE__);
+        const int previousMediaRow=sourceRow_;
+        SettingsTouch(500,290,-70); if(sourceRow_!=previousMediaRow+1 || sourceEditor_) return failed(__LINE__);
+        SettingsTouch(200,210); if(settingsCategory_!=0) return failed(__LINE__);
         SettingsInput(1,0);
         for(int i=0;i<4;++i) SettingsInput(0,1);
-        SettingsInput(0,0,true); if(!audioSettings_ || settingsCategory_!=0) return false;
+        SettingsInput(0,0,true); if(!audioSettings_ || settingsCategory_!=0) return failed(__LINE__);
         // Empty music library must not leave the switch falsely ON.
         musicTracks_.clear(); preferences_.musicTrack.clear(); preferences_.musicEnabled=false;
-        SettingsInput(0,0,true); if(!settingsEditing_ || preferences_.musicEnabled) return false;
-        SettingsInput(1,0); if(preferences_.musicEnabled || musicStatus_.empty()) return false;
+        SettingsInput(0,0,true); if(!settingsEditing_ || preferences_.musicEnabled) return failed(__LINE__);
+        SettingsInput(1,0); if(preferences_.musicEnabled || musicStatus_.empty()) return failed(__LINE__);
         musicTracks_={"fixture.wav"};
-        SettingsInput(1,0); if(!preferences_.musicEnabled || musicStatus_.rfind("PLAYING:",0)!=0) return false;
-        SettingsInput(-1,0); if(preferences_.musicEnabled || musicStatus_!="MUSIC OFF" || settingsSidebar_) return false;
-        SettingsInput(0,1); if(settingsEditing_ || settingsRow_!=1) return false;
+        SettingsInput(1,0); if(!preferences_.musicEnabled || musicStatus_.rfind("PLAYING:",0)!=0) return failed(__LINE__);
+        SettingsInput(-1,0); if(preferences_.musicEnabled || musicStatus_!="MUSIC OFF" || settingsSidebar_) return failed(__LINE__);
+        SettingsInput(0,1); if(settingsEditing_ || settingsRow_!=1) return failed(__LINE__);
         musicTracks_={"fixture.wav","second.ogg","third.mp3"};
         preferences_.musicTrack=musicTracks_[0];
         SettingsInput(0,0,true); SettingsInput(-1,0);
-        if(preferences_.musicTrack!=musicTracks_[2] || settingsSidebar_) return false;
-        SettingsInput(1,0); if(preferences_.musicTrack!=musicTracks_[0]) return false;
+        if(preferences_.musicTrack!=musicTracks_[2] || settingsSidebar_) return failed(__LINE__);
+        SettingsInput(1,0); if(preferences_.musicTrack!=musicTracks_[0]) return failed(__LINE__);
         SettingsInput(0,1);
         const auto volume=preferences_.musicVolume;
-        SettingsInput(0,0,true); if(preferences_.musicVolume!=volume || !settingsEditing_) return false;
-        SettingsInput(1,0); if(preferences_.musicVolume!=volume+5) return false;
-        SettingsInput(-1,0); if(preferences_.musicVolume!=volume || settingsSidebar_) return false;
-        SettingsInput(0,0,false,true); if(settingsEditing_ || !audioSettings_ || settingsRow_!=2) return false;
-        SettingsInput(-1,0); if(!settingsSidebar_) return false;
-        SettingsInput(1,0); if(settingsSidebar_ || settingsEditing_) return false;
-        SettingsInput(0,0,false,true); if(!settings_ || audioSettings_ || settingsRow_!=4) return false;
-        SettingsInput(0,1); if(settingsRow_!=5) return false;
-        SettingsInput(0,0,true); if(!settingsEditing_) return false;
-        SettingsInput(1,0); if(!preferences_.startOnBoot) return false;
-        SettingsInput(-1,0); if(preferences_.startOnBoot) return false;
+        SettingsInput(0,0,true); if(preferences_.musicVolume!=volume || !settingsEditing_) return failed(__LINE__);
+        SettingsInput(1,0); if(preferences_.musicVolume!=volume+5) return failed(__LINE__);
+        SettingsInput(-1,0); if(preferences_.musicVolume!=volume || settingsSidebar_) return failed(__LINE__);
+        SettingsInput(0,0,false,true); if(settingsEditing_ || !audioSettings_ || settingsRow_!=2) return failed(__LINE__);
+        SettingsInput(-1,0); if(!settingsSidebar_) return failed(__LINE__);
+        SettingsInput(1,0); if(settingsSidebar_ || settingsEditing_) return failed(__LINE__);
+        SettingsInput(0,0,false,true); if(!settings_ || audioSettings_ || settingsRow_!=4) return failed(__LINE__);
+        SettingsInput(0,1); if(settingsRow_!=5) return failed(__LINE__);
+        SettingsInput(0,0,true); if(!settingsEditing_) return failed(__LINE__);
+        SettingsInput(1,0); if(!preferences_.startOnBoot) return failed(__LINE__);
+        SettingsInput(-1,0); if(preferences_.startOnBoot) return failed(__LINE__);
         SettingsInput(0,0,false,true);
-        SettingsTouch(1020,515); if(!preferences_.startOnBoot) return false;
-        SettingsTouch(900,515); if(preferences_.startOnBoot) return false;
-        SettingsInput(0,0,false,true); if(settings_) return false;
+        SettingsTouch(1020,515); if(!preferences_.startOnBoot) return failed(__LINE__);
+        SettingsTouch(900,515); if(preferences_.startOnBoot) return failed(__LINE__);
+        SettingsInput(0,0,false,true); if(settings_) return failed(__LINE__);
         SDL_Log("Settings controls PASS: A edit, left/right values, B/up/down end edit, sidebar focus, path type/depth, touch arrows, General/Audio, ON/OFF, track wrap, volume");
+        return true;
+    }
+    // Japanese titles: rendered with the system-font fallback in both skins.
+    bool CheckJapaneseText(const std::string &path) {
+        const std::string name = "\xE3\x82\xBC\xE3\x83\xAB\xE3\x83\x80\xE3\x81\xAE\xE4\xBC\x9D\xE8\xAA\xAC"
+                                 " \xE3\x83\x96\xE3\x83\xAC\xE3\x82\xB9 BotW"; // Zelda no Densetsu Buresu BotW
+        for (const int skin : {1, 0}) {
+            if (!VisualPreview("library") || visible_.empty()) return false;
+            preferences_.skin = skin;
+            games_[visible_[selected_]].name = name;
+            if (!Render(0, path + (skin ? "-glass.png" : "-pixel.png"))) return false;
+            if (TextWidth(name, 3) <= TextWidth("BotW", 3)) return false; // Japanese glyphs have width
+        }
+        std::puts("PASS: Japanese title rendered with system-font fallback, both skins");
         return true;
     }
     bool CheckControlHints(const std::string &output) {
@@ -1776,7 +1992,7 @@ public:
         for (int frame=0;frame<120;++frame) {
             if (frame%12 == 0) Move(frame < 60 ? 1 : -1);
             Render(1.f/60.f);
-            if (sideCases_.size() > 16) return false;
+            if (sideCases_.size() > kMaxSideCases || sideCaseBytes_ > kSideCaseBudget) return false;
         }
         for (int frame=0;frame<300;++frame) Render(1.f/60.f); // settle and warm
         const auto casesBefore=sideCases_.size(), artBefore=textures_.Count(), textBefore=gSmoothTextCache.size();
@@ -1784,6 +2000,93 @@ public:
         for (int frame=0;frame<3600;++frame) Render(1.f/60.f);
         SDL_Log("Idle after 3600 frames: %s",PerformanceStats().c_str());
         if (casesBefore != sideCases_.size() || artBefore != textures_.Count() || textBefore != gSmoothTextCache.size()) return false;
+        return true;
+    }
+    // ZL/ZR on a 14-title library (the user's): never backwards, stop at the
+    // ends, wrap only on a fresh press, not on a held repeat.
+    bool CheckPaging() {
+        VisualPreview("library");
+        for (int index = static_cast<int>(games_.size()); index < 14; ++index) {
+            GameEntry game = games_[0];
+            game.name = "Sample title " + std::to_string(index + 1);
+            games_.push_back(std::move(game));
+        }
+        RebuildVisible();
+        if (visible_.size() != 14) return false;
+        preferences_.wrapNavigation = true;
+        selected_ = 6; visualSelected_ = 6.f;
+        const auto at = [&](std::size_t expected) { return selected_ == expected; };
+        Page(1, true); if (!at(13) || visualSelected_ != 6.f) return false;   // forward, animated
+        Page(1, false); if (!at(13)) return false;                            // held: stops at the end
+        Page(1, true); if (!at(0) || visualSelected_ != 0.f) return false;    // fresh press wraps
+        Page(-1, true); if (!at(13)) return false;
+        Page(-1, true); if (!at(3)) return false;
+        Page(-1, false); if (!at(0)) return false;
+        Page(-1, false); if (!at(0)) return false;
+        preferences_.wrapNavigation = false;
+        Page(-1, true); if (!at(0)) return false;
+        Page(1, true); if (!at(10)) return false;
+        Page(1, true); if (!at(13)) return false;
+        Page(1, true); if (!at(13)) return false;
+        SDL_Log("Paging PASS: 14 titles, forward/back never reversed, ends stop, wrap only on a fresh press");
+        return true;
+    }
+    // Every COVER LAYOUT x COVER SPACING on a mixed shelf: each system's default
+    // sleeve and case size (thick NES boxes, short SNES/DS boxes, DVD cases)
+    // plus the fixture's full cover, at rest and mid-scroll.
+    bool CheckCoverLayouts(const std::string &output) {
+        // Sleeves that fit the artwork cache together (Wii/Wii U/DS defaults are
+        // 17-27 MB decoded); the fixture's full cover stands in for DVD cases.
+        static const char *kSystems[] = {"gamecube","nes","snes","gamecube","n64","gba","pce","nes","snes","gba","n64"};
+        static const char *kLayouts[] = {"flow","carousel","flat","stacked"};
+        static const char *kSpacings[] = {"compact","balanced","wide"};
+        const bool supersampled = std::none_of(caseTextures_.begin(), caseTextures_.end(), [](auto *p){ return !p; });
+        for (int layout = 0; layout < 4; ++layout) for (int spacing = 0; spacing < 3; ++spacing) {
+            VisualPreview("library");
+            games_.clear();
+            for (int index = 0; index < 44; ++index) {
+                GameEntry game;
+                const std::string id = kSystems[index % 11];
+                game.name = "Shelf title " + std::to_string(index + 1);
+                if (index % 3 == 1) {
+                    game.coverPath = "/fixture/cover.png"; game.fullCoverPath = "/fixture/fullcover.png";
+                } else {
+                    const std::string root = "/project/native-installer/assets/default-covers/" + id;
+                    game.libraryId = id; game.defaultSleevePath = root + ".png";
+                    std::ifstream sleeve(root + ".layout");
+                    std::string magic; std::uint64_t bytes = 0;
+                    sleeve >> magic >> bytes >> game.defaultBackEnd >> game.defaultFrontStart;
+                    if (magic != "UFLOW-SLEEVE-1") return false;
+                }
+                game.favorite = index == 20 || index == 17;
+                games_.push_back(std::move(game));
+            }
+            RebuildVisible();
+            if (visible_.size() != 44) return false;
+            selected_ = 20; visualSelected_ = 20.f;
+            preferences_.coverLayout = layout; preferences_.coverSpacing = spacing;
+            ClearSideCases();
+            const std::string name = output + "-" + kLayouts[layout] + "-" + kSpacings[spacing];
+            if (!Render(0, name + ".png")) return false;
+            // Once artwork has loaded, every resting side case fits the cache
+            // and only the selected case is drawn again.
+            if (!Render(0) || !Render(0)) return false;
+            caseDraws_ = 0;
+            if (!Render(0)) return false;
+            if (supersampled && (caseDraws_ != 1 || sideCaseBytes_ > kSideCaseBudget)) {
+                SDL_Log("Cover layouts FAIL %s: warm draws=%u side bytes=%zu cases=%zu", name.c_str(), caseDraws_,
+                        sideCaseBytes_, sideCases_.size());
+                return false;
+            }
+            SDL_Log("Cover layout %s: side cases=%zu bytes=%zu", name.c_str(), sideCases_.size(), sideCaseBytes_);
+            for (const float step : {.25f, .5f}) {
+                visualSelected_ = 20.f + step;
+                if (!Render(0, spacing == 0 ? name + "-moving" + std::to_string(static_cast<int>(step * 100)) + ".png" : ""))
+                    return false;
+            }
+        }
+        SDL_Log("Cover layouts PASS: 4 layouts x 3 spacings, mixed case sizes, resting and moving%s",
+                supersampled ? ", full shelf cached" : "");
         return true;
     }
 #endif
@@ -1800,7 +2103,7 @@ public:
         injectionDialog_.Start(name);
     }
     bool GateInjection(const GameEntry &game) {
-        const auto id=pendingInjection_.empty()?EffectiveLauncher(game,gameLaunchers_,sources_,libraries_):pendingInjection_;
+        const auto id=pendingInjection_.empty()?LaunchLauncher(game):pendingInjection_;
         const auto launcher=std::find_if(launchers_.begin(),launchers_.end(),[&](const auto &l){return l.id==id;});
         if(launcher==launchers_.end()||!launcher->enabled||launcher->kind!=LauncherKind::DSInjection||
            !LauncherAccepts(*launcher,game.platform)||!LauncherMatchesFile(*launcher,game.absolutePath))return false;
@@ -1823,6 +2126,86 @@ public:
         if(injectionDialog_.Open())injectionDialog_.Finish(error);
         else if(!error.empty())SetStatus(error,10000);
         detailsBackdropReady_=false;
+    }
+    bool CheckLaunchOptions(const std::string &path){
+        for(int skin:{0,1}){
+            VisualPreview("library");preferences_.skin=skin;
+            if(OpenLaunchOptions()||LaunchOptionsOpen())return false; // preview titles have one method
+            if(status_!="NO OTHER LAUNCH METHODS FOR THIS TITLE")return false;
+            status_.clear(); // OpenLaunchOptions clears it when the popup does open
+            LaunchMethod method=LaunchMethod::Default;
+            launchOptions_=WiiVCLaunchOptions();
+            launchOptionsOpen_=true;launchOptionsChoice_=0;launchOptionsName_="Donkey Kong Country Returns";
+            if(!OverlayOpen()||!Render(0,path+"-"+std::to_string(skin)+".png"))return false;
+            if(LaunchOptionsInput(1,false,false)!=LaunchMethod::Default||ConsumeLaunchOption(method))return false;
+            if(!Render(0,path+"-injection-"+std::to_string(skin)+".png"))return false;
+            if(LaunchOptionsInput(0,true,false)!=LaunchMethod::Default||!LaunchOptionsOpen()||
+               ConsumeLaunchOption(method)||status_.find("Unavailable")!=0)return false;
+            status_.clear();
+            launchOptionsOpen_=true;
+            if(LaunchOptionsInput(0,false,false,640,340)!=LaunchMethod::NintendoVC||
+               !ConsumeLaunchOption(method)||method!=LaunchMethod::NintendoVC)return false;
+            launchOptionsOpen_=true;
+            if(LaunchOptionsInput(0,false,true)!=LaunchMethod::Default||LaunchOptionsOpen()||ConsumeLaunchOption(method))return false;
+            // A DS title with three launchers: the pick applies to this title, once.
+            const GameEntry *game=Selected();if(!game)return false;
+            const auto fallback=LaunchLauncher(*game);
+            launchOptions_={{"NooDS","Emulator  (default)",LaunchMethod::Launcher,"noods"},
+                            {"Nintendo DS - VC injector","Virtual Console injection - first launch prepares it",LaunchMethod::Launcher,"ds-vc"},
+                            {"Other emulator","Emulator",LaunchMethod::Launcher,"other"}};
+            launchOptionsKey_=LauncherGameKey(*game);launchOptionsOpen_=true;launchOptionsChoice_=0;launchOptionsName_="Mario Kart DS";
+            if(LaunchOptionsInput(1,false,false)!=LaunchMethod::Default||!Render(0,path+"-launchers-"+std::to_string(skin)+".png"))return false;
+            if(LaunchOptionsInput(0,true,false)!=LaunchMethod::Launcher||!ConsumeLaunchOption(method)||method!=LaunchMethod::Launcher)return false;
+            if(LaunchLauncher(*game)!="ds-vc")return false;
+            GameEntry other=*game;other.absolutePath+=".other";
+            if(LaunchLauncher(other)=="ds-vc")return false; // never leaks to another title
+            ClearLaunchOverride();
+            if(LaunchLauncher(*game)!=fallback)return false;
+            const auto box=LaunchOptionsLayout();launchOptionsOpen_=true;
+            if(LaunchOptionsInput(0,false,false,640,box.rows+2*box.step+30)!=LaunchMethod::Launcher||LaunchLauncher(*game)!="other")return false;
+            ConsumeLaunchOption(method);ClearLaunchOverride();
+            // + saves the highlighted launcher as this title's default and keeps
+            // the popup open; the content type's own launcher clears the pin.
+#ifdef UFLOW_HOST_PREVIEW
+            std::filesystem::create_directories("fs:/vol/external01/wiiu/apps/uFlow");
+#endif
+            const auto savedLaunchers=gameLaunchers_;const auto savedLibraries=libraries_;
+            GameEntry &files=games_[visible_[selected_]];files.platform=Platform::Files;files.libraryId="ds";
+            files.absolutePath="fs:/vol/external01/wiiu/roms/ds/Mario Kart DS.nds";
+            LibraryDefinition ds;ds.id="ds";ds.name="Nintendo DS";ds.parser=Platform::Files;ds.launcherId="noods";
+            libraries_.push_back(ds);
+            launchOptions_={{"NooDS","Emulator  (default)",LaunchMethod::Launcher,"noods"},
+                            {"Nintendo DS - VC injector","Virtual Console injection - first launch prepares it",LaunchMethod::Launcher,"ds-vc"}};
+            launchOptionsKey_=LauncherGameKey(files);launchOptionsOpen_=true;launchOptionsChoice_=0;status_.clear();
+            if(!LaunchOptionsCanSetDefault())return false;
+            LaunchOptionsInput(1,false,false);
+            if(LaunchOptionsInput(0,false,false,-1,-1,true)!=LaunchMethod::Default||!LaunchOptionsOpen()||ConsumeLaunchOption(method))return false;
+            if(gameLaunchers_[launchOptionsKey_]!="ds-vc"||LoadLauncherOverrides()[launchOptionsKey_]!="ds-vc")return false;
+            if(launchOptions_[1].note.find("(default)")==std::string::npos||launchOptions_[0].note.find("(default)")!=std::string::npos)return false;
+            if(status_.find("DEFAULT FOR THIS GAME")!=0||!Render(0,path+"-default-"+std::to_string(skin)+".png"))return false;
+            LaunchOptionsInput(-1,false,false);LaunchOptionsInput(0,false,false,-1,-1,true);
+            if(gameLaunchers_.count(launchOptionsKey_)||LoadLauncherOverrides().count(launchOptionsKey_))return false;
+            if(launchOptions_[0].note.find("(default)")==std::string::npos||status_.find("(CONTENT TYPE)")==std::string::npos)return false;
+            launchOptionsOpen_=false;status_.clear();
+            // Wii VC methods have no saved default: + changes nothing there.
+            launchOptions_=WiiVCLaunchOptions();launchOptionsOpen_=true;launchOptionsChoice_=1;
+            if(LaunchOptionsCanSetDefault()||LaunchOptionsInput(0,false,false,-1,-1,true)!=LaunchMethod::Default||!status_.empty())return false;
+            launchOptionsOpen_=false;gameLaunchers_=savedLaunchers;libraries_=savedLibraries;
+            if(!SaveLauncherOverrides(gameLaunchers_))return false;
+            // More than five compatible launchers must remain reachable. The
+            // viewport scrolls; neither the list nor a later default is cut off.
+            const auto savedDefinitions=launchers_;
+            for(int i=0;i<7;++i)launchers_.push_back({"extra_"+std::to_string(i),"Extra "+std::to_string(i),LauncherKind::Emulator,"DS",".nds","",true});
+            launchOptions_=LaunchOptionsFor(files);
+            if(launchOptions_.size()<7||launchOptions_.back().launcher!="extra_6")return false;
+            launchOptionsOpen_=true;launchOptionsChoice_=0;launchOptionsKey_=LauncherGameKey(files);
+            for(std::size_t i=1;i<launchOptions_.size();++i)LaunchOptionsInput(1,false,false);
+            const auto scrolled=LaunchOptionsLayout();
+            if(LaunchOptionsFirst()==0||scrolled.height>720||!Render(0,path+"-scroll-"+std::to_string(skin)+".png"))return false;
+            if(LaunchOptionsInput(0,false,false,640,scrolled.rows+4*scrolled.step+20)!=LaunchMethod::Launcher||LaunchLauncher(files)!="extra_6")return false;
+            ConsumeLaunchOption(method);ClearLaunchOverride();launchers_=savedDefinitions;
+        }
+        std::puts("PASS: launch options popup, Wii VC and launcher lists, both skins, D-pad/touch/cancel, one-shot per-title choice, + saves the title default");return true;
     }
     bool CheckInjectionDialog(const std::string &path){
         for(int skin:{0,1}){
@@ -1853,6 +2236,22 @@ public:
             if (std::abs(next - static_cast<int>(selected_)) > count / 2) visualSelected_ = static_cast<float>(next);
         } else {
             next = std::clamp(next, 0, static_cast<int>(visible_.size()) - 1);
+        }
+        selected_ = static_cast<std::size_t>(next);
+    }
+    // ZL/ZR: ten titles at a time, stopping at either end. Wrapping a jump past
+    // the end of a short library reads as moving backwards (+10 of 14 is -4).
+    // With wrap navigation a fresh press at an end continues from the other
+    // end; held repeats stop there.
+    static constexpr int kPageSize = 10;
+    void Page(int direction, bool wrapAtEnd) {
+        if (visible_.empty() || libraryFadePhase_ || direction == 0) return;
+        detailsBackdropReady_ = false;
+        const int last = static_cast<int>(visible_.size()) - 1, current = static_cast<int>(selected_);
+        int next = std::clamp(current + (direction > 0 ? kPageSize : -kPageSize), 0, last);
+        if (next == current && wrapAtEnd && preferences_.wrapNavigation && last > 0) {
+            next = direction > 0 ? 0 : last;
+            visualSelected_ = static_cast<float>(next); // jump, as a wrapping Move does
         }
         selected_ = static_cast<std::size_t>(next);
     }
@@ -2030,8 +2429,10 @@ public:
             if(std::find(choices.begin(),choices.end(),std::string(system.id)+"-vc")==choices.end())return false;
             if(GameLauncherLabel(g,std::string(system.id)+"-vc")!="AUTO-INJECT ON PLAY")return false;
             VisualPreview(std::string("launcher")+system.id);
-            if(LauncherRows()!=(std::string(system.id)=="ds"?16:12))return false;
-            launcherRow_=InjectionCacheRow();settingsEditing_=true;const int old=injectionDraft_.cacheMiB;
+            // Settings rows only: name, method, system, extensions, base, enabled,
+            // DS options or the cache limit, save, remove.
+            if(LauncherRows()!=(std::string(system.id)=="ds"?12:9))return false;
+            launcherRow_=LauncherPhysicalRow(InjectionCacheRow());settingsEditing_=true;const int old=injectionDraft_.cacheMiB;
             LauncherInput(1,0,false,false);if(injectionDraft_.cacheMiB!=old+512)return false;
         }
         std::puts("PASS: all seven VC systems expose injection and system-appropriate profile rows");
@@ -2097,7 +2498,7 @@ public:
         if(CurrentLibraryId()!=kFavoritesLibraryId || tab_!=0 || !visible_.empty())return false;
         std::puts("PASS: Glass Flow default, one-time welcome, empty/fill/hide tabs and removed-tab clamping");return true;
     }
-    bool OverlayOpen() const { return scanOpen_ || updateOpen_ || WelcomeOpen() || InjectionDialogOpen() || CoverInspectOpen() || details_ || settings_ || sourceManager_ || sourceEditor_ || directoryBrowser_; }
+    bool OverlayOpen() const { return launchOptionsOpen_ || scanOpen_ || updateOpen_ || WelcomeOpen() || InjectionDialogOpen() || CoverInspectOpen() || details_ || settings_ || sourceManager_ || sourceEditor_ || directoryBrowser_; }
     bool ScanOpen() const {return scanOpen_;}
     void StartScan() {
         if(scanOpen_)return;
@@ -2133,6 +2534,122 @@ public:
             }
         }
     }
+    // Every way this title can start: the compatible launchers (the same list
+    // as Details > Game launcher), or Nintendo VC / injection for Wii VC titles.
+    static std::vector<LaunchOption> WiiVCLaunchOptions() {
+        return {{"NINTENDO VC","Unchanged title - GamePad works in games that support it",LaunchMethod::NintendoVC,{}},
+                {"INJECTION","Unavailable - Wii VC conversion needs repair",LaunchMethod::Injection,{},false}};
+    }
+    std::string DefaultLauncherFor(const GameEntry &game,const LauncherOverrides &overrides) const {
+        auto current=EffectiveLauncher(game,overrides,sources_,libraries_);
+        if(current.empty()&&game.platform!=Platform::Files)
+            current=game.platform==Platform::WiiU?"native":game.launcher==GameLauncher::WiiFlow?"wiiflow":"usbloadergx";
+        return current;
+    }
+    std::vector<LaunchOption> LaunchOptionsFor(const GameEntry &game) const {
+        if(WiiVC::IsRaw(game))return WiiVCLaunchOptions();
+        const std::string current=DefaultLauncherFor(game,gameLaunchers_);
+        std::vector<LaunchOption> options;
+        for(const auto &id:GameLauncherChoices(game)) {
+            const auto l=std::find_if(launchers_.begin(),launchers_.end(),[&](const auto &x){return x.id==id;});
+            if(id.empty()||l==launchers_.end())continue;
+            std::string note;
+            switch(l->kind) {
+                case LauncherKind::Native: note="Direct launch"; break;
+                case LauncherKind::WiiFlow: note=l->id=="nintendont"?"GameCube through Nintendont":"Wii / GameCube loader in vWii"; break;
+                case LauncherKind::USBLoaderGX: note="Wii / GameCube loader in vWii"; break;
+                case LauncherKind::Emulator: note="Emulator"; break;
+                case LauncherKind::DSInjection:
+                    note=SavedInjection(game)?"Saved Virtual Console injection":"Virtual Console injection - first launch prepares it"; break;
+                case LauncherKind::VirtualConsole: note="Prepared Virtual Console injection"; break;
+            }
+            if(id==current)note+="  (default)";
+            options.push_back({l->name,note,LaunchMethod::Launcher,id});
+        }
+        return options;
+    }
+    bool OpenLaunchOptions() {
+        const GameEntry *game=Selected();
+        if(!game||OverlayOpen())return false;
+        auto options=LaunchOptionsFor(*game);
+        if(options.size()<2){SetStatus("NO OTHER LAUNCH METHODS FOR THIS TITLE",4000);return false;}
+        launchOptionsChoice_=0;
+        for(std::size_t i=0;i<options.size();++i)if(options[i].note.find("(default)")!=std::string::npos)launchOptionsChoice_=static_cast<int>(i);
+        launchOptions_=std::move(options);
+        launchOptionsOpen_=true;launchOptionsName_=game->name;launchOptionsKey_=LauncherGameKey(*game);
+        status_.clear(); // the hint row shows popup messages; drop an older one
+        DismissVideo();detailsBackdropReady_=false;
+        return true;
+    }
+    bool LaunchOptionsOpen() const {return launchOptionsOpen_;}
+    int LaunchOptionsFirst() const {
+        return std::max(0,launchOptionsChoice_-static_cast<int>(kMaxLaunchOptions)+1);
+    }
+    struct LaunchOptionsBox {int top,height,rows,step,row;};
+    LaunchOptionsBox LaunchOptionsLayout() const {
+        const int count=std::max(1,static_cast<int>(std::min(launchOptions_.size(),kMaxLaunchOptions))),step=84,height=170+count*step;
+        const int top=360-height/2;
+        return {top,height,top+130,step,72};
+    }
+    // Returns the chosen method, or Default while open / after cancel.
+    // `makeDefault` (+) saves the highlighted launcher as this title's default
+    // and keeps the popup open.
+    LaunchMethod LaunchOptionsInput(int direction,bool accept,bool back,int x=-1,int y=-1,bool makeDefault=false){
+        if(!launchOptionsOpen_)return LaunchMethod::Default;
+        const int count=static_cast<int>(launchOptions_.size());
+        if(direction)launchOptionsChoice_=std::clamp(launchOptionsChoice_+(direction>0?1:-1),0,std::max(0,count-1));
+        const auto box=LaunchOptionsLayout();
+        const int first=LaunchOptionsFirst();
+        for(int row=0;row<static_cast<int>(kMaxLaunchOptions)&&first+row<count;++row)
+            if(x>=340&&x<940&&y>=box.rows+row*box.step&&y<box.rows+row*box.step+box.row){launchOptionsChoice_=first+row;accept=true;}
+        if(back){launchOptionsOpen_=false;detailsBackdropReady_=false;return LaunchMethod::Default;}
+        if(makeDefault&&!accept){SetLaunchOptionDefault();return LaunchMethod::Default;}
+        if(!accept||launchOptionsChoice_>=count)return LaunchMethod::Default;
+        const auto &option=launchOptions_[launchOptionsChoice_];
+        if(!option.available){SetStatus(option.note,6000);return LaunchMethod::Default;}
+        launchOptionsOpen_=false;detailsBackdropReady_=false;
+        chosenLaunch_=option.method;
+        if(option.method==LaunchMethod::Launcher){launchOverrideKey_=launchOptionsKey_;launchOverrideId_=option.launcher;}
+        return chosenLaunch_;
+    }
+    // Only launcher lists have a saved default; Wii VC titles always start
+    // through Nintendo VC unless Injection is picked for that launch.
+    bool LaunchOptionsCanSetDefault() const {
+        return std::any_of(launchOptions_.begin(),launchOptions_.end(),[](const auto &o){return o.method==LaunchMethod::Launcher;});
+    }
+    // The same per-title choice as Details > Game launcher. Picking the
+    // launcher the title would use anyway clears its pin, so it follows the
+    // content type again.
+    void SetLaunchOptionDefault() {
+        if(launchOptionsChoice_<0||launchOptionsChoice_>=static_cast<int>(launchOptions_.size()))return;
+        const LaunchOption option=launchOptions_[launchOptionsChoice_];
+        const GameEntry *game=Selected();
+        if(option.method!=LaunchMethod::Launcher||!game||LauncherGameKey(*game)!=launchOptionsKey_)return;
+        auto next=gameLaunchers_;
+        next.erase(launchOptionsKey_);
+        const bool inherited=option.launcher==DefaultLauncherFor(*game,next);
+        if(!inherited)next[launchOptionsKey_]=option.launcher;
+        if(!SaveLauncherOverrides(next)){SetStatus("COULD NOT SAVE DEFAULT LAUNCHER",2500);return;}
+        gameLaunchers_=std::move(next);
+        const auto current=DefaultLauncherFor(*game,gameLaunchers_);
+        for(auto &o:launchOptions_) {
+            const auto marker=o.note.find("  (default)");
+            if(marker!=std::string::npos)o.note.erase(marker);
+            if(o.method==LaunchMethod::Launcher&&o.launcher==current)o.note+="  (default)";
+        }
+        SetStatus(inherited?"DEFAULT: "+option.title+" (CONTENT TYPE)":"DEFAULT FOR THIS GAME: "+option.title,2500);
+    }
+    // One-shot: the next main-loop pass launches the selected title this way.
+    bool ConsumeLaunchOption(LaunchMethod &method){
+        if(chosenLaunch_==LaunchMethod::Default)return false;
+        method=chosenLaunch_;chosenLaunch_=LaunchMethod::Default;return true;
+    }
+    // The launcher for this launch: a Launch Options pick for this title, else its default.
+    std::string LaunchLauncher(const GameEntry &g) const {
+        if(!launchOverrideId_.empty()&&launchOverrideKey_==LauncherGameKey(g))return launchOverrideId_;
+        return EffectiveLauncher(g,gameLaunchers_,sources_,libraries_);
+    }
+    void ClearLaunchOverride(){launchOverrideKey_.clear();launchOverrideId_.clear();}
     bool UpdateOpen() const {return updateOpen_;}
     void UpdateState(const UFlowUpdate::Snapshot &s){
         const bool wants=s.state==UFlowUpdate::State::Available||UFlowUpdate::Busy(s.state)||s.state==UFlowUpdate::State::Success||s.state==UFlowUpdate::State::Error;
@@ -2657,14 +3174,16 @@ public:
     bool ConsumeInjectionFinished(){const bool done=injectionFinished_;injectionFinished_=false;return done;}
     std::string CachedLauncherStatus(const LauncherDefinition &l) {
         if(!l.enabled)return "DISABLED";
-        const std::string key=l.id+":"+std::to_string(static_cast<int>(l.kind))+":"+l.executable;
+        const std::string key=l.id+":"+std::to_string(static_cast<int>(l.kind))+":"+l.executable+":"+l.contentBundle+":"+l.moduleId;
         const auto found=launcherStatusCache_.find(key);
         if(found!=launcherStatusCache_.end())return found->second;
         return launcherStatusCache_[key]=LauncherReadiness(l);
     }
     // Resolve at launch, not scan time: changing an adapter needs no library rescan.
     std::string ConfigureLaunch(GameEntry &game,std::string &homebrew,std::string *requestFile=nullptr,VCInject::Progress progress={}) {
+        launchPlan_={};
         if(!pendingInjection_.empty()) {
+            ClearLaunchOverride();
             const auto module=std::move(pendingInjection_);pendingInjection_.clear();
             const auto launcher=std::find_if(launchers_.begin(),launchers_.end(),[&](const auto &l){return l.id==module;});
             if(launcher==launchers_.end()||!launcher->enabled)return "VC INJECTION LAUNCHER MISSING / DISABLED";
@@ -2679,12 +3198,15 @@ public:
             if(!SaveLauncherOverrides(next))return "INJECTION SAVED - SELECT SAVED INJECTED ROM; DEFAULT SAVE FAILED";
             gameLaunchers_=std::move(next);injectionFinished_=true;return {};
         }
-        std::string id=EffectiveLauncher(game,gameLaunchers_,sources_,libraries_);
+        std::string id=LaunchLauncher(game);
+        ClearLaunchOverride();
         if(id.empty()) {
             if(game.platform==Platform::Files)return "SELECT A LAUNCHER IN LIBRARY / MANAGE CONTENT TYPES";
             id=game.platform==Platform::WiiU?"native":game.launcher==GameLauncher::WiiFlow?"wiiflow":"usbloadergx";
         }
         const auto it=std::find_if(launchers_.begin(),launchers_.end(),[&](const auto &l){return l.id==id;});
+        if(game.platform==Platform::Files)
+            Trace(("launcher-resolved id="+id+" module="+(it==launchers_.end()?std::string("?"):it->moduleId)).c_str());
         if(it==launchers_.end())return "LAUNCHER MISSING - CHECK SETTINGS / LAUNCHERS";
         if(!it->enabled)return "LAUNCHER DISABLED - CHECK SETTINGS / LAUNCHERS";
         if(!LauncherAccepts(*it,game.platform))return "LAUNCHER DOES NOT SUPPORT THIS CONTENT SCANNER";
@@ -2699,6 +3221,22 @@ public:
         if(it->kind==LauncherKind::Emulator) {
             if(!it->moduleId.empty()) {
                 const auto *m=FindLauncherModule(it->moduleId);if(!m)return "LAUNCH MODULE NOT INSTALLED";
+                if(!m->error.empty())return m->error;
+                if(m->protocol==kRetroArchProtocol) {
+                    const auto problem=RetroArchLauncherProblem(*it);
+                    if(!problem.empty())return "RETROARCH "+problem;
+                    // RetroArch takes the ROM as a native argument; the core is
+                    // the executable and RetroArch's bundle supplies its assets.
+                    const auto rom=UFlowRom::RelativeROM(game.absolutePath);
+                    if(rom.empty()||!UFlowRom::File(game.absolutePath))return "MODULE REQUIRES A READABLE SD ROM";
+                    std::string why;
+                    auto bytes=RetroArchArgs::Pack(RetroArchArgs::CafePath(it->executable),
+                                                   RetroArchArgs::CafePath(rom),&why);
+                    if(bytes.empty())return "CANNOT BUILD LAUNCH ARGUMENTS - "+why;
+                    launchPlan_={HomebrewLaunchPlan::Transport::RetroArchArgs,it->executable,it->contentBundle,{},std::move(bytes)};
+                    Trace(("retroarch-plan core="+it->executable+" bundle="+it->contentBundle+" rom="+rom).c_str());
+                    homebrew=it->executable;return {};
+                }
                 const auto error=ModuleReadiness(*m);if(!error.empty())return error;
                 const auto rom=UFlowRom::RelativeROM(game.absolutePath);
                 if(rom.empty()||!UFlowRom::File(game.absolutePath))return "MODULE REQUIRES A READABLE SD ROM";
@@ -2714,8 +3252,9 @@ public:
         return {};
     }
     std::string ConsumeHomebrewRequest(){auto result=std::move(pendingHomebrew_);pendingHomebrew_.clear();return result;}
+    HomebrewLaunchPlan ConsumeLaunchPlan(){auto plan=std::move(launchPlan_);launchPlan_={};return plan;}
     int InjectionCacheRow() const {return injectionDraft_.system=="ds"?14:10;}
-    int LauncherRows() const {return vcMapMode_?static_cast<int>(vcMapGames_.size())+1:launcherBrowse_?static_cast<int>(launcherFiles_.size()):launcherEditor_?(launcherDraft_.kind==LauncherKind::DSInjection?InjectionCacheRow()+2:10):static_cast<int>(launchers_.size())+1;}
+    int LauncherRows() const {return vcMapMode_?static_cast<int>(vcMapGames_.size())+1:launcherBrowse_?static_cast<int>(launcherFiles_.size()):launcherEditor_?static_cast<int>(LauncherEditorRows().size()):static_cast<int>(launchers_.size())+1;}
     void RefreshVCMap(int mode) {
         vcMapMode_=mode;vcMapGames_.clear();launcherRow_=0;
         for(std::size_t i=0;i<games_.size();++i) {
@@ -2737,33 +3276,123 @@ public:
         }
         closedir(dir);std::sort(launcherFiles_.begin()+(injection?2:1),launcherFiles_.end());launcherRow_=0;
     }
+    // The edit page lists settings only, as logical row ids (the numbers the
+    // handlers use): 0 name, 1 method, 2 system, 3 extensions, 4 executable or
+    // VC base, 5 enabled, 8 save, 9 remove, 10 launch module (emulators) or
+    // injector options (10-14), 11 RetroArch bundle. Each launcher's status is
+    // shown in the launcher list, not here.
+    std::vector<int> LauncherEditorRows() const {
+        std::vector<int> rows={0,1,2,3};
+        if(launcherDraft_.kind==LauncherKind::DSInjection) {
+            rows.insert(rows.end(),{4,5});
+            if(injectionDraft_.system=="ds")rows.insert(rows.end(),{11,12,13,14});
+            else rows.push_back(10);
+        } else {
+            if(launcherDraft_.kind==LauncherKind::Emulator)rows.push_back(4);
+            rows.push_back(5);
+            if(launcherDraft_.kind==LauncherKind::Emulator)rows.push_back(10);
+            if(IsRetroArchLauncher(launcherDraft_))rows.push_back(11);
+        }
+        rows.insert(rows.end(),{8,9});
+        return rows;
+    }
+    int LauncherLogicalRow() const {
+        const auto rows=LauncherEditorRows();
+        return launcherRow_>=0&&launcherRow_<static_cast<int>(rows.size())?rows[launcherRow_]:-1;
+    }
+    int LauncherPhysicalRow(int logical) const {
+        const auto rows=LauncherEditorRows();
+        const auto found=std::find(rows.begin(),rows.end(),logical);
+        return found==rows.end()?0:static_cast<int>(found-rows.begin());
+    }
+    std::pair<std::string,std::string> LauncherRowText(int row) {
+        const bool injector=launcherDraft_.kind==LauncherKind::DSInjection;
+        const bool fromModule=!launcherDraft_.moduleId.empty();
+        const std::string moduleNote=fromModule?"  (FROM MODULE)":"";
+        const std::string injectorNote=injector?moduleNote:"";
+        switch(row) {
+            case 0: return {"NAME",launcherDraft_.name};
+            case 1: return {"METHOD",LauncherKindName(launcherDraft_.kind)};
+            case 2: return {"SYSTEM",launcherDraft_.system+injectorNote};
+            case 3: return {"ROM EXTENSIONS",launcherDraft_.extensions+injectorNote};
+            case 4:
+                if(injector)return {"VC BASE FOLDER",injectionDraft_.base.empty()?std::string("SELECT CODE / CONTENT / META BASE"):injectionDraft_.base};
+                return {IsRetroArchLauncher(launcherDraft_)?"CORE (.RPX)":"EXECUTABLE",launcherDraft_.executable};
+            case 5: return {"ENABLED",OnOff(launcherDraft_.enabled)};
+            case 8: return {"SAVE LAUNCHER","A  SAVE"};
+            case 9: return {"REMOVE ENTRY","FILES ARE NOT DELETED"};
+            default: break;
+        }
+        if(injector) {
+            if(row==InjectionCacheRow())return {"CACHE LIMIT",std::to_string(injectionDraft_.cacheMiB)+" MiB"};
+            if(row==11)return {"ZIP COMPRESSION",injectionDraft_.compression==0?"STORED":injectionDraft_.compression==1?"FAST DEFLATE":"SMALLER DEFLATE"};
+            if(row==12)return {"BRIGHTNESS",injectionDraft_.brightness<0?std::string("BASE DEFAULT"):std::to_string(injectionDraft_.brightness)};
+            if(row==13)return {"PIXEL ART UPSCALER",injectionDraft_.upscale<0?std::string("BASE DEFAULT"):std::string(OnOff(injectionDraft_.upscale!=0))};
+        }
+        if(row==10) {
+            const auto *module=fromModule?FindLauncherModule(launcherDraft_.moduleId):nullptr;
+            if(module)return {"LAUNCH MODULE",module->file+" - ONE-PRESS LAUNCH"};
+            return {"LAUNCH MODULE",fromModule?launcherDraft_.moduleId+" - MODULE FILE MISSING":"NONE - OPENS THE EMULATOR"};
+        }
+        if(row==11)return {"RETROARCH (.WUHB)",launcherDraft_.contentBundle};
+        return {"",""};
+    }
     void LauncherInput(int horizontal,int vertical,bool accept,bool back) {
         if(back) {
             if(vcMapMode_){if(vcMapMode_==2)RefreshVCMap(1);else{vcMapMode_=0;launcherRow_=7;}return;}
-            if(launcherBrowse_){launcherBrowse_=false;launcherRow_=4;return;}
+            if(launcherBrowse_){launcherBrowse_=false;launcherRow_=LauncherPhysicalRow(launcherBrowseBundle_?11:4);return;}
             if(settingsEditing_){settingsEditing_=false;return;}
             CloseOverlay();return;
         }
         if(vertical){settingsEditing_=false;const int count=LauncherRows();launcherRow_=(launcherRow_+vertical+count)%count;return;}
         if(horizontal) {
             if(settingsEditing_&&launcherEditor_) {
-                if(launcherRow_==1) {do{launcherDraft_.kind=static_cast<LauncherKind>((static_cast<int>(launcherDraft_.kind)+horizontal+5)%5);}while(launcherDraft_.kind==LauncherKind::VirtualConsole);}
-                if(launcherRow_==5)launcherDraft_.enabled=!launcherDraft_.enabled;
+                const int row=LauncherLogicalRow();
+                if(row==1) {do{launcherDraft_.kind=static_cast<LauncherKind>((static_cast<int>(launcherDraft_.kind)+horizontal+5)%5);}while(launcherDraft_.kind==LauncherKind::VirtualConsole);}
+                if(row==5)launcherDraft_.enabled=!launcherDraft_.enabled;
+                if(row==10&&launcherDraft_.kind==LauncherKind::Emulator)CycleLauncherModule(horizontal);
                 if(launcherDraft_.kind==LauncherKind::DSInjection) {
                     if(injectionDraft_.system!="ds") {
-                        if(launcherRow_==10)injectionDraft_.cacheMiB=((injectionDraft_.cacheMiB/512-1+horizontal+16)%16+1)*512;
+                        if(row==10)injectionDraft_.cacheMiB=((injectionDraft_.cacheMiB/512-1+horizontal+16)%16+1)*512;
                         return;
                     }
-                    if(launcherRow_==10)SetStatus("USE INJECT / RE-INJECT IN GAME DETAILS");
-                    if(launcherRow_==11){const int levels[]={0,1,6};int i=injectionDraft_.compression==0?0:injectionDraft_.compression==1?1:2;injectionDraft_.compression=levels[(i+horizontal+3)%3];}
-                    if(launcherRow_==12){int i=injectionDraft_.brightness<0?0:injectionDraft_.brightness/10+1;i=(i+horizontal+12)%12;injectionDraft_.brightness=i==0?-1:(i-1)*10;}
-                    if(launcherRow_==13)injectionDraft_.upscale=(injectionDraft_.upscale+1+horizontal+3)%3-1;
-                    if(launcherRow_==14)injectionDraft_.cacheMiB=((injectionDraft_.cacheMiB/512-1+horizontal+16)%16+1)*512;
+                    if(row==10)SetStatus("USE INJECT / RE-INJECT IN GAME DETAILS");
+                    if(row==11){const int levels[]={0,1,6};int i=injectionDraft_.compression==0?0:injectionDraft_.compression==1?1:2;injectionDraft_.compression=levels[(i+horizontal+3)%3];}
+                    if(row==12){int i=injectionDraft_.brightness<0?0:injectionDraft_.brightness/10+1;i=(i+horizontal+12)%12;injectionDraft_.brightness=i==0?-1:(i-1)*10;}
+                    if(row==13)injectionDraft_.upscale=(injectionDraft_.upscale+1+horizontal+3)%3-1;
+                    if(row==14)injectionDraft_.cacheMiB=((injectionDraft_.cacheMiB/512-1+horizontal+16)%16+1)*512;
                 }
             } else if(horizontal<0)settingsSidebar_=true;
             return;
         }
         if(accept)LauncherActivate();
+    }
+    // LAUNCH MODULE: NONE, or a module that can hand this launcher a game.
+    void CycleLauncherModule(int direction) {
+        std::vector<std::string> choices={""};
+        for(const auto &m:InstalledLauncherModules())if(CompatibleLauncherModule(m,launcherDraft_))choices.push_back(m.id);
+        const auto found=std::find(choices.begin(),choices.end(),launcherDraft_.moduleId);
+        const int count=static_cast<int>(choices.size());
+        int pos=found==choices.end()?0:static_cast<int>(found-choices.begin());
+        pos=(pos+direction+count)%count;
+        ApplyLauncherModule(choices[pos]);
+        launcherRow_=LauncherPhysicalRow(10);
+    }
+    void ApplyLauncherModule(const std::string &id) {
+        const auto *m=id.empty()?nullptr:FindLauncherModule(id);
+        if(!m) {
+            // One-press off. RetroArch then opens normally through its bundle.
+            if(IsRetroArchLauncher(launcherDraft_)&&RetroArchBundlePath(launcherDraft_.contentBundle))
+                launcherDraft_.executable=launcherDraft_.contentBundle;
+            launcherDraft_.moduleId.clear();launcherDraft_.contentBundle.clear();launcherDraft_.moduleOptOut=true;
+            return;
+        }
+        launcherDraft_.moduleId=m->id;launcherDraft_.moduleOptOut=false;
+        if(m->protocol==kRetroArchProtocol) {
+            if(!RetroArchCorePath(launcherDraft_.executable))launcherDraft_.executable=m->executable;
+            if(!RetroArchBundlePath(launcherDraft_.contentBundle))launcherDraft_.contentBundle=m->contentBundle;
+        } else launcherDraft_.executable=m->executable;
+        if(launcherDraft_.extensions.empty())launcherDraft_.extensions=m->extensions;
     }
     void LauncherActivate() {
         if(vcMapMode_) {
@@ -2777,13 +3406,22 @@ public:
             const auto name=launcherFiles_[launcherRow_];
             if(name=="[USE THIS FOLDER]") {
                 injectionDraft_.base=UFlowRom::RelativeROM(launcherBrowsePath_);
-                launcherBrowse_=false;launcherRow_=4;return;
+                launcherBrowse_=false;launcherRow_=LauncherPhysicalRow(4);return;
             }
             if(name=="..") {
-                if(launcherBrowsePath_=="fs:/vol/external01"){launcherBrowse_=false;launcherRow_=4;return;}
+                if(launcherBrowsePath_=="fs:/vol/external01"){launcherBrowse_=false;launcherRow_=LauncherPhysicalRow(launcherBrowseBundle_?11:4);return;}
                 launcherBrowsePath_.erase(launcherBrowsePath_.find_last_of('/'));RefreshLauncherFiles();
             } else if(name.back()=='/') {launcherBrowsePath_+="/"+name.substr(0,name.size()-1);RefreshLauncherFiles();}
-            else {launcherDraft_.executable=LauncherSDPath(launcherBrowsePath_+"/"+name);launcherBrowse_=false;launcherRow_=4;}
+            else {
+                const auto picked=LauncherSDPath(launcherBrowsePath_+"/"+name);
+                if(IsRetroArchLauncher(launcherDraft_)) {
+                    // The core is an .rpx; RetroArch itself is its .wuhb.
+                    if(launcherBrowseBundle_&&!RetroArchBundlePath(picked)){SetStatus("CHOOSE RETROARCH'S .WUHB FILE");return;}
+                    if(!launcherBrowseBundle_&&!RetroArchCorePath(picked)){SetStatus("CHOOSE A CORE .RPX FILE");return;}
+                }
+                if(launcherBrowseBundle_)launcherDraft_.contentBundle=picked;else launcherDraft_.executable=picked;
+                launcherBrowse_=false;launcherRow_=LauncherPhysicalRow(launcherBrowseBundle_?11:4);
+            }
             return;
         }
         if(!launcherEditor_) {
@@ -2797,50 +3435,45 @@ public:
             if(const auto *module=FindLauncherModule(launcherDraft_.moduleId))if(!VCSystems::Protocol(module->protocol).empty())injectionDraft_.system=VCSystems::Protocol(module->protocol);
             launcherEditor_=true;launcherRow_=0;return;
         }
-        if(launcherRow_==0||launcherRow_==2||launcherRow_==3) {
-            if(!launcherDraft_.moduleId.empty()&&launcherRow_!=0){SetStatus("FIELD DEFINED BY THE INSTALLED MODULE");return;}
-            launcherTextField_=launcherRow_;typeBuffer_=launcherRow_==0?launcherDraft_.name:launcherRow_==2?launcherDraft_.system:launcherDraft_.extensions;
+        const int row=LauncherLogicalRow();
+        if(row==0||row==2||row==3) {
+            if(launcherDraft_.kind==LauncherKind::DSInjection&&row!=0){SetStatus("SET BY THE VC INJECTOR - IT ONLY INJECTS THIS SYSTEM'S ROMS");return;}
+            launcherTextField_=row;typeBuffer_=row==0?launcherDraft_.name:row==2?launcherDraft_.system:launcherDraft_.extensions;
             typeText_=true;typeKey_=0;return;
         }
-        if(launcherRow_==1||launcherRow_==5) {
-            if(launcherRow_==1&&!launcherDraft_.moduleId.empty()){SetStatus("METHOD DEFINED BY THE INSTALLED MODULE");return;}
-            if(launcherRow_==1&&(launcherDraft_.id=="native"||launcherDraft_.id=="wiiflow"||launcherDraft_.id=="usbloadergx")){SetStatus("BUILT-IN ADAPTER TYPE IS FIXED");return;}
+        if(row==1||row==5) {
+            if(row==1&&!launcherDraft_.moduleId.empty()){SetStatus("SET LAUNCH MODULE TO NONE TO CHANGE THE METHOD");return;}
+            if(row==1&&(launcherDraft_.id=="native"||launcherDraft_.id=="wiiflow"||launcherDraft_.id=="usbloadergx")){SetStatus("BUILT-IN ADAPTER TYPE IS FIXED");return;}
             settingsEditing_=!settingsEditing_;return;
         }
-        if(launcherRow_==4) {
+        if(row==4) {
             if(launcherDraft_.kind==LauncherKind::DSInjection) {
+                launcherBrowseBundle_=false;
                 launcherBrowse_=true;launcherBrowsePath_="fs:/vol/external01";RefreshLauncherFiles();return;
             }
-            if(!launcherDraft_.moduleId.empty()){SetStatus("EXECUTABLE DEFINED BY THE INSTALLED MODULE");return;}
+            if(!launcherDraft_.moduleId.empty()&&!IsRetroArchLauncher(launcherDraft_)){SetStatus("ONE-PRESS NEEDS THIS EMULATOR'S OWN BUILD - SET LAUNCH MODULE TO NONE TO CHOOSE ANOTHER FILE",8000);return;}
             if(launcherDraft_.kind!=LauncherKind::Emulator){SetStatus("BUILT-IN ADAPTER - NO EXECUTABLE SELECTION NEEDED");return;}
+            launcherBrowseBundle_=false;
             launcherBrowse_=true;launcherBrowsePath_="fs:/vol/external01";RefreshLauncherFiles();return;
         }
-        if(launcherRow_==6) {
-            if(launcherDraft_.kind==LauncherKind::DSInjection){const auto error=VCInject::CheckBase(injectionDraft_);SetStatus(error.empty()?"VC BASE STRUCTURE OK - GAME COMPATIBILITY REQUIRES TESTING":error,10000);return;}
-            SetStatus(launcherDraft_.kind==LauncherKind::VirtualConsole?"USE PREPARED INJECTIONS; ROM MAPPINGS: SEE LAUNCHERS.md":LauncherReadiness(launcherDraft_),10000);return;
+        if(row==10&&launcherDraft_.kind==LauncherKind::Emulator){settingsEditing_=!settingsEditing_;return;}
+        if(row==11&&IsRetroArchLauncher(launcherDraft_)) {
+            launcherBrowseBundle_=true;
+            launcherBrowse_=true;launcherBrowsePath_="fs:/vol/external01";RefreshLauncherFiles();return;
         }
-        if(launcherRow_==7) {
-            if(launcherDraft_.kind==LauncherKind::DSInjection){SetStatus("ASSIGN THIS LAUNCHER, THEN PLAY - MISSING INJECTIONS ARE CREATED AUTOMATICALLY",10000);return;}
-            if(!launcherDraft_.enabled){SetStatus("LAUNCHER IS DISABLED");return;}
-            if(launcherDraft_.kind==LauncherKind::VirtualConsole){RefreshVCMap(1);return;}
-            if(launcherDraft_.kind!=LauncherKind::Emulator){SetStatus("SELECT A GAME IN THE LIBRARY TO USE THIS ADAPTER");return;}
-            if(!LauncherExecutableExists(launcherDraft_.executable)){SetStatus("SELECT AN INSTALLED EMULATOR EXECUTABLE FIRST");return;}
-            if(!launcherDraft_.moduleId.empty()) {
-                const auto *m=FindLauncherModule(launcherDraft_.moduleId);
-                if(!m||!m->error.empty()){SetStatus("MODULE MISSING OR INVALID");return;}
-                if(!UFlowRom::Clear("fs:/vol/external01/"+m->request)){SetStatus("CANNOT CLEAR OLD ROM REQUEST");return;}
-            }
-            pendingHomebrew_=LauncherSDPath(launcherDraft_.executable);return;
-        }
-        if(launcherRow_==8) {
+        if(row==8) {
             if(launcherDraft_.kind==LauncherKind::DSInjection&&!VCInject::Save(launcherDraft_.id,injectionDraft_)){SetStatus("INVALID VC SETTINGS OR SD WRITE ERROR");return;}
             for(const auto &l:libraries_)if(l.launcherId==launcherDraft_.id&&!LauncherAccepts(launcherDraft_,l.parser)){SetStatus("REASSIGN INCOMPATIBLE CONTENT TYPES FIRST");return;}
             auto next=launchers_;if(launcherIndex_<0)next.push_back(launcherDraft_);else next[launcherIndex_]=launcherDraft_;
             if(!SaveLaunchers(next)){SetStatus("COULD NOT SAVE - CHECK NAME, EXECUTABLE AND SD");return;}
             launchers_=std::move(next);launcherEditor_=false;launcherRow_=launcherIndex_<0?static_cast<int>(launchers_.size()):launcherIndex_+1;
+            if(launcherDraft_.kind==LauncherKind::DSInjection) {
+                const auto error=VCInject::CheckBase(injectionDraft_);
+                SetStatus(error.empty()?"LAUNCHER SAVED - VC BASE STRUCTURE OK":"LAUNCHER SAVED - "+error,10000);return;
+            }
             SetStatus("LAUNCHER SAVED - ASSIGN IT IN CONTENT TYPES");return;
         }
-        if(launcherRow_==9) {
+        if(row==9) {
             if(!launcherDraft_.moduleId.empty()){SetStatus("DISABLE HERE; REMOVE THE .ufmod FILE TO UNINSTALL");return;}
             if(launcherIndex_<0){launcherEditor_=false;launcherRow_=0;return;}
             if(launcherDraft_.id=="native"||launcherDraft_.id=="wiiflow"||launcherDraft_.id=="usbloadergx"){SetStatus("BUILT-IN ADAPTER - DISABLE INSTEAD");return;}
@@ -2851,8 +3484,7 @@ public:
             if(!SaveLaunchers(next)){SetStatus("COULD NOT SAVE LAUNCHERS");return;}
             launchers_=std::move(next);launcherEditor_=false;launcherRow_=0;SetStatus("ENTRY REMOVED - EXECUTABLE AND GAMES UNCHANGED");
         }
-        if(launcherDraft_.kind==LauncherKind::DSInjection&&launcherRow_>=10&&launcherRow_<=InjectionCacheRow())settingsEditing_=!settingsEditing_;
-        if(launcherDraft_.kind==LauncherKind::DSInjection&&launcherRow_==InjectionCacheRow()+1)SetStatus(injectionDraft_.system=="n64"?"AUTO PROFILE BY ROM ID / REGION / REVISION. ROM.INI OVERRIDES. SAVES ISOLATED":"BASE EMULATOR OPTIONS PRESERVED; SAVES ISOLATED PER ROM",10000);
+        if(launcherDraft_.kind==LauncherKind::DSInjection&&row>=10&&row<=InjectionCacheRow())settingsEditing_=!settingsEditing_;
     }
     void DrawLaunchers(int x,Color accent,bool glass) {
         const Color text=glass?Color{43,54,63,255}:Color{238,244,252,255};
@@ -2864,24 +3496,8 @@ public:
             for(auto index:vcMapGames_)rows.push_back({games_[index].name,vcMapMode_==2?games_[index].titleId:games_[index].libraryId});
         }
         else if(launcherBrowse_){DrawFittedText(renderer_,launcherBrowsePath_,x,237,720,1,text);for(const auto &f:launcherFiles_)rows.push_back({f,""});}
-        else if(launcherEditor_)rows={{"NAME",launcherDraft_.name},{"METHOD",LauncherKindName(launcherDraft_.kind)},
-            {"SYSTEM",launcherDraft_.system},{"ROM EXTENSIONS",launcherDraft_.extensions},
-            {"EXECUTABLE",launcherDraft_.kind==LauncherKind::Emulator?launcherDraft_.executable:"BUILT-IN ADAPTER"},
-            {"ENABLED",OnOff(launcherDraft_.enabled)},{"STATUS / HELP",CachedLauncherStatus(launcherDraft_)},
-            {launcherDraft_.kind==LauncherKind::VirtualConsole?"MAP ROM TO INJECTION":"OPEN EMULATOR",launcherDraft_.kind==LauncherKind::VirtualConsole?"SELECT EXISTING TITLE":"OPENS ITS ROM BROWSER"},{"SAVE LAUNCHER","A  SAVE"},{"REMOVE ENTRY","FILES ARE NOT DELETED"}};
+        else if(launcherEditor_){for(int row:LauncherEditorRows())rows.push_back(LauncherRowText(row));}
         else {rows.push_back({"+  ADD LAUNCHER / EMULATOR",""});for(const auto &l:launchers_)rows.push_back({l.name,CachedLauncherStatus(l)});}
-        if(launcherEditor_&&!launcherBrowse_&&!vcMapMode_&&launcherDraft_.kind==LauncherKind::DSInjection) {
-            rows[4]={"VC BASE FOLDER",injectionDraft_.base.empty()?"SELECT CODE / CONTENT / META BASE":injectionDraft_.base};
-            rows[6]={"VALIDATE BASE","A  CHECK FILE STRUCTURE"};rows[7]={"SETUP HELP","ASSIGN LAUNCHER, THEN PLAY"};
-            if(injectionDraft_.system=="ds"){
-            rows.push_back({"PREPARATION","AUTOMATIC WHEN OUTPUT IS MISSING"});
-            rows.push_back({"ZIP COMPRESSION",injectionDraft_.compression==0?"STORED":injectionDraft_.compression==1?"FAST DEFLATE":"SMALLER DEFLATE"});
-            rows.push_back({"BRIGHTNESS",injectionDraft_.brightness<0?"BASE DEFAULT":std::to_string(injectionDraft_.brightness)});
-            rows.push_back({"PIXEL ART UPSCALER",injectionDraft_.upscale<0?"BASE DEFAULT":OnOff(injectionDraft_.upscale!=0)});
-            }
-            rows.push_back({"CACHE LIMIT",std::to_string(injectionDraft_.cacheMiB)+" MiB"});
-            rows.push_back({injectionDraft_.system=="n64"?"CONFIG / SAVES":"SCREENS / SAVES",injectionDraft_.system=="n64"?"AUTO PROFILE / ROM.INI OVERRIDE":"VC MENU / ISOLATED PER ROM"});
-        }
         const int first=std::max(0,launcherRow_-5);
         DrawText(renderer_,std::to_string(launcherRow_+1)+" / "+std::to_string(rows.size()),x+665,237,1,text);
         for(int i=first;i<std::min(first+7,static_cast<int>(rows.size()));++i) {
@@ -3360,11 +3976,12 @@ public:
         if (InjectionDialogOpen()) DrawInjectionDialog(accent);
         if (WelcomeOpen()) DrawWelcome(accent);
         if (updateOpen_) DrawUpdate(accent);
+        if (launchOptionsOpen_) DrawLaunchOptions(accent);
         if (scanOpen_) DrawScan(accent);
         gGlassBackdrop = nullptr;
         if (videoOptions_.foreground) video_.Draw(kWidth,kHeight);
         if (!status_.empty() && SDL_TICKS_PASSED(SDL_GetTicks(), statusUntil_)) status_.clear();
-        if (!status_.empty()&&!scanOpen_&&!InjectionDialogOpen()&&!WelcomeOpen()&&!updateOpen_) DrawToast(accent);
+        if (!status_.empty()&&!scanOpen_&&!InjectionDialogOpen()&&!WelcomeOpen()&&!updateOpen_&&!launchOptionsOpen_) DrawToast(accent);
         const bool captured = capturePath.empty() || SaveVisualFrame(renderer_, capturePath);
         SDL_RenderPresent(renderer_);
 #ifndef UFLOW_HOST_PREVIEW
@@ -3441,6 +4058,7 @@ private:
     void ClearSideCases() {
         for (auto &entry : sideCases_) SDL_DestroyTexture(entry.texture);
         sideCases_.clear();
+        sideCaseBytes_ = 0;
     }
     int SettingsRowCount() const {
         if(audioSettings_) return 4;
@@ -3696,14 +4314,57 @@ private:
         }
         if (game.favorite) DrawText(renderer_, "*", rect.x+rect.w-(selected?38:26), rect.y+13, selected?4:3, {255,210,66,255});
     }
+    // The selected case at rest keeps a slight, breathing turn.
+    float CaseIdleYaw() const {
+        return .055f + (preview_ ? 0.f : std::sin(SDL_GetTicks() / 1250.0f) * .018f);
+    }
+    // Side cases turned nearly edge-on (shelf books) cast a narrow shadow and
+    // no floor reflection: a reflected sliver would show on one side only.
+    float CaseShadowWidth(SDL_Rect rect, bool selected, const CaseView &view) const {
+        if (selected) return rect.w * 1.02f;
+        return std::min(rect.w * .82f, view.Bounds().w + 16.f);
+    }
+    bool CaseReflects(bool selected, const CaseView &view) const {
+        return preferences_.skin == 1 && preferences_.reflections &&
+               view.yawCosine * view.pitchCosine > .015f && (selected || std::abs(view.yawCosine) >= .3f);
+    }
+    // Favorite marker at the case's top-right corner, inside what is drawn.
+    static SDL_Point CaseStar(SDL_Rect rect, const CaseView &view, bool carousel) {
+        if (!carousel) return {rect.x + rect.w - 32, rect.y + 8};
+        const SDL_FRect box = view.Bounds();
+        return {static_cast<int>(std::max(box.x, box.x + box.w - 32.f)), static_cast<int>(box.y) + 8};
+    }
     void DrawBox(const GameEntry &game, SDL_Rect rect, float relative, bool selected, Color accent,
                  float turnScale = .82f, float pitch = 0.0f, float roll = 0.0f,
-                 bool absoluteRotation = false) {
+                 bool absoluteRotation = false, float camera = CaseView::kCamera) {
         const auto profile = CaseProfileForGame(game,libraries_);
+        const float yaw = absoluteRotation ? turnScale :
+            -std::clamp(relative, -1.0f, 1.0f) * turnScale + (selected ? CaseIdleYaw() : 0.0f);
         // Render each model at 2x using the smallest preallocated target that fits.
-        const int half = static_cast<int>(std::ceil(rect.h * .65f)) + 4;
-        SDL_Rect bounds{rect.x + rect.w/2 - half, rect.y + rect.h/2 - half,
-                        half*2, half + static_cast<int>(std::ceil(rect.h*.90f)) + 4};
+        SDL_Rect bounds;
+        if (pitch == 0.0f && roll == 0.0f) {
+            // Carousel poses bound what is actually drawn: case, shadow, floor
+            // reflection and favorite star. Edge-on shelf cases are narrow, so
+            // a full shelf fits the side-case budget.
+            const CaseView view(rect, profile, yaw, 0.f, 0.f, camera);
+            const SDL_FRect box = view.Bounds();
+            const float centerX = rect.x + rect.w * .5f, shadow = CaseShadowWidth(rect, selected, view) * .5f + 12.f;
+            float left = std::min(box.x, centerX - shadow), right = std::max(box.x + box.w, centerX + shadow);
+            float bottom = std::max(box.y + box.h, rect.y + rect.h + (selected ? 30.f : 21.f));
+            if (CaseReflects(selected, view)) bottom = std::max(bottom, box.y + box.h * (selected ? 1.34f : 1.24f) + 8.f);
+            if (game.favorite) {
+                const SDL_Point star = CaseStar(rect, view, true);
+                left = std::min(left, static_cast<float>(star.x)); right = std::max(right, star.x + 30.f);
+            }
+            bounds.x = static_cast<int>(std::floor(left)) - 2;
+            bounds.y = static_cast<int>(std::floor(box.y)) - 2;
+            bounds.w = static_cast<int>(std::ceil(right)) + 2 - bounds.x;
+            bounds.h = static_cast<int>(std::ceil(bottom)) + 2 - bounds.y;
+        } else {
+            const int half = static_cast<int>(std::ceil(rect.h * .65f)) + 4;
+            bounds = {rect.x + rect.w/2 - half, rect.y + rect.h/2 - half,
+                      half*2, half + static_cast<int>(std::ceil(rect.h*.90f)) + 4};
+        }
         // Offscreen cards do not need transforms, texture decoding or GPU work.
         if (bounds.x >= kWidth || bounds.x + bounds.w <= 0) return;
         // Away from the centre, a case only translates. Keep its AA result and
@@ -3714,7 +4375,8 @@ private:
         const bool artworkResolved = textures_.HasTexture(game.fullCoverPath) ||
             (textures_.Known(game.fullCoverPath) && textures_.Known(game.coverPath) &&
              textures_.Known(game.backCoverPath) && textures_.Known(game.spinePath) && textures_.Known(game.defaultSleevePath));
-        bool cacheable = !selected && !absoluteRotation && std::abs(relative) >= 1.f;
+        // Resting side cases only translate; the carousel passes their fixed yaw.
+        bool cacheable = !selected && std::abs(relative) >= 1.f;
         std::string cacheKey;
         if (cacheable) {
             relative = relative < 0 ? -1.f : 1.f;
@@ -3723,7 +4385,7 @@ private:
                 std::to_string(game.defaultBackEnd) + ":" + std::to_string(game.defaultFrontStart) + ":" +
                 std::to_string(static_cast<int>(game.platform)) + ":" + std::to_string(game.favorite) + ":" +
                 std::to_string(rect.w) + ":" + std::to_string(rect.h) + ":" + std::to_string(relative) + ":" +
-                std::to_string(turnScale) + ":" + std::to_string(pitch) + ":" + std::to_string(roll) + ":" +
+                std::to_string(yaw) + ":" + std::to_string(camera) + ":" + std::to_string(pitch) + ":" + std::to_string(roll) + ":" +
                 std::to_string(profile.widthMm) + ":" + std::to_string(profile.heightMm) + ":" +
                 std::to_string(profile.thicknessMm) + ":" +
                 std::to_string(preferences_.skin) + ":" + std::to_string(preferences_.reflections) + ":" +
@@ -3747,18 +4409,25 @@ private:
 #ifdef UFLOW_HOST_PREVIEW
             ++caseDirectFallbacks_;
 #endif
-            DrawBoxDirect(game,rect,relative,selected,accent,turnScale,pitch,roll,absoluteRotation,profile);
+            DrawBoxDirect(game,rect,relative,selected,accent,yaw,pitch,roll,camera,profile);
             return;
         }
         SDL_Texture *cachedTarget = nullptr;
+        const std::size_t cachedBytes = static_cast<std::size_t>(bounds.w) * 2 * static_cast<std::size_t>(bounds.h) * 2 * 4;
         if (cacheable) {
-            if (sideCases_.size() >= 16) {
+            // Least recently used first, but never a case already shown this
+            // frame: a view larger than the budget renders directly, not thrash.
+            while (!sideCases_.empty() &&
+                   (sideCases_.size() >= kMaxSideCases || sideCaseBytes_ + cachedBytes > kSideCaseBudget)) {
                 auto oldest = std::min_element(sideCases_.begin(),sideCases_.end(),
                     [](const auto &a,const auto &b){return a.use < b.use;});
+                if (oldest->use > sideCaseFrame_) break;
+                sideCaseBytes_ -= oldest->bytes;
                 SDL_DestroyTexture(oldest->texture); sideCases_.erase(oldest);
             }
-            cachedTarget = SDL_CreateTexture(renderer_,SDL_PIXELFORMAT_RGBA8888,
-                SDL_TEXTUREACCESS_TARGET,bounds.w*2,bounds.h*2);
+            if (sideCases_.size() < kMaxSideCases && sideCaseBytes_ + cachedBytes <= kSideCaseBudget)
+                cachedTarget = SDL_CreateTexture(renderer_,SDL_PIXELFORMAT_RGBA8888,
+                    SDL_TEXTUREACCESS_TARGET,bounds.w*2,bounds.h*2);
             if (cachedTarget) {
                 const auto blend = SDL_ComposeCustomBlendMode(
                     SDL_BLENDFACTOR_ONE,SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,SDL_BLENDOPERATION_ADD,
@@ -3782,7 +4451,7 @@ private:
             ++caseDirectFallbacks_;
 #endif
             if (cachedTarget) SDL_DestroyTexture(cachedTarget);
-            DrawBoxDirect(game,rect,relative,selected,accent,turnScale,pitch,roll,absoluteRotation,profile);
+            DrawBoxDirect(game,rect,relative,selected,accent,yaw,pitch,roll,camera,profile);
             return;
         }
         SDL_RenderSetLogicalSize(renderer_,0,0);
@@ -3794,18 +4463,20 @@ private:
         SetColor(renderer_,{0,0,0,0});
         SDL_RenderClear(renderer_);
         SDL_Rect local=rect; local.x-=bounds.x; local.y-=bounds.y;
-        DrawBoxDirect(game,local,relative,selected,accent,turnScale,pitch,roll,absoluteRotation,profile);
+        DrawBoxDirect(game,local,relative,selected,accent,yaw,pitch,roll,camera,profile);
         SDL_SetRenderTarget(renderer_,target);
         SDL_RenderSetLogicalSize(renderer_,logicalW,logicalH);
         SDL_RenderSetScale(renderer_,scaleX,scaleY); SDL_RenderSetViewport(renderer_,&viewport);
         SDL_RenderSetClipRect(renderer_,clipped?&clip:nullptr);
         const SDL_Rect source{0,0,bounds.w*2,bounds.h*2};
         SDL_RenderCopy(renderer_,caseTexture,&source,&bounds);
-        if (cachedTarget) sideCases_.push_back({cacheKey,cachedTarget,++sideCaseUse_});
+        if (cachedTarget) {
+            sideCases_.push_back({cacheKey,cachedTarget,++sideCaseUse_,cachedBytes});
+            sideCaseBytes_ += cachedBytes;
+        }
     }
     void DrawBoxDirect(const GameEntry &game, SDL_Rect rect, float relative, bool selected, Color accent,
-                       float turnScale, float pitch, float roll, bool absoluteRotation,
-                       CaseProfile profile) {
+                       float yaw, float pitch, float roll, float camera, CaseProfile profile) {
 #ifdef UFLOW_HOST_PREVIEW
         ++caseDraws_;
 #endif
@@ -3823,38 +4494,13 @@ private:
         const TextureInfo artwork=textures_.Get(front.path);
         const float frontU=front.u0;
 
-        struct Transformed { SDL_FPoint point; float depth; };
+        using Transformed = CaseView::Point;
         struct Face { std::uint16_t a, b, c; float depth; };
-        // Share a physical reference across profiles so smaller cases stay smaller.
-        constexpr float referenceHeightMm = 190.f;
-        const float caseWidth = profile.widthMm / referenceHeightMm;
-        const float caseHeight = profile.heightMm / referenceHeightMm;
-        const float caseDepth = profile.thicknessMm / referenceHeightMm;
-        const float turn = std::clamp(relative, -1.0f, 1.0f);
-        const float idle = selected ? .055f + (preview_ ? 0.f : std::sin(SDL_GetTicks() / 1250.0f) * .018f) : 0.0f;
-        const float yaw = absoluteRotation ? turnScale : -turn * turnScale + idle;
-        const float yawSine = std::sin(yaw), yawCosine = std::cos(yaw);
-        const float pitchSine = std::sin(pitch), pitchCosine = std::cos(pitch);
-        const float rollSine = std::sin(roll), rollCosine = std::cos(roll);
-        const float pixelScale = std::min(rect.w / std::max(135.f / referenceHeightMm,caseWidth),
-                                         rect.h / (1.023f * std::max(1.f,caseHeight)));
-        const float centerX = rect.x + rect.w * .5f;
-        const float centerY = rect.y + rect.h * .5f;
-        constexpr float camera = 2.45f;
-        const auto transform = [&](float x, float y, float z) {
-            x *= caseWidth;
-            y *= caseHeight;
-            z *= caseDepth;
-            const float yawX = x * yawCosine + z * yawSine;
-            const float yawZ = -x * yawSine + z * yawCosine;
-            const float pitchY = y * pitchCosine - yawZ * pitchSine;
-            const float pitchZ = y * pitchSine + yawZ * pitchCosine;
-            const float rollX = yawX * rollCosine - pitchY * rollSine;
-            const float rollY = yawX * rollSine + pitchY * rollCosine;
-            const float perspective = camera / (camera - pitchZ);
-            return Transformed{{centerX + rollX * pixelScale * perspective,
-                                centerY - rollY * pixelScale * perspective}, pitchZ};
-        };
+        const CaseView view(rect, profile, yaw, pitch, roll, camera);
+        const float yawSine = view.yawSine, yawCosine = view.yawCosine;
+        const float pitchSine = view.pitchSine, pitchCosine = view.pitchCosine;
+        const float rollSine = view.rollSine, rollCosine = view.rollCosine;
+        const auto transform = [&](float x, float y, float z) { return view(x, y, z); };
 
         const auto topLeft = transform(-.478f, .482f, .515f);
         const auto topRight = transform(.478f, .482f, .515f);
@@ -3862,13 +4508,13 @@ private:
         const auto bottomLeft = transform(-.478f, -.482f, .515f);
         const bool frontFacing = yawCosine * pitchCosine > .015f;
 
-        const float shadowWidth = rect.w * (selected ? 1.02f : .82f);
+        const float shadowWidth = CaseShadowWidth(rect, selected, view);
         DrawSoftEllipseShadow(renderer_,
                               {rect.x + rect.w*.5f-shadowWidth*.5f,
                                rect.y + rect.h-2.0f,shadowWidth,selected?24.0f:15.0f},
                               selected ? 104 : 58);
 
-        if (frontFacing && artwork.texture && preferences_.skin == 1 && preferences_.reflections) {
+        if (frontFacing && artwork.texture && CaseReflects(selected, view)) {
             const auto fit=CoverFaces::Contain(artwork.width*(front.u1-front.u0)/std::max(1,artwork.height),profile.widthMm/profile.heightMm);
             const auto topLeft=transform(-.478f+.956f*fit.x0,.482f-.964f*fit.y0,.515f);
             const auto topRight=transform(-.478f+.956f*fit.x1,.482f-.964f*fit.y0,.515f);
@@ -4015,7 +4661,10 @@ private:
             const SDL_FPoint outline[] = {topLeft.point, topRight.point, bottomRight.point, bottomLeft.point, topLeft.point};
             SDL_RenderDrawLinesF(renderer_, outline, 5);
         }
-        if (game.favorite) DrawText(renderer_, "*", rect.x + rect.w - 32, rect.y + 8, 3, {255,210,66,255});
+        if (game.favorite) {
+            const SDL_Point star = CaseStar(rect, view, pitch == 0.0f && roll == 0.0f);
+            DrawText(renderer_, "*", star.x, star.y, 3, {255,210,66,255});
+        }
     }
     void DrawCoverInspect(Color accent) {
         const GameEntry *game=Selected();
@@ -4035,52 +4684,133 @@ private:
                  preferences_.skin==1?Color{48,64,73,static_cast<Uint8>(255.f*pose.travel)}:
                                       Color{235,242,250,static_cast<Uint8>(255.f*pose.travel)},true);
     }
+    // How covers sit around the selected one, from COVER LAYOUT and COVER SPACING.
+    struct CoverStyle {
+        float sideWidth, sideHeight; // rect of a resting side case
+        float sideYaw;               // turn of the left side; the right mirrors it (or, on a shelf, shows its spine too)
+        bool shelf;                  // both sides turn their spines to the viewer, like books
+        float camera;                // perspective of a resting side case
+        float gap;                   // between the selected case and its neighbours
+        float reveal;                // share of a case's face the next case leaves uncovered
+        float push, pushPower;       // resting depth: downward offset over the first four steps
+    };
+    CoverStyle CurrentCoverStyle() const {
+        const int layout = std::clamp(preferences_.coverLayout, 0, 3);
+        const int spacing = std::clamp(preferences_.coverSpacing, 0, 2);
+        // Rows: CLASSIC FLOW, CAROUSEL, FLAT ROW, STACKED. Columns: COMPACT,
+        // BALANCED, WIDE. COMPACT packs cases like books; WIDE leaves gaps.
+        static constexpr float kYaw[4][3] = {{1.15f,.98f,.82f},{1.f,.75f,.55f},{.52f,.45f,.38f},{1.36f,1.3f,1.22f}};
+        static constexpr float kGap[4][3] = {{12.f,22.f,32.f},{10.f,20.f,30.f},{10.f,20.f,30.f},{34.f,38.f,42.f}};
+        static constexpr float kReveal[4][3] = {{.45f,.85f,1.3f},{.5f,.9f,1.3f},{.35f,.7f,1.1f},{.1f,.3f,.55f}};
+        // A shelf case is sized by height alone (wide enough for SNES boxes), so
+        // books keep their physical proportions standing side by side.
+        static constexpr float kSize[4][2] = {{126.f,180.f},{112.f,160.f},{135.f,193.f},{260.f,280.f}};
+        static constexpr float kPush[4][2] = {{9.f,1.f},{18.f,1.35f},{3.f,1.f},{0.f,1.f}};
+        const bool shelf = layout == 3;
+        CoverStyle style{kSize[layout][0], kSize[layout][1], kYaw[layout][spacing], shelf,
+                         shelf ? 6.f : CaseView::kCamera, kGap[layout][spacing], kReveal[layout][spacing],
+                         kPush[layout][0], kPush[layout][1]};
+        // GlassFlow's reflective cases read better turned a little further.
+        if (preferences_.skin == 1 && !shelf) style.sideYaw = std::max(style.sideYaw, .52f);
+        return style;
+    }
+    // Horizontal extent of a case around its pivot, and the width of its side
+    // face (spine or opening edge) turned toward the viewer.
+    struct CoverSpan { float left, right, outer; };
+    CoverSpan MeasureCover(const GameEntry &game, float width, float height, float yaw, float camera) const {
+        const auto profile = CaseProfileForGame(game, libraries_);
+        if (!preferences_.useBoxArt) { // DrawCover's flat fit
+            const float half = profile.widthMm * .5f * std::min(width / std::max(135.f, profile.widthMm),
+                                                                height / std::max(190.f, profile.heightMm));
+            return {-half, half, 0.f};
+        }
+        const CaseView view({0, 0, static_cast<int>(width), static_cast<int>(height)}, profile, yaw, 0.f, 0.f, camera);
+        const SDL_FRect box = view.Bounds();
+        return {box.x - view.centerX, box.x + box.w - view.centerX, view.SideFaceWidth()};
+    }
     void DrawCarousel(Color accent) {
-        struct Card { int index; float relative; };
+        constexpr float kPi = 3.14159265358979323846f;
+        const float focusWidth = 220.0f, focusHeight = 314.0f;
+        const CoverStyle style = CurrentCoverStyle();
+        const float rightYaw = style.shelf ? kPi - style.sideYaw : -style.sideYaw;
+        const int count = static_cast<int>(visible_.size());
+        const float reach = kWidth * .5f + std::abs(tabSlide_);
+        // Resting offsets from the screen centre with `center` selected. Cases are
+        // placed outward, each leaving its side face plus `reveal` of its face
+        // uncovered by the nearer one, so mixed case sizes pack like books.
+        struct Rest { int first; std::vector<float> offsets; };
+        const auto rest = [&](int center) {
+            const CoverSpan focus = MeasureCover(games_[visible_[center]], focusWidth, focusHeight, 0.f, CaseView::kCamera);
+            std::vector<float> sides[2];
+            for (int side = 0; side < 2; ++side) {
+                const int direction = side == 0 ? -1 : 1;
+                const float yaw = side == 0 ? style.sideYaw : rightYaw;
+                CoverSpan previous{};
+                float x = 0.f;
+                // Two past the screen edge, so neighbouring rests share every visible case.
+                for (int index = center + direction, beyond = 0; index >= 0 && index < count && beyond < 2 &&
+                     sides[side].size() < 64; index += direction) {
+                    const CoverSpan span = MeasureCover(games_[visible_[index]], style.sideWidth, style.sideHeight, yaw, style.camera);
+                    const float reveal = span.outer + style.reveal * (span.right - span.left - span.outer);
+                    if (sides[side].empty()) x = side == 0 ? focus.left - style.gap - span.right : focus.right + style.gap - span.left;
+                    else x += side == 0 ? previous.left - span.left - reveal : previous.right - span.right + reveal;
+                    sides[side].push_back(x);
+                    previous = span;
+                    if (side == 0 ? x + span.right < -reach : x + span.left > reach) ++beyond;
+                }
+            }
+            Rest result{center - static_cast<int>(sides[0].size()), std::vector<float>(sides[0].rbegin(), sides[0].rend())};
+            result.offsets.push_back(0.f);
+            result.offsets.insert(result.offsets.end(), sides[1].begin(), sides[1].end());
+            return result;
+        };
+        // Between two resting views every case moves straight to its next place.
+        const float position = std::clamp(visualSelected_, 0.f, static_cast<float>(count - 1));
+        const int base = static_cast<int>(position);
+        const float blend = position - base;
+        const Rest from = rest(base), to = blend > 0.f && base + 1 < count ? rest(base + 1) : from;
+        struct Card { int index; float relative, offset; };
         std::vector<Card> cards;
-        const int center = static_cast<int>(std::round(visualSelected_));
-        for (int index = center - 5; index <= center + 5; ++index) {
-            if (index >= 0 && index < static_cast<int>(visible_.size()))
-                cards.push_back({index, static_cast<float>(index) - visualSelected_});
+        const int last = std::min(from.first + static_cast<int>(from.offsets.size()),
+                                  to.first + static_cast<int>(to.offsets.size())) - 1;
+        for (int index = std::max(from.first, to.first); index <= last; ++index) {
+            const float start = from.offsets[index - from.first], end = to.offsets[index - to.first];
+            cards.push_back({index, static_cast<float>(index) - position, start + (end - start) * blend});
         }
         std::sort(cards.begin(), cards.end(), [](const Card &left, const Card &right) {
             return std::abs(left.relative) > std::abs(right.relative);
         });
-        const float spacingValues[] = {154.0f, 184.0f, 216.0f};
-        float spacing = spacingValues[preferences_.coverSpacing];
-        if (preferences_.coverLayout == 1) spacing *= .86f;
-        else if (preferences_.coverLayout == 2) spacing *= 1.05f;
-        else if (preferences_.coverLayout == 3) spacing *= .48f;
+        sideCaseFrame_ = sideCaseUse_;
         for (const Card &card : cards) {
             if (card.index == static_cast<int>(selected_) && (detailsProgress_ > .015f || coverInspectProgress_ > .015f)) continue;
             const GameEntry &game = games_[visible_[card.index]];
             const float distance = std::abs(card.relative);
             float focus = std::max(0.0f, 1.0f - distance);
             focus = focus * focus * (3.0f - 2.0f * focus);
-            float sideWidth = 126.0f;
-            float sideHeight = 180.0f;
-            const float focusWidth = 220.0f;
-            const float focusHeight = 314.0f;
-            float turnScale = .82f;
-            if (preferences_.coverLayout == 1) {
-                sideWidth = 112.0f; sideHeight = 160.0f; turnScale = .55f;
-            } else if (preferences_.coverLayout == 2) {
-                sideWidth = 135.0f; sideHeight = 193.0f; turnScale = .38f;
-            } else if (preferences_.coverLayout == 3) {
-                sideWidth = 150.0f; sideHeight = 214.0f; turnScale = .28f;
+            const int width = static_cast<int>(style.sideWidth + (focusWidth - style.sideWidth) * focus);
+            const int height = static_cast<int>(style.sideHeight + (focusHeight - style.sideHeight) * focus);
+            const float depthPush = std::pow(std::min(4.0f, distance), style.pushPower) * style.push;
+            const int x = static_cast<int>(640.0f + tabSlide_ + card.offset - width / 2.0f);
+            const bool selected = card.index == static_cast<int>(selected_) && focus > .78f;
+            if (!preferences_.useBoxArt) {
+                DrawCover(game, {x, static_cast<int>(312.0f - height / 2.0f + depthPush), width, height}, selected, accent);
+                continue;
             }
-            if (preferences_.skin == 1) turnScale = std::max(turnScale,.52f);
-            const int width = static_cast<int>(sideWidth + (focusWidth - sideWidth) * focus);
-            const int height = static_cast<int>(sideHeight + (focusHeight - sideHeight) * focus);
-            float depthPush = std::min(4.0f, distance) * 9.0f;
-            if (preferences_.coverLayout == 1) depthPush = std::pow(std::min(4.0f, distance), 1.35f) * 18.0f;
-            else if (preferences_.coverLayout == 2) depthPush = std::min(4.0f, distance) * 3.0f;
-            else if (preferences_.coverLayout == 3) depthPush = std::min(4.0f, distance) * 5.0f;
-            const int x = static_cast<int>(640.0f + tabSlide_ + card.relative * spacing - width / 2.0f);
-            const int y = static_cast<int>(312.0f - height / 2.0f + depthPush);
-            if(preferences_.useBoxArt)DrawBox(game, {x, y, width, height}, card.relative,
-                    card.index == static_cast<int>(selected_) && focus > .78f, accent, turnScale);
-            else DrawCover(game,{x,y,width,height},card.index==static_cast<int>(selected_)&&focus>.78f,accent);
+            const float yaw = std::min(1.0f, distance) * (card.relative < 0 ? style.sideYaw : rightYaw) +
+                              (selected ? CaseIdleYaw() : 0.0f);
+            const float camera = style.camera + (CaseView::kCamera - style.camera) * focus;
+            float settle = 0.0f;
+            if (style.shelf) {
+                // Books stand on one line, where a DVD case's bottom would be,
+                // instead of short boxes floating at mid-height.
+                const auto bottom = [&](const CaseProfile &profile) {
+                    const SDL_FRect box = CaseView({0, 0, width, height}, profile, yaw, 0.f, 0.f, camera).Bounds();
+                    return box.y + box.h;
+                };
+                settle = bottom(CaseProfile{}) - bottom(CaseProfileForGame(game, libraries_));
+            }
+            const int y = static_cast<int>(312.0f - height / 2.0f + depthPush + settle);
+            DrawBox(game, {x, y, width, height}, card.relative, selected, accent, yaw, 0.0f, 0.0f, true, camera);
         }
         const auto &game = games_[visible_[selected_]];
         if (video_.Ready() && !videoOptions_.foreground) {
@@ -4661,6 +5391,28 @@ private:
             DrawText(renderer_,i?"YES":"NO",500+i*280,494,2,ink,true);}
         else if(!busy){FillRoundedRect(renderer_,{500,475,280,52},14,{accent.r,accent.g,accent.b,90});DrawText(renderer_,"A / B  CLOSE",640,494,2,ink,true);}
     }
+    void DrawLaunchOptions(Color accent) {
+        const bool glass=preferences_.skin==1;
+        const PopupTextGlowScope glow(glass);
+        const Color ink=glass?Color{42,53,62,255}:Color{238,244,252,255};
+        const auto box=LaunchOptionsLayout();
+        const SDL_Rect panel{290,box.top,700,box.height};
+        FillRoundedRect(renderer_,panel,24,glass?Color{239,246,248,245}:Color{20,31,49,250});
+        if(glass)DrawGlassSurface(renderer_,panel,24,accent,100,true);
+        DrawText(renderer_,"LAUNCH OPTIONS",640,box.top+27,3,ink,true);
+        DrawFittedText(renderer_,launchOptionsName_,330,box.top+76,launchOptions_.size()>kMaxLaunchOptions?550:620,2,ink);
+        const int first=LaunchOptionsFirst();
+        for(int i=first;i<std::min(first+static_cast<int>(kMaxLaunchOptions),static_cast<int>(launchOptions_.size()));++i){
+            const bool selected=launchOptionsChoice_==i;const int y=box.rows+(i-first)*box.step;
+            FillRoundedRect(renderer_,{340,y,600,box.row},16,{accent.r,accent.g,accent.b,Uint8(selected?140:45)});
+            DrawText(renderer_,launchOptions_[i].title,640,y+9,2,ink,true);
+            DrawFittedText(renderer_,launchOptions_[i].note,360,y+43,560,1,ink);
+        }
+        if(launchOptions_.size()>kMaxLaunchOptions)
+            DrawText(renderer_,std::to_string(launchOptionsChoice_+1)+" / "+std::to_string(launchOptions_.size()),920,box.top+76,1,ink,true);
+        const std::string hints=LaunchOptionsCanSetDefault()?"A  LAUNCH      +  SET AS DEFAULT      B  CANCEL":"A  LAUNCH      B  CANCEL";
+        DrawText(renderer_,status_.empty()?hints:Ellipsize(status_,60),640,box.top+box.height-34,1,ink,true);
+    }
     void DrawWelcome(Color accent) {
         const bool glass=preferences_.skin==1;
         const PopupTextGlowScope glow(glass);
@@ -4680,6 +5432,15 @@ private:
         DrawText(renderer_,Ellipsize(status_,62),kWidth/2,581,2,{4,12,22,255},true);
     }
 
+    bool launchOptionsOpen_=false;
+    int launchOptionsChoice_=0;
+    static constexpr std::size_t kMaxLaunchOptions=5;
+    std::vector<LaunchOption> launchOptions_;
+    std::string launchOptionsKey_,launchOverrideKey_,launchOverrideId_;
+    LaunchMethod chosenLaunch_=LaunchMethod::Default;
+    HomebrewLaunchPlan launchPlan_;
+    bool launcherBrowseBundle_=false; // the file picker is choosing RetroArch's .wuhb
+    std::string launchOptionsName_;
     bool updateOpen_=false,updateYes_=false;
     int updateScroll_=0;
     UFlowUpdate::Snapshot updateState_;
@@ -4799,9 +5560,15 @@ private:
     // 1280-wide bucket silently sent inspection through the non-AA fallback.
     inline static constexpr std::array<SDL_Point,3> kCaseTargetSizes{{{640,768},{896,1024},{1312,1536}}};
     std::array<SDL_Texture *,3> caseTextures_{};
-    struct SideCase { std::string key; SDL_Texture *texture; std::uint64_t use; };
+    struct SideCase { std::string key; SDL_Texture *texture; std::uint64_t use; std::size_t bytes; };
+    // Resting side cases, least recently used out. A full shelf of edge-on
+    // cases is ~40 narrow textures; the byte budget keeps the old ceiling of
+    // 16 square ones.
+    static constexpr std::size_t kMaxSideCases = 64;
+    static constexpr std::size_t kSideCaseBudget = 26u * 1024u * 1024u;
     std::vector<SideCase> sideCases_;
-    std::uint64_t sideCaseUse_ = 0;
+    std::uint64_t sideCaseUse_ = 0, sideCaseFrame_ = 0;
+    std::size_t sideCaseBytes_ = 0;
 #ifdef UFLOW_HOST_PREVIEW
     unsigned caseDraws_ = 0;
     unsigned caseDirectFallbacks_ = 0;
@@ -4836,6 +5603,36 @@ LaunchLooseFn LoadLaunchFunction(OSDynLoad_Module *outModule) {
     if (outModule) *outModule = module;
     else OSDynLoad_Release(module);
     return function;
+}
+
+using LaunchWithArgsFn = RPXLoaderStatus (*)(const char *, const char *, const char *, uint32_t);
+
+// Native RetroArch arguments need the newer loader export; without it uFlow
+// says so instead of silently opening RetroArch's browser.
+LaunchWithArgsFn LoadRetroArchLaunchFunction(OSDynLoad_Module *outModule) {
+    if (outModule) *outModule = nullptr;
+    OSDynLoad_Module module=nullptr;
+    if (OSDynLoad_Acquire("homebrew_rpx_loader",&module)!=OS_DYNLOAD_OK) return nullptr;
+    LaunchWithArgsFn function=nullptr;
+    if (OSDynLoad_FindExport(module,OS_DYNLOAD_EXPORT_FUNC,"RL_LaunchHomebrewWithArgsAndContent",
+                             reinterpret_cast<void **>(&function))!=OS_DYNLOAD_OK) {
+        OSDynLoad_Release(module);
+        return nullptr;
+    }
+    if (outModule) *outModule = module; else OSDynLoad_Release(module);
+    return function;
+}
+
+// Older loaders would start the HAI wrapper without its storage handoff (160-0791).
+bool LoaderSupportsWiiVCHai() {
+    OSDynLoad_Module module=nullptr;
+    if (OSDynLoad_Acquire("homebrew_rpx_loader",&module)!=OS_DYNLOAD_OK) return false;
+    bool (*supported)()=nullptr;
+    const bool found=OSDynLoad_FindExport(module,OS_DYNLOAD_EXPORT_FUNC,"RL_SupportsWiiVCHai",
+                                          reinterpret_cast<void **>(&supported))==OS_DYNLOAD_OK&&supported;
+    const bool result=found&&supported();
+    OSDynLoad_Release(module);
+    return result;
 }
 #endif
 
@@ -4895,23 +5692,39 @@ int main(int, char **) {
     bool foreground=true;
     RPXLoaderStatus loaderStatus=RPX_LOADER_RESULT_NOT_AVAILABLE;
     OSDynLoad_Module launchLooseModule=nullptr;
+    OSDynLoad_Module launchArgsModule=nullptr;
     {
     Dashboard dashboard(renderer,games);
     UFlowUpdate::Client updater;
-    bool updateChecked=false,updateTouchHeld=false,updateHomeBlocked=false;
+    bool updateChecked=false,updateTouchHeld=false,updateHomeBlocked=false,launchOptionsTouchHeld=false;
+    // Popups step once per D-pad press or left-stick push (same thresholds as the library).
+    int popupStickHeld=0;
+    const auto popupDirection=[&](const auto &input) {
+        const auto &stick=input.leftStick;
+        const int now=stick.y>.48f||stick.x<-.42f?-1:stick.y<-.48f||stick.x>.42f?1:0;
+        const int pushed=now!=popupStickHeld?now:0;
+        popupStickHeld=now;
+        if(input.trigger&(VPAD_BUTTON_LEFT|VPAD_BUTTON_UP))return -1;
+        if(input.trigger&(VPAD_BUTTON_RIGHT|VPAD_BUTTON_DOWN))return 1;
+        return pushed;
+    };
     VisualRemote visualRemote;
     dashboard.SetStatus(mounted ? (loadedLibraryCache ? "LIBRARY CACHE  " : "LIBRARY READY  ")+
         std::to_string(games.size())+" GAMES" : "SOURCE DRIVE COULD NOT BE MOUNTED", mounted ? 3500 : 10000);
     loaderStatus=mounted?RPXLoader_InitLibrary():RPX_LOADER_RESULT_NOT_AVAILABLE;
     LaunchLooseFn launchLoose=loaderStatus==RPX_LOADER_RESULT_SUCCESS?LoadLaunchFunction(&launchLooseModule):nullptr;
+    LaunchWithArgsFn launchWithArgs=loaderStatus==RPX_LOADER_RESULT_SUCCESS?LoadRetroArchLaunchFunction(&launchArgsModule):nullptr;
+    Trace(launchWithArgs?"retroarch-export-ready":"retroarch-export-missing-at-startup");
     if(initialScanNeeded)dashboard.StartScan();
     Uint64 previousCounter=SDL_GetPerformanceCounter();
     const double counterFrequency=static_cast<double>(SDL_GetPerformanceFrequency());
     int heldHorizontal=0;
     int heldVertical=0;
+    int heldPage=0;
     Uint32 horizontalStarted=0;
     Uint32 horizontalNext=0;
     Uint32 verticalNext=0;
+    Uint32 pageNext=0;
     bool touchHeld=false;
     WiiRemoteInput wiiRemote;
     InputResumeGate inputResume;
@@ -4998,10 +5811,20 @@ int main(int, char **) {
             if(gamePadReady){VPADGetTPCalibratedPointEx(VPAD_CHAN_0,VPAD_TP_1280X720,&point,&input.tpNormal);
                 if(point.touched&&point.validity==VPAD_VALID&&!updateTouchHeld){x=point.x;y=point.y;}}
             updateTouchHeld=gamePadReady&&point.touched;
-            int direction=(input.trigger&(VPAD_BUTTON_LEFT|VPAD_BUTTON_UP))?-1:(input.trigger&(VPAD_BUTTON_RIGHT|VPAD_BUTTON_DOWN))?1:0;
+            int direction=popupDirection(input);
             int action=dashboard.UpdateInput(direction,input.trigger&VPAD_BUTTON_A,input.trigger&VPAD_BUTTON_B,x,y);
             if(action==1){OSEnableHomeButtonMenu(false);updateHomeBlocked=true;updater.Accept();}
             else if(action==-1)updater.Dismiss();
+            heldHorizontal=heldVertical=0;touchHeld=false;dashboard.Render(delta);continue;
+        }
+        if(dashboard.LaunchOptionsOpen()){
+            int x=-1,y=-1;VPADTouchData point{};
+            if(gamePadReady){VPADGetTPCalibratedPointEx(VPAD_CHAN_0,VPAD_TP_1280X720,&point,&input.tpNormal);
+                if(point.touched&&point.validity==VPAD_VALID&&!launchOptionsTouchHeld){x=point.x;y=point.y;}}
+            launchOptionsTouchHeld=gamePadReady&&point.touched;
+            const int direction=popupDirection(input);
+            dashboard.LaunchOptionsInput(direction,input.trigger&VPAD_BUTTON_A,input.trigger&VPAD_BUTTON_B,x,y,
+                                         input.trigger&VPAD_BUTTON_PLUS);
             heldHorizontal=heldVertical=0;touchHeld=false;dashboard.Render(delta);continue;
         }
         std::uint32_t previewHold=input.hold;
@@ -5060,6 +5883,12 @@ int main(int, char **) {
             else if(verticalEdge&&vertical>0)actionTrigger|=VPAD_BUTTON_DOWN;
             if(vertical<0)actionHold|=VPAD_BUTTON_UP;
             else if(vertical>0)actionHold|=VPAD_BUTTON_DOWN;
+            // Holding ZL/ZR repeats the page jump.
+            const int page=dashboard.ButtonHeld(ControlAction::PageForward,actionHold)?1:
+                           dashboard.ButtonHeld(ControlAction::PageBack,actionHold)?-1:0;
+            if(page!=heldPage){heldPage=page;pageNext=ticks+400;}
+            const bool pageRepeat=page!=0&&SDL_TICKS_PASSED(ticks,pageNext);
+            if(pageRepeat)pageNext=ticks+180;
             VPADTouchData touch{};
             const bool modalInput=dashboard.InjectionDialogOpen();
             if(gamePadReady) VPADGetTPCalibratedPointEx(VPAD_CHAN_0,VPAD_TP_1280X720,&touch,&input.tpNormal);
@@ -5116,13 +5945,18 @@ int main(int, char **) {
             else if(dashboard.ButtonPressed(ControlAction::Favorite,actionTrigger))dashboard.ToggleFavorite();
             else if(dashboard.ButtonPressed(ControlAction::PreviousLibrary,actionTrigger))dashboard.ChangeTab(-1);
             else if(dashboard.ButtonPressed(ControlAction::NextLibrary,actionTrigger))dashboard.ChangeTab(1);
-            else if(!dashboard.OverlayOpen()&&dashboard.ButtonPressed(ControlAction::PageBack,actionTrigger))dashboard.Move(-10);
-            else if(!dashboard.OverlayOpen()&&dashboard.ButtonPressed(ControlAction::PageForward,actionTrigger))dashboard.Move(10);
+            else if(!dashboard.OverlayOpen()&&dashboard.ButtonPressed(ControlAction::PageBack,actionTrigger))dashboard.Page(-1,true);
+            else if(!dashboard.OverlayOpen()&&dashboard.ButtonPressed(ControlAction::PageForward,actionTrigger))dashboard.Page(1,true);
+            else if(!dashboard.OverlayOpen()&&pageRepeat)dashboard.Page(heldPage,false);
+            else if(!dashboard.OverlayOpen()&&dashboard.ButtonPressed(ControlAction::LaunchOptions,actionTrigger))dashboard.OpenLaunchOptions();
             GameEntry game=dashboard.Selected()?*dashboard.Selected():GameEntry{};
             const bool dialogLaunch=dashboard.ConsumeInjectionLaunch(game);
-            if((dialogLaunch || (!modalInput&&(dashboard.ConsumeDetailsLaunch() || (libraryInput && !dashboard.OverlayOpen() &&
+            LaunchMethod launchMethod=LaunchMethod::Default;
+            const bool optionLaunch=dashboard.ConsumeLaunchOption(launchMethod);
+            if((dialogLaunch || optionLaunch || (!modalInput&&(dashboard.ConsumeDetailsLaunch() || (libraryInput && !dashboard.OverlayOpen() &&
                 dashboard.ButtonPressed(ControlAction::Launch,actionTrigger))))) && dashboard.Selected()) {
                 dashboard.DismissVideo();
+                if(!optionLaunch&&!dialogLaunch)dashboard.ClearLaunchOverride(); // plain A uses the default
                 if(!dialogLaunch&&dashboard.GateInjection(game)){dashboard.Render(delta);continue;}
                 if(dashboard.InjectionDialogOpen())dashboard.Render(delta);
                 std::string emulatorPath,romRequest;
@@ -5151,11 +5985,30 @@ int main(int, char **) {
                     });
                 };
                 const auto adapterError=dashboard.ConfigureLaunch(game,emulatorPath,&romRequest,prepareProgress);
+                if(!adapterError.empty())Trace(("launch-adapter-error "+adapterError).c_str());
                 dashboard.FinishInjection(adapterError);
                 inputResume.Arm();heldHorizontal=heldVertical=0;touchHeld=false;
                 if(!adapterError.empty())continue;
                 if(dashboard.ConsumeInjectionFinished()){dashboard.SetStatus("INJECTION SAVED - PLAY NOW USES SAVED INJECTED ROM",10000);continue;}
-                if(!emulatorPath.empty()) {
+                const auto launchPlan=dashboard.ConsumeLaunchPlan();
+                if(launchPlan.transport==HomebrewLaunchPlan::Transport::RetroArchArgs) {
+                    Trace(("retroarch-launch-selected core="+launchPlan.executable+" content="+game.absolutePath).c_str());
+                    if(!launchWithArgs) {
+                        dashboard.SetStatus("UPDATE THE UFLOW LOADER MODULE FOR RETROARCH LAUNCHING",10000);
+                        Trace("retroarch-export-missing");
+                        continue;
+                    }
+                    dashboard.SetStatus("LAUNCHING "+Ellipsize(game.name,38),10000);dashboard.Render(delta);
+                    dashboard.StopMusic();
+                    if(!UFlowReturn::Arm()){dashboard.ApplyMusic();dashboard.SetStatus("CANNOT SAVE RETURN-TO-UFLOW REQUEST",10000);continue;}
+                    const auto result=launchWithArgs(launchPlan.executable.c_str(),launchPlan.contentBundle.c_str(),
+                                                     launchPlan.arguments.data(),
+                                                     static_cast<uint32_t>(launchPlan.arguments.size()));
+                    Trace((std::string("retroarch-launch-result ")+RPXLoader_GetStatusStr(result)).c_str());
+                    if(result==RPX_LOADER_RESULT_SUCCESS)launchRequested=true;
+                    else{UFlowReturn::Clear();dashboard.ApplyMusic();
+                         dashboard.SetStatus(std::string("RETROARCH LAUNCH FAILED  ")+RPXLoader_GetStatusStr(result),10000);}
+                } else if(!emulatorPath.empty()) {
                     dashboard.SetStatus(romRequest.empty()?"OPENING EMULATOR BROWSER - SELECT YOUR ROM THERE":"LAUNCHING "+Ellipsize(game.name,38),10000);dashboard.Render(delta);
                     if(!romRequest.empty()&&!UFlowRom::Write(romRequest,UFlowRom::RelativeROM(game.absolutePath))){dashboard.SetStatus("CANNOT WRITE MODULE LAUNCH REQUEST",10000);continue;}
                     const auto prepared=RPXLoader_PrepareLaunchFromSD(emulatorPath.c_str());
@@ -5173,36 +6026,6 @@ int main(int, char **) {
                     if(!UFlowReturn::Arm()){dashboard.ApplyMusic();dashboard.SetStatus("CANNOT SAVE RETURN-TO-UFLOW REQUEST",10000);continue;}
                     _SYSLaunchTitleByPathFromLauncher(launchPath.c_str(),static_cast<uint32_t>(launchPath.size()));
                     launchRequested=true;
-                } else if(WiiVC::IsRaw(game)) {
-                    // Wii VC's HAI runtime asks IOS for physical block addresses for
-                    // hif_*.nfs.  A loose FAT32 content-redirection layer can provide
-                    // file reads, but it cannot provide WFS block addresses.  Launching
-                    // this tree as a normal raw Wii U title therefore ends in 160-0791.
-                    // Prepare a private WBFS copy and use the proven vWii path instead.
-                    Trace(("wii-vc-prepare-selected path=" + game.absolutePath + " title=" + game.titleId).c_str());
-                    GameEntry prepared = game;
-                    dashboard.BeginWiiVCPreparation(game.name);
-                    dashboard.Render(.08f);
-                    const auto prepareError = WiiVC::Prepare(prepared, prepareProgress);
-                    dashboard.FinishInjection(prepareError);
-                    inputResume.Arm();heldHorizontal=heldVertical=0;touchHeld=false;
-                    if (!prepareError.empty()) {
-                        Trace(("wii-vc-prepare-failed " + prepareError).c_str());
-                        continue;
-                    }
-                    WiiRequest::Request request;
-                    const auto error = PrepareWiiLaunch(prepared, request);
-                    if (!error.empty()) {
-                        Trace(("wii-vc-preflight-failed " + error).c_str());
-                        dashboard.SetStatus(error, 10000);
-                        continue;
-                    }
-                    dashboard.SetStatus("LAUNCHING WII VC GAME...", 10000); dashboard.Render(delta);
-                    dashboard.StopMusic();
-                    if(!UFlowReturn::Arm()){dashboard.ApplyMusic();dashboard.SetStatus("CANNOT SAVE RETURN-TO-UFLOW REQUEST",10000);continue;}
-                    const auto launchError = LaunchWiiGame(request);
-                    if (launchError.empty()) { Trace("wii-vc-forwarder-launch-accepted"); launchRequested = true; }
-                    else { UFlowReturn::Clear(); Trace(("wii-vc-launch-failed " + launchError).c_str()); dashboard.ApplyMusic(); dashboard.SetStatus(launchError, 10000); }
                 } else if(game.platform==Platform::Wii || game.platform==Platform::GameCube) {
                     WiiRequest::Request request;
                     const bool gc = game.platform==Platform::GameCube;
@@ -5227,7 +6050,32 @@ int main(int, char **) {
                     }
                 } else if(game.platform!=Platform::WiiU) dashboard.SetStatus(std::string(PlatformName(game.platform))+" LAUNCH ADAPTER IS NEXT");
                 else {
-                    Trace(("raw-launch-selected path=" + game.absolutePath + " title=" + game.titleId).c_str());
+                    // Authored Wii VC titles launch through Nintendo's HAI wrapper
+                    // (the raw backend gives it the USB sectors of hif_*.nfs).
+                    // Injection - a WBFS copy for WiiFlow - only runs when chosen
+                    // explicitly from Launch Options; the title is never modified.
+                    const bool wiiVC=WiiVC::IsRaw(game);
+                    if (wiiVC && launchMethod==LaunchMethod::Injection) {
+                        Trace(("wii-vc-prepare-selected path=" + game.absolutePath + " title=" + game.titleId).c_str());
+                        GameEntry prepared = game;
+                        dashboard.BeginWiiVCPreparation(game.name);
+                        dashboard.Render(.08f);
+                        const auto prepareError = WiiVC::Prepare(prepared, prepareProgress);
+                        dashboard.FinishInjection(prepareError);
+                        inputResume.Arm();heldHorizontal=heldVertical=0;touchHeld=false;
+                        if (!prepareError.empty()) { Trace(("wii-vc-prepare-failed " + prepareError).c_str()); continue; }
+                        WiiRequest::Request request;
+                        const auto error = PrepareWiiLaunch(prepared, request);
+                        if (!error.empty()) { Trace(("wii-vc-preflight-failed " + error).c_str()); dashboard.SetStatus(error, 10000); continue; }
+                        dashboard.SetStatus("LAUNCHING WII VC GAME...", 10000); dashboard.Render(delta);
+                        dashboard.StopMusic();
+                        if(!UFlowReturn::Arm()){dashboard.ApplyMusic();dashboard.SetStatus("CANNOT SAVE RETURN-TO-UFLOW REQUEST",10000);continue;}
+                        const auto launchError = LaunchWiiGame(request);
+                        if (launchError.empty()) { Trace("wii-vc-injection-launch-accepted"); launchRequested = true; }
+                        else { UFlowReturn::Clear(); Trace(("wii-vc-launch-failed " + launchError).c_str()); dashboard.ApplyMusic(); dashboard.SetStatus(launchError, 10000); }
+                        continue;
+                    }
+                    Trace(((wiiVC?"wii-vc-hai-launch-selected path=":"raw-launch-selected path=") + game.absolutePath + " title=" + game.titleId).c_str());
                     const auto validation = ValidateRawGame(game);
                     if (!validation.empty()) {
                         Trace(("raw-launch-preflight-failed " + validation).c_str());
@@ -5238,6 +6086,11 @@ int main(int, char **) {
                     if (!launchLoose) {
                         Trace("raw-launch-blocked-missing-backend");
                         dashboard.SetStatus("RAW LAUNCH BACKEND IS NOT INSTALLED", 10000);
+                        continue;
+                    }
+                    if (wiiVC && !LoaderSupportsWiiVCHai()) {
+                        Trace("wii-vc-hai-backend-missing");
+                        dashboard.SetStatus("WII VC NEEDS THE UPDATED RAW LAUNCH BACKEND", 10000);
                         continue;
                     }
                     dashboard.SetStatus("LAUNCHING "+Ellipsize(game.name,38),10000); dashboard.Render(delta);
@@ -5279,6 +6132,10 @@ int main(int, char **) {
     Trace("renderer-destroyed");
     SDL_DestroyWindow(window);
     Trace("window-destroyed");
+    if(launchArgsModule) {
+        OSDynLoad_Release(launchArgsModule);
+        Trace("retroarch-loader-module-released");
+    }
     if(launchLooseModule) {
         OSDynLoad_Release(launchLooseModule);
         Trace("loose-loader-module-released");
@@ -5321,9 +6178,11 @@ int main(int argc, char **argv) {
       else if(std::string(argv[1])=="firstrunchecks")ok=dashboard.CheckFirstRun(argv[2]);
       else if(std::string(argv[1])=="updatechecks")ok=dashboard.CheckUpdateDialog(argv[2]);
       else if(std::string(argv[1])=="browserchecks")ok=dashboard.CheckBrowserNavigation(argv[2]);
+      else if(std::string(argv[1])=="layoutchecks")ok=dashboard.CheckCoverLayouts(argv[2]);
+      else if(std::string(argv[1])=="pagingchecks")ok=dashboard.CheckPaging();
       else
       // Warm the backdrop first, then capture the reuse path as well as live UI.
-      ok = std::string(argv[1]) == "injectionchecks" ? dashboard.CheckInjectionDialog(argv[2]) : std::string(argv[1]) == "artworkchecks" ? dashboard.CheckArtworkPolish(argv[2]) : std::string(argv[1]) == "casechecks" ? dashboard.CheckCaseRendering(argv[2]) : std::string(argv[1]) == "mediadefaultchecks" ? dashboard.CheckMediaDefaults(argv[2]) : std::string(argv[1]) == "mediagroupchecks" ? dashboard.CheckMediaAccordion(argv[2]) : std::string(argv[1]) == "videochecks" ? dashboard.CheckVideoSettings(argv[2]) : std::string(argv[1]) == "hintchecks" ? dashboard.CheckControlHints(argv[2]) : std::string(argv[1]) == "fadechecks" ? dashboard.CheckLibraryFade() : std::string(argv[1]) == "detailschecks" ? dashboard.CheckDetails() : std::string(argv[1]) == "launcherchecks" ? dashboard.CheckLauncherSettings() : std::string(argv[1]) == "checks" ? dashboard.CheckScrolling() :
+      ok = std::string(argv[1]) == "injectionchecks" ? dashboard.CheckInjectionDialog(argv[2]) : std::string(argv[1]) == "launchoptionchecks" ? dashboard.CheckLaunchOptions(argv[2]) : std::string(argv[1]) == "artworkchecks" ? dashboard.CheckArtworkPolish(argv[2]) : std::string(argv[1]) == "casechecks" ? dashboard.CheckCaseRendering(argv[2]) : std::string(argv[1]) == "mediadefaultchecks" ? dashboard.CheckMediaDefaults(argv[2]) : std::string(argv[1]) == "mediagroupchecks" ? dashboard.CheckMediaAccordion(argv[2]) : std::string(argv[1]) == "videochecks" ? dashboard.CheckVideoSettings(argv[2]) : std::string(argv[1]) == "hintchecks" ? dashboard.CheckControlHints(argv[2]) : std::string(argv[1]) == "japanesechecks" ? dashboard.CheckJapaneseText(argv[2]) : std::string(argv[1]) == "fadechecks" ? dashboard.CheckLibraryFade() : std::string(argv[1]) == "detailschecks" ? dashboard.CheckDetails() : std::string(argv[1]) == "launcherchecks" ? dashboard.CheckLauncherSettings() : std::string(argv[1]) == "checks" ? dashboard.CheckScrolling() :
           dashboard.VisualPreview(argv[1]) && dashboard.Render(0) && dashboard.Render(0, argv[2]); }
     ShutdownSmoothFonts(); SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); SDL_Quit();
     return ok ? 0 : 5;

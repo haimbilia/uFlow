@@ -10,7 +10,9 @@ This is an active hardware-tested development project, not a finished universal
 emulator. It includes:
 
 - four animated 3D layouts (Classic Flow, Carousel, Flat Row, and Stacked) with
-  Wii U, Wii, GameCube, and Favorites tabs;
+  Wii U, Wii, GameCube, and Favorites tabs. Stacked is a bookshelf: side cases
+  turn their spines to the viewer and stand on one shelf line at their real
+  sizes. Cover Spacing Compact packs every layout tightly; Wide leaves gaps;
 - two switchable skins: the original `Pixel Deck` and Wii U-inspired
   `GlassFlow`, with futuristic type, layered glass, and Aurora-style details;
 - a live case mesh with three-axis transitions, per-game artwork, optional
@@ -79,7 +81,7 @@ controls: A selects/activates, B goes back, and Plus opens Settings from Details
 | A | Launch |
 | Y | Details |
 | X | Toggle favorite |
-| Minus | No action |
+| Minus | Launch options: start the selected title once with any compatible launcher (e.g. NooDS or VC injection for DS, RetroArch or VC injection for NES/SNES/GBA, WiiFlow or USB Loader GX for Wii). Scroll to reach additional launchers. Wii VC uses Nintendo VC on USB; its broken WBFS conversion option is disabled. In the list, + makes the highlighted launcher that title's default; choosing its content type's launcher clears the per-title choice |
 | Plus | Settings |
 | B | Back / close panels; never exits uFlow |
 | HOME | System menu / exit uFlow |

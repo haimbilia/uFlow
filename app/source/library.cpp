@@ -5,6 +5,7 @@
 #include "wii_request.hpp"
 #include "saved_file.hpp"
 #include "vc_package.hpp"
+#include "text_utf8.hpp"
 
 #include <coreinit/mcp.h>
 #include <dirent.h>
@@ -35,7 +36,7 @@ constexpr const char *kSourcesFile = "fs:/vol/external01/wiiu/apps/uFlow/content
 constexpr const char *kLibrariesFile = "fs:/vol/external01/wiiu/apps/uFlow/libraries.cfg";
 constexpr const char *kLibraryCacheFile = "fs:/vol/external01/wiiu/apps/uFlow/cache/library-v1.bin";
 constexpr std::uint32_t kLibraryCacheMagic = 0x55464C43; // UFLC
-constexpr std::uint32_t kLibraryCacheVersion = 4; // Separate cover faces and system presets.
+constexpr std::uint32_t kLibraryCacheVersion = 5; // Refresh names for multilingual metadata fallback.
 constexpr std::uint32_t kLibraryCacheMaxEntries = 8192;
 constexpr std::uint32_t kLibraryCacheMaxString = 256 * 1024;
 constexpr std::size_t kLibraryCacheMaxBytes = 32 * 1024 * 1024;
@@ -132,6 +133,22 @@ std::string XmlValue(const std::string &xml, const std::string &tag) {
     ReplaceAll(value, "&quot;", "\"");
     ReplaceAll(value, "&apos;", "'");
     return Trim(value);
+}
+
+// Japan-only titles often leave the English fields empty; try English first,
+// then Japanese and the other meta.xml languages. Line breaks become spaces.
+std::string MetaText(const std::string &meta, const std::string &field) {
+    static const char *const languages[] = {"en", "ja", "fr", "de", "it", "es", "zhs", "ko", "nl", "pt", "ru", "zht"};
+    for (const char *language : languages) {
+        const auto value = Utf8::OneLine(XmlValue(meta, field + "_" + language));
+        if (!value.empty()) return value;
+    }
+    return {};
+}
+
+std::string MetaName(const std::string &meta) {
+    const auto name = MetaText(meta, "longname");
+    return name.empty() ? MetaText(meta, "shortname") : name;
 }
 
 std::string SaveKey(const std::string &titleId, const std::string &folder) {
@@ -258,10 +275,9 @@ bool ScanInstalledGames(ScanResult &result, const std::vector<GameEntry> *cached
             }
             const std::string metaPath = game.absolutePath + "/meta";
             const std::string meta = ReadTextFile(metaPath + "/meta.xml");
-            game.name = XmlValue(meta, "longname_en");
-            if (game.name.empty()) game.name = XmlValue(meta, "shortname_en");
+            game.name = MetaName(meta);
             if (game.name.empty()) game.name = "INSTALLED TITLE " + game.titleId;
-            game.publisher = XmlValue(meta, "publisher_en");
+            game.publisher = MetaText(meta, "publisher");
             game.coverPath = FindCover(metaPath, game.titleId);
             if (game.coverPath.empty()) game.coverPath = CacheInstalledIcon(metaPath + "/iconTex.tga", game.titleId);
             result.games.push_back(std::move(game));
@@ -282,9 +298,8 @@ struct ScanReporter {
 };
 
 void ReadWiiUMetadata(GameEntry &game, const std::string &base, const std::string &meta) {
-    game.name = XmlValue(meta, "longname_en");
-    if (game.name.empty()) game.name = XmlValue(meta, "shortname_en");
-    game.publisher = XmlValue(meta, "publisher_en");
+    game.name = MetaName(meta);
+    game.publisher = MetaText(meta, "publisher");
     game.coverPath = FindCover(base, game.titleId, base + "/meta/iconTex.tga");
 }
 

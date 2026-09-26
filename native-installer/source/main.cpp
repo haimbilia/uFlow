@@ -18,6 +18,7 @@ constexpr int W=1280,H=720;
 SDL_Renderer *renderer=nullptr;TTF_Font *font=nullptr,*large=nullptr;
 bool running=true,foreground=true,cancelRequested=false;
 uint32_t selected=Setup::All;int cursor=0,page=0;
+constexpr int Rows=9,RowStep=46,ListTop=166; // components in two columns
 std::string phase,path,message;uint64_t done=0,total=0;bool canCancel=true;
 
 void Text(const std::string &s,int x,int y,SDL_Color color={36,57,69,255},bool big=false,int width=1160){
@@ -33,8 +34,8 @@ void Draw(){
     Text("One installer  /  selected content and console setup",520,40);
     if(page==0){
         Text("Choose content types and extras. uFlow itself is always installed.",48,119);
-        for(int i=0;i<13;++i){int col=i/7,row=i%7,x=48+col*610,y=173+row*56;
-            if(i==cursor)Box(x-9,y-7,588,49,{174,219,235,255});
+        for(int i=0;i<Setup::ComponentCount;++i){int col=i/Rows,row=i%Rows,x=48+col*610,y=ListTop+row*RowStep;
+            if(i==cursor)Box(x-9,y-6,588,40,{174,219,235,255});
             Box(x,y,26,26,Setup::On(selected,i)?SDL_Color{37,147,185,255}:SDL_Color{200,214,220,255});
             if(Setup::On(selected,i))Text("X",x+5,y-1,{255,255,255,255});
             Text(Setup::components[i].name,x+38,y,{36,57,69,255},false,530);
@@ -90,7 +91,7 @@ Input Poll(){
         if(event.type==SDL_QUIT)running=false;
         else if(event.type==SDL_APP_WILLENTERBACKGROUND)foreground=false;
         else if(event.type==SDL_APP_DIDENTERFOREGROUND)foreground=true;
-        else if(event.type==SDL_KEYDOWN){switch(event.key.keysym.sym){case SDLK_RETURN:input.a=true;break;case SDLK_ESCAPE:input.b=true;break;case SDLK_DOWN:input.move=1;break;case SDLK_UP:input.move=-1;break;case SDLK_RIGHT:input.move=7;break;case SDLK_LEFT:input.move=-7;break;case SDLK_x:input.x=true;break;case SDLK_y:input.y=true;break;case SDLK_p:input.plus=true;break;}}
+        else if(event.type==SDL_KEYDOWN){switch(event.key.keysym.sym){case SDLK_RETURN:input.a=true;break;case SDLK_ESCAPE:input.b=true;break;case SDLK_DOWN:input.move=1;break;case SDLK_UP:input.move=-1;break;case SDLK_RIGHT:input.move=Rows;break;case SDLK_LEFT:input.move=-Rows;break;case SDLK_x:input.x=true;break;case SDLK_y:input.y=true;break;case SDLK_p:input.plus=true;break;}}
     }
 #ifndef UFLOW_SETUP_PREVIEW
     if(foreground){VPADStatus v{};VPADReadError error;const auto n=VPADRead(VPAD_CHAN_0,&v,1,&error);
@@ -99,11 +100,11 @@ Input Poll(){
             input.y|=(v.trigger&VPAD_BUTTON_Y)!=0;input.plus|=(v.trigger&VPAD_BUTTON_PLUS)!=0;
             if(v.trigger&VPAD_BUTTON_DOWN)input.move=1;
             if(v.trigger&VPAD_BUTTON_UP)input.move=-1;
-            if(v.trigger&VPAD_BUTTON_RIGHT)input.move=7;
-            if(v.trigger&VPAD_BUTTON_LEFT)input.move=-7;
+            if(v.trigger&VPAD_BUTTON_RIGHT)input.move=Rows;
+            if(v.trigger&VPAD_BUTTON_LEFT)input.move=-Rows;
             static bool held=false;
             if(v.tpNormal.touched&&!held){VPADTouchData point{};VPADGetTPCalibratedPoint(VPAD_CHAN_0,&point,&v.tpNormal);
-                int x=point.x*W/854,y=point.y*H/480;if(y>=166&&y<173+7*56){int col=x>=649?1:0,row=(y-166)/56;if(x>=39&&x<1239&&row<7)input.touch=col*7+row;}}
+                int x=point.x*W/854,y=point.y*H/480;if(y>=ListTop-6&&y<ListTop-6+Rows*RowStep){int col=x>=649?1:0,row=(y-(ListTop-6))/RowStep;if(x>=39&&x<1239)input.touch=col*Rows+row;}}
             held=v.tpNormal.touched;
         }
     }
@@ -166,8 +167,8 @@ int main(int argc,char **argv){
     while(running){
         auto input=Poll();if(!foreground){SDL_Delay(20);continue;}
         if(page==0){
-            if(input.move)cursor=(cursor+input.move+13)%13;
-            if(input.touch>=0&&input.touch<13){cursor=input.touch;selected^=1u<<cursor;}
+            if(input.move)cursor=(cursor+input.move+Setup::ComponentCount)%Setup::ComponentCount;
+            if(input.touch>=0&&input.touch<Setup::ComponentCount){cursor=input.touch;selected^=1u<<cursor;}
             else if(input.a)selected^=1u<<cursor;
             if(input.x)selected=Setup::All;
             if(input.y)selected=0;

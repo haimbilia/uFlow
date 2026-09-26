@@ -17,6 +17,10 @@ for screen in ${UFLOW_PREVIEW_SCREENS:-library coverfront coverback details deta
     /tmp/uflow-preview/render "$screen" "/output/$screen.png"
 done
 /tmp/uflow-preview/render hintchecks /output/control-hints
+/tmp/uflow-preview/render launchoptionchecks /output/launch-options
+/tmp/uflow-preview/render layoutchecks /output/cover-layouts
+/tmp/uflow-preview/render pagingchecks /output/unused.png
+if [ -n "${UFLOW_PREVIEW_CJK_FONT:-}" ]; then /tmp/uflow-preview/render japanesechecks /output/japanese-title; fi
 if [ -n "${UFLOW_PREVIEW_GPU:-}" ]; then
     for check in ${UFLOW_PREVIEW_CHECKS:-checks}; do
         /tmp/uflow-preview/render "$check" /output/unused.png

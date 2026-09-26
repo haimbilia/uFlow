@@ -84,12 +84,14 @@ void Publish(GameEntry &game, const std::string &id, const std::string &staging)
 }
 
 bool HasPrepared(const GameEntry &game) {
+    if (!InjectionAvailable) return false;
     if (!IsRaw(game)) return false;
     std::string id;
     return ReadMarker(game, id);
 }
 
 std::string Prepare(GameEntry &game, VCInject::Progress progress) {
+    if (!InjectionAvailable) return InjectionUnavailable;
     try {
         if (!IsRaw(game)) return "SELECT A RAW WII VC GAME";
         if (!EnsureDirectory(std::string(sd) + cacheRoot)) return "CANNOT CREATE WII VC CACHE DIRECTORY";

@@ -14,6 +14,8 @@ int main() {
     ResetControlBindings(controls);
     assert(controls.bindings[static_cast<int>(ControlAction::ZoomFront)]==0x0200);
     assert(std::string(ControlActionName(ControlAction::ZoomBack))=="ZOOM BACK COVER");
+    assert(controls.bindings[static_cast<int>(ControlAction::LaunchOptions)]==0x0004);
+    assert(std::string(ControlActionName(ControlAction::LaunchOptions))=="LAUNCH OPTIONS");
     assert(std::string(ControlBindingName(0x0100))=="DPAD DOWN");
     std::ofstream("fs:/vol/external01/wiiu/apps/uFlow/uflow.cfg")<<"bind_0=4096\nbind_6=4\nbind_7=2\n";
     const auto migrated=LoadSettings();

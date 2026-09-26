@@ -1,0 +1,9 @@
+UFLOW-MODULE-1
+id=nes-retroarch
+name=NES (RetroArch)
+version=1.0.0
+system=NES
+extensions=.nes,.unf,.unif,.zip
+executable=retroarch/cores/nestopia_libretro.rpx
+protocol=retroarch-sysargs-v1
+content_bundle=wiiu/apps/retroarch.wuhb

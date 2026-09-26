@@ -127,6 +127,7 @@ inline Result Convert(Source &source,const std::string &base,const Progress &pro
     Result result;result.id.assign(reinterpret_cast<char*>(sector.data()),6);
     Need(result.id.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")==std::string::npos&&U32(sector.data()+24)==0x5d1c9ea3,"NFS KEY / WII DISC HEADER INVALID");
     Need(sector[0x60]==0,"HASHLESS WII DISC FORMAT IS NOT SUPPORTED");
+    Need(sector[0x61]==0,"DECRYPTED WII PARTITIONS REQUIRE RE-ENCRYPTION BEFORE WBFS EXPORT");
     std::array<Byte,256> discHeader{};std::copy_n(sector.begin(),256,discHeader.begin());discHeader[0x61]=0;
     std::array<Byte,32> table{};source.Read(0x40000,table.data(),table.size());
     uint64_t partition=0;unsigned partitions=0;

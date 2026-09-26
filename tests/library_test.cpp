@@ -55,6 +55,18 @@ int main() {
     assert(LoadLibraryCache(cached));
     assert(cached.size() == 1 && cached.front().absolutePath == game.absolutePath &&
            cached.front().coverPath == game.coverPath && cached.front().rpxRelative == game.rpxRelative);
+    // Old catalogs retained folder names for Japan-only titles forever.
+    {
+        std::fstream old(root+"/wiiu/apps/uFlow/cache/library-v1.bin",std::ios::in|std::ios::out|std::ios::binary);
+        const std::uint32_t version=4;old.seekp(4);old.write(reinterpret_cast<const char *>(&version),sizeof(version));
+    }
+    assert(!LoadLibraryCache(cached));
+    assert(SaveLibraryCache(scan.games)&&LoadLibraryCache(cached));
+    const std::string japanese="\xE3\x82\xBC\xE3\x83\xAB\xE3\x83\x80";
+    Write(base+"/meta/meta.xml","<menu><longname_en> </longname_en><longname_ja>"+japanese+"\n Title</longname_ja><publisher_ja>Publisher</publisher_ja></menu>");
+    auto multilingual=ScanLibrary();
+    assert(multilingual.games.size()==1&&multilingual.games[0].name==japanese+" Title"&&multilingual.games[0].publisher=="Publisher");
+    fs::remove(base+"/meta/meta.xml");
     Write(base + "/code/project.rpx", "corrupt");
     assert(!ValidateRawGame(game).empty());
     Title(base, "000500001012F000");
@@ -142,6 +154,9 @@ int main() {
     injection.platform=Platform::WiiU;injection.titleId="000500001234ABCD";injection.installed=true;
     assert(!ResolveVCInjection(rom,{injection}).empty());assert(SaveVCMapping(rom,injection));
     auto mapped=rom;assert(ResolveVCInjection(mapped,{injection}).empty());assert(mapped.installed&&mapped.titleId==injection.titleId);
+    fs::rename(rom.absolutePath+".uflow-title",rom.absolutePath+".uflow-title.bak");
+    mapped=rom;assert(ResolveVCInjection(mapped,{injection}).empty()); // interrupted replacement recovers old mapping
+    fs::rename(rom.absolutePath+".uflow-title.bak",rom.absolutePath+".uflow-title");
     assert(!ResolveVCInjection(rom,{}).empty());
     injection.titleId="000500101234abcd";assert(!SaveVCMapping(rom,injection));
     Write(rom.absolutePath+".uflow-title","000500101234abcd\n");assert(!ResolveVCInjection(rom,{injection}).empty());

@@ -143,12 +143,15 @@ void ZipROM(const std::string &rom,const std::string &dest,const std::string &na
 Settings Load(const std::string &id){
     Settings s;if(!ID(id))return s;
     for(const auto &system:VCSystems::all)if(id==std::string(system.id)+"-vc")s.system=system.id;
-    std::istringstream in(Read(sd+"wiiu/apps/uFlow/launchers/"+id+".cfg",4096));std::string line;
+    auto input=SavedFile::Open(sd+"wiiu/apps/uFlow/launchers/"+id+".cfg",std::ios::binary);
+    std::string text(4097,'\0');input.read(text.data(),text.size());text.resize(input.gcount());
+    if(text.size()>4096)return s;
+    std::istringstream in(text);std::string line;
     try{while(std::getline(in,line)){auto eq=line.find('=');if(eq==std::string::npos)continue;auto key=line.substr(0,eq),v=line.substr(eq+1);if(!v.empty()&&v.back()=='\r')v.pop_back();
         if(key=="base")s.base=v;else if(key=="system")s.system=v;else if(key=="reuse")s.reuse=v=="1";else if(key=="compression")s.compression=std::stoi(v);else if(key=="brightness")s.brightness=std::stoi(v);else if(key=="upscale")s.upscale=std::stoi(v);else if(key=="cacheMiB")s.cacheMiB=std::stoi(v);
     }}catch(...){s.base.clear();}return s;
 }
-bool Save(const std::string &id,const Settings &s){if(!ID(id)||!Valid(s)||!Parents("wiiu/apps/uFlow/launchers"))return false;const auto path=sd+"wiiu/apps/uFlow/launchers/"+id+".cfg";const auto body="base="+s.base+"\nsystem="+s.system+"\nreuse="+(s.reuse?"1":"0")+"\ncompression="+std::to_string(s.compression)+"\nbrightness="+std::to_string(s.brightness)+"\nupscale="+std::to_string(s.upscale)+"\ncacheMiB="+std::to_string(s.cacheMiB)+"\n";return Write(path+".tmp",body)&&std::rename((path+".tmp").c_str(),path.c_str())==0;}
+bool Save(const std::string &id,const Settings &s){if(!ID(id)||!Valid(s)||!Parents("wiiu/apps/uFlow/launchers"))return false;const auto path=sd+"wiiu/apps/uFlow/launchers/"+id+".cfg";const auto body="base="+s.base+"\nsystem="+s.system+"\nreuse="+(s.reuse?"1":"0")+"\ncompression="+std::to_string(s.compression)+"\nbrightness="+std::to_string(s.brightness)+"\nupscale="+std::to_string(s.upscale)+"\ncacheMiB="+std::to_string(s.cacheMiB)+"\n";return Write(path+".tmp",body)&&SavedFile::Commit(path+".tmp",path);}
 namespace {
 struct BasePlan {std::string rpx,target;};
 BasePlan Inspect(const Settings &s){

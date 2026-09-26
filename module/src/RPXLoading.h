@@ -36,6 +36,8 @@ RPXLoaderStatus RL_LaunchLooseDirectory(const char *rpxPath,
                                         const char *shortName,
                                         const char *longName,
                                         const char *publisher);
+// Loose Wii VC titles get the HAI USB storage handoff (see RawHai.h).
+bool RL_SupportsWiiVCHai();
 
 #ifdef __cplusplus
 }

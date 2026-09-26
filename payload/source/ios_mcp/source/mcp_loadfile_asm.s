@@ -64,3 +64,13 @@ MassEffect3LaunchDetectedTrampoline:
     ldr r2, =0x05086914
     mov r3, #1
     bx lr
+
+.extern _HAI_GetTitleInfo_patch
+.global HAI_GetTitleInfo_patch
+HAI_GetTitleInfo_patch:
+    .thumb
+    bx pc
+    nop
+    .arm
+    ldr r12, =_HAI_GetTitleInfo_patch
+    bx r12

@@ -1,4 +1,5 @@
 #include "settings.hpp"
+#include "saved_file.hpp"
 #include "startup_config.hpp"
 #include <cerrno>
 
@@ -126,14 +127,15 @@ bool SetStartOnBoot(bool enabled) {
     if(!file) return false;
     bool ok=std::fwrite("enabled=1\n",1,10,file)==10;
     if(std::fclose(file)!=0) ok=false;
-    if(ok) ok=std::rename(temporary.c_str(),UFlowStartup::Flag)==0;
+    if(ok) ok=SavedFile::Commit(temporary,UFlowStartup::Flag);
     if(!ok) std::remove(temporary.c_str());
     return ok;
 }
 
 const char *ControlActionName(ControlAction action) {
     static constexpr const char *names[] = {"LAUNCH GAME", "TITLE DETAILS", "FAVORITE", "OPEN SETTINGS",
-        "PREVIOUS LIBRARY", "NEXT LIBRARY", "PAGE BACK", "PAGE FORWARD", "ZOOM FRONT COVER", "ZOOM BACK COVER"};
+        "PREVIOUS LIBRARY", "NEXT LIBRARY", "PAGE BACK", "PAGE FORWARD", "ZOOM FRONT COVER", "ZOOM BACK COVER",
+        "LAUNCH OPTIONS"};
     const int index = static_cast<int>(action);
     return index >= 0 && index < static_cast<int>(ControlAction::Count) ? names[index] : "UNKNOWN";
 }
@@ -151,6 +153,6 @@ const char *ControlBindingName(std::uint32_t button) {
 }
 
 void ResetControlBindings(UserSettings &settings) {
-    const std::uint32_t defaults[] = {0x8000,0x1000,0x2000,0x0008,0x0020,0x0010,0x0080,0x0040,0x0200,0x0100};
+    const std::uint32_t defaults[] = {0x8000,0x1000,0x2000,0x0008,0x0020,0x0010,0x0080,0x0040,0x0200,0x0100,0x0004};
     for (int index=0;index<static_cast<int>(ControlAction::Count);++index) settings.bindings[index]=defaults[index];
 }

@@ -4,6 +4,21 @@ Every shipped uFlow fix must survive a fresh installation. A one-off SD edit is
 not a completed release: keep the native payload, defaults, tests and packaging
 recipe current. Preserve existing user settings, ROMs and saves on reinstall.
 
+Review corrections (2026-09-26): rebuild the app, raw loader and Mocha together
+before synchronizing this installer. HAI now validates the complete numbered NFS
+set against its header and FAT volume bounds, and clears its one-shot arm on
+cancel, unrelated title startup and SD homebrew preparation. Wii VC WBFS export
+remains unavailable: both new conversions and legacy cached launches are blocked
+until decrypted partition re-encryption is implemented and validated. The normal
+HAI USB route remains available. This is not an app-only OTA upgrade.
+
+Run `tools/test-review-regressions.ps1`, `tools/test-hai-companion.ps1`,
+`tools/test-usb-raw.ps1`, `tools/test-wii-vc-cancel.ps1`, library/VC tests and
+the actual-bundle installer tests. `tools/build-usb-raw.ps1` now uses
+`module/build-native` so experimental build-directory dependencies do not leak
+into the canonical release build. Library cache version 5 forces one rescan for
+multilingual title fallback; user settings and game data remain intact.
+
 WiiFlow requires all three matching `out/bins` files alongside its executable:
 `app_booter.bin` (Nintendont/homebrew), `ext_loader.bin` and `ext_booter.bin`
 (Wii games). Payload sync installs them under `apps/wiiflow/bins` in replace
@@ -25,6 +40,37 @@ passes the game's preflight but fails the subsequent loader handoff.
 the project mounted at `/project`, workspace `tooling/sources` at `/sources`
 (read-only), and `UFLOW_SOURCES_ROOT=/sources`. Run payload synchronization first;
 the guard intentionally verifies, rather than silently changing release inputs.
+
+The optional RetroArch components are bits 13-16; bits 11 (startup) and 12
+(vWii tools) keep their meaning. Each ships one core, its `.info` and its
+launcher module; the RetroArch frontend ships with any of them (mask 122880).
+The installer allowlist names these exact paths, never all of `retroarch/`:
+
+| Bit (mask) | Component | Core (keep) | Module (replace) |
+|---|---|---|---|
+| 13 (8192) | PlayStation | `pcsx_rearmed_libretro` | `retroarch-ps1.ufmod` |
+| 14 (16384) | SNES | `snes9x_libretro` | `retroarch-snes.ufmod` |
+| 15 (32768) | NES | `nestopia_libretro` | `retroarch-nes.ufmod` |
+| 16 (65536) | Game Boy Advance | `mgba_libretro` | `retroarch-gba.ufmod` |
+
+Cores are `retroarch/cores/<core>.rpx` with `retroarch/cores/info/<core>.info`;
+the frontend is `wiiu/apps/retroarch.wuhb` (keep). Keep mode means an existing
+RetroArch or core on the card is never overwritten. The inputs come from
+`tooling/sources/retroarch-aroma/` (provenance in its `SOURCE.txt`) and
+`sync-native-payload.py` pins their SHA-256, because only that community Aroma
+build runs on this setup; see `docs/RETROARCH-LAUNCH.md`. RetroArch
+configuration, BIOS, saves, history and core options are never shipped. Games
+and BIOS are never bundled.
+
+A fresh PS1 selection generates a `ps1` Files content type (`.cue,.chd,.pbp`,
+launcher `ps1`, 142 x 125 x 10 mm jewel case) scanning `wiiu/roms/ps1`. SNES,
+NES and GBA share their content type with the Virtual Console components
+(bits 5, 4, 6): selecting either creates it, and when the RetroArch component
+is selected its launcher (`snes-retroarch`, `nes-retroarch`, `gba-retroarch`)
+is the default, with or without the VC injector. That system's default sleeve
+ships with either. Generated configs are keep-mode, so an existing
+`libraries.cfg`, such as a user's own `custom_1` PS1 type or a VC default,
+survives a reinstall.
 
 The Region Free patch is selected alongside Wii U or any VC system (mask1017).
 It replaces stock `regionfree.wps` but never installs or overwrites its JSON
@@ -318,20 +364,22 @@ identical metadata; this is not a physical-console elapsed-time claim. Rebuild
 the app and native installer, run actual-bundle install/rerun tests, and measure
 the user's usb1:/Decrypted scan on hardware before claiming a timing improvement.
 
-Wii VC loose-title safety (sequence 2026092105): a decrypted Wii VC
-`code/content/meta` tree cannot use the normal FAT32 raw-title path. Hardware trace
-from `nn_hai_user.rpl` shows `Get block address of </vol/content/hif_000000.nfs>:
--6`, followed by `Hai image files are not found` and fatal 160-0791. Content
-redirection supplies ordinary file operations but not the physical WFS block
-addresses required by HAI. Keep the explicit `WiiVC::IsRaw` branch before generic
-raw Wii U launch, prepare a private WBFS copy, and launch it through the proven vWii
-path. This preserves source files and prevents the fatal error. Installed Wii VC
-titles still launch directly with their wrapper and can retain GamePad support;
-loose FAT32 copies cannot retain that wrapper through content redirection. The
-preparation progress/cancellation pump accepts B/touch/system exit at each slice
-and removes only partial staging files. Run test-wii-vc-cancel, raw USB/return
-tests, rebuild the app and installer, then hardware-test both a loose Wii VC title
-and an installed Wii VC title.
+Wii VC authored-title handling: NEVER automatically convert an existing decrypted
+Wii VC title to WBFS on Play. The user requires the original HAI wrapper and
+controller configuration. The previous conversion fallback did not meet that
+requirement. Installed titles retain their direct system launch. Loose Wii VC
+titles currently stop with an explicit unsupported-backend message before any
+conversion, return request or raw launch. ValidateRawGame independently rejects
+HAI markers, preventing a caller from bypassing that restriction.
+
+Direct HAI launch is still incomplete. The captured failure is a block-address
+request for `/vol/content/hif_000000.nfs` returning -6, followed by fatal 160-0791.
+Do not infer that WUP installation or conversion is fundamentally required: HAI
+has a USB extent-map interface, but our ordinary content redirection does not
+implement it. See `wii-vc-hai-investigation.md` for evidence and remaining work.
+Run test-wii-vc-cancel (converter utility plus no-conversion launch guard),
+test-usb-raw (including independent HAI validation), and rebuild/test the native
+installer. A safe rejection is not evidence that GamePad-capable launch works.
 
 Freedom Planet Event Preview exit investigation (2026-09-21): the reproduced
 USB-game hang reaches every raw-loader cleanup checkpoint, including USB unmount,

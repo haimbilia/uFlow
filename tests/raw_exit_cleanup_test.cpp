@@ -10,6 +10,7 @@ void RL_UnmountCurrentRunningBundle(){calls.emplace_back("unmount-bundle");}
 void RPXLoadingCleanUp(){assert(!gReplacementInfo.rpxReplacementInfo.isRPXReplaced);calls.emplace_back("close-readers");}
 void ContentRedirection_RemoveDevice(const char *name,int *result){assert(std::string(name)=="ufusb:");*result=0;calls.emplace_back("remove-device");}
 namespace USBStorage {void Unmount(){calls.emplace_back("unmount-usb");}}
+namespace RawHai {void RemoveCompanionPatch(){calls.emplace_back("hai-companion-patch-removed");}}
 void deinitLogging(){calls.emplace_back("deinit-logger");}
 void OSReport(const char *,...){}
 #define WUMS_APPLICATION_ENDS() void EndApplication()
@@ -26,7 +27,7 @@ int main(){
     EndApplication();
     assert((calls==std::vector<std::string>{"module-end-enter","unmount-bundle","bundle-layers-released",
         "close-readers","file-readers-released","remove-device","usb-redirection-device-removed",
-        "unmount-usb","usb-unmounted","deinit-logger","module-end-return"}));
+        "unmount-usb","usb-unmounted","hai-companion-patch-removed","deinit-logger","module-end-return"}));
     ProfileLog(false);assert(opens==0);
     ProfileLog(true);assert(opens==1);
     ProfileLog(false);assert(opens==1);

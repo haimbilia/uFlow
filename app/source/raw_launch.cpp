@@ -1,4 +1,5 @@
 #include "raw_launch.hpp"
+#include "wii_vc.hpp"
 
 #include <array>
 #include <fstream>
@@ -17,6 +18,14 @@ std::string ValidateRawGame(const GameEntry &game) {
     const bool usb=game.absolutePath.rfind("usb1:/",0)==0;
     if (!usb&&game.absolutePath.rfind("fs:/vol/external01/", 0) != 0)
         return "RAW LOADER REQUIRES AN SD OR USB FAT32 SOURCE";
+    if (WiiVC::IsRaw(game)) {
+        // Authored Wii VC titles launch unchanged through HAI, which reads the
+        // disc images by physical USB sector. The loader also needs these files.
+        if (!usb) return "WII VC DIRECT LAUNCH REQUIRES THE GAME ON USB";
+        for (const char *file : {"/code/nn_hai_user.rpl", "/code/fw.img", "/code/fw.tmd", "/code/htk.bin",
+                                 "/code/rvlt.tik", "/code/rvlt.tmd", "/content/hif_000000.nfs"})
+            if (!NonemptyFile(game.absolutePath + file)) return "WII VC TITLE IS INCOMPLETE";
+    }
     if (game.titleId.size() != 16 || game.titleId.substr(0, 8) != "00050000")
         return "RAW LAUNCH REQUIRES A BASE GAME, NOT UPDATE OR DLC";
     if (!NonemptyFile(game.absolutePath + "/code/app.xml")) return "MISSING CODE/APP.XML";

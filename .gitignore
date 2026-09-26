@@ -1,4 +1,5 @@
 **/build/
+module/build-native/
 **/*.elf
 **/*.rpx
 **/*.wms

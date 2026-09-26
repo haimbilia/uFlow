@@ -1,9 +1,11 @@
 #include "RPXLoading.h"
+#include "RetroArchLaunch.h"
 #include "RawSourcePath.h"
 #include "RawExitTrace.h"
 #include "../../app/source/usb_storage.hpp"
 #include "../../payload/source/common/raw_usb_map.h"
 #include "RawTitleKernel.h"
+#include "RawHai.h"
 #include "RawTitleProfile.h"
 #include "RawReadRange.h"
 #include "RawNativePath.h"
@@ -392,7 +394,11 @@ DECL_FUNCTION(void, _SYSLaunchTitleWithStdArgsInNoSplash, uint64_t titleId, void
         (titleId == _SYSGetSystemApplicationTitleId(SYSTEM_APP_ID_HEALTH_AND_SAFETY) &&
          titleId == OSGetTitleID() &&
          strlen(gReplacementInfo.contentReplacementInfo.bundleMountInformation.toMountPath) == 0)) {
-        PrepareCurrentTitleRelaunch();
+        // RetroArch prepares its own core before relaunching the wrapper with
+        // native arguments; re-preparing the previous RPX would undo that.
+        if (!RetroArchLaunch::AdoptCoreSwitch(u1)) {
+            PrepareCurrentTitleRelaunch();
+        }
     }
     real__SYSLaunchTitleWithStdArgsInNoSplash(titleId, u1);
 }
@@ -745,9 +751,14 @@ static bool SendRawTitleProfile(const char *codePath, const char *rpxPath, bool 
     return success;
 }
 
+bool RL_SupportsWiiVCHai() {
+    return true;
+}
+
 void RL_ClearRawTitleProfile() {
     SendRawTitleProfile(nullptr, nullptr, false);
     RawTitleKernel_Clear();
+    RawHai::Clear();
 }
 
 RPXLoaderStatus RL_PrepareLaunchFromLooseDirectory(const char *rpxPath,
@@ -789,11 +800,20 @@ RPXLoaderStatus RL_PrepareLaunchFromLooseDirectory(const char *rpxPath,
         RL_ClearRawTitleProfile();USBStorage::Unmount();
         return RPX_LOADER_RESULT_UNSUPPORTED_COMMAND;
     }
+    {
+        const uint64_t titleId = XmlU64(ReadTextFile(RawSourcePath(codePath) + "/app.xml"), "title_id", 16, 0);
+        if (RawHai::Prepare(codePath, contentPath, titleId) == RawHai::Result::Failed) {
+            RL_ClearRawTitleProfile();
+            if (RawSourceUSB(rpxPath)) USBStorage::Unmount();
+            return RPX_LOADER_RESULT_UNSUPPORTED_COMMAND;
+        }
+    }
 
     auto result = RL_PrepareLaunchFromSD(rpxPath);
     if (result != RPX_LOADER_RESULT_SUCCESS) {
         SendRawTitleProfile(codePath, rpxPath, false);
         RawTitleKernel_Clear();
+        RawHai::Clear();
         return result;
     }
 
@@ -906,6 +926,7 @@ RPXLoaderStatus RL_LaunchLooseDirectory(const char *rpxPath,
         Mocha_PrepareRPXLaunch(&revert);
         SendRawTitleProfile(codePath, rpxPath, false);
         RawTitleKernel_Clear();
+        RawHai::Clear();
         gLooseTitleInfo = {};
         gReplacementInfo.rpxReplacementInfo.willRPXBeReplaced = false;
         gReplacementInfo.lastFileLoaded[0] = '\0';
@@ -970,6 +991,7 @@ RPXLoaderStatus RL_UnmountCurrentRunningBundle() {
     RPXLoaderStatus res = RPX_LOADER_RESULT_SUCCESS;
 
     if (contentLayerHandle != 0) {
+        RawExitTracePoint("content-layer-remove-enter");
         if (ContentRedirection_RemoveFSLayer(contentLayerHandle) != CONTENT_REDIRECTION_RESULT_SUCCESS) {
             res = RPX_LOADER_RESULT_UNKNOWN_ERROR;
         }
@@ -991,18 +1013,22 @@ RPXLoaderStatus RL_UnmountCurrentRunningBundle() {
     }
 
     if (saveLayerHandle != 0) {
+        RawExitTracePoint("save-layer-remove-enter");
         if (ContentRedirection_RemoveFSLayer(saveLayerHandle) != CONTENT_REDIRECTION_RESULT_SUCCESS) {
             res = RPX_LOADER_RESULT_UNKNOWN_ERROR;
         }
         saveLayerHandle = 0;
     }
+    RawExitTracePoint("fs-layers-removed");
 
     if (bundleMounted && romfsUnmount(WUHB_ROMFS_NAME) < 0) {
         DEBUG_FUNCTION_LINE_WARN("Failed to unmount romfs \"%s\"", WUHB_ROMFS_NAME);
     }
     gReplacementInfo.contentReplacementInfo.bundleMountInformation.isMounted = false;
     if (looseActive) {
+        RawExitTracePoint("raw-profile-clear-enter");
         RL_ClearRawTitleProfile();
+        RawExitTracePoint("raw-profile-clear-return");
         gLooseTitleInfo = {};
     }
     gActiveSaveRedirectionPath.clear();
@@ -1045,6 +1071,7 @@ RPXLoaderStatus RL_GetPathOfSaveRedirection(char *outBuffer, uint32_t outSize) {
 WUMS_EXPORT_FUNCTION(RL_PrepareLaunchFromSD);
 WUMS_EXPORT_FUNCTION(RL_PrepareLaunchFromLooseDirectory);
 WUMS_EXPORT_FUNCTION(RL_LaunchLooseDirectory);
+WUMS_EXPORT_FUNCTION(RL_SupportsWiiVCHai);
 WUMS_EXPORT_FUNCTION(RL_LaunchPreparedHomebrew);
 WUMS_EXPORT_FUNCTION(RL_LaunchHomebrew);
 

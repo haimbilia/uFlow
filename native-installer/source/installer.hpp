@@ -16,14 +16,19 @@
 #include <vector>
 
 namespace Setup {
-constexpr uint32_t Core=1u<<31, All=(1u<<13)-1;
+constexpr uint32_t Core=1u<<31, All=(1u<<17)-1;
+// Optional RetroArch systems: one-press through retroarch-sysargs-v1 modules.
+constexpr int PlayStation=13,SnesRetroArch=14,NesRetroArch=15,GbaRetroArch=16;
 struct Component {const char *id,*name;};
 inline constexpr Component components[]={
     {"wiiu","Wii U - installed and raw games"},{"wii","Wii - WiiFlow / USB Loader GX"},
     {"gamecube","GameCube - Nintendont"},{"ds","Nintendo DS - Virtual Console"},
-    {"nes","NES"},{"snes","SNES"},{"gba","Game Boy Advance"},{"n64","Nintendo 64"},
-    {"pce","TurboGrafx-16 / PC Engine"},{"msx","MSX"},{"noods","NooDS - alternative DS emulator"},
-    {"startup","Start-on-boot support (initially OFF)"},{"vwii-tools","vWii console setup (automatic for Wii / GC)"}};
+    {"nes","NES - Virtual Console"},{"snes","SNES - Virtual Console"},{"gba","Game Boy Advance - Virtual Console"},
+    {"n64","Nintendo 64 - Virtual Console"},{"pce","TurboGrafx-16 / PC Engine - Virtual Console"},{"msx","MSX - Virtual Console"},{"noods","NooDS - alternative DS emulator"},
+    {"startup","Start-on-boot support (initially OFF)"},{"vwii-tools","vWii console setup (automatic for Wii / GC)"},
+    {"ps1","PlayStation - RetroArch (PCSX ReARMed)"},{"snes-retroarch","SNES - RetroArch (Snes9x)"},
+    {"nes-retroarch","NES - RetroArch (Nestopia UE)"},{"gba-retroarch","Game Boy Advance - RetroArch (mGBA)"}};
+inline constexpr int ComponentCount=static_cast<int>(sizeof(components)/sizeof(components[0]));
 inline bool On(uint32_t bits,int i){return (bits&(1u<<i))!=0;}
 struct FileDef {std::string path,hash;uint64_t size;uint32_t mask;char mode;}; // r=replace, k=keep, b=base
 struct Item {FileDef file;std::string before,text;bool generated=false,write=false;};
@@ -58,6 +63,9 @@ inline bool Safe(const std::string &path){
 }
 inline bool Allowed(const std::string &p){
     if(p=="wiiu/apps/WiiFlow.wuhb")return true;
+    if(p=="wiiu/apps/retroarch.wuhb")return true;
+    for(const char *core:{"pcsx_rearmed","snes9x","nestopia","mgba"})
+        if(p==std::string("retroarch/cores/")+core+"_libretro.rpx"||p==std::string("retroarch/cores/info/")+core+"_libretro.info")return true;
     for(const char *prefix:{"wiiu/apps/uFlow/","wiiu/apps/noods/","wiiu/vc-bases/","apps/wiiflow/","apps/usbloader_gx/","apps/nintendont/","apps/d2x-cios-installer-vwii/","apps/wiiflow_channel_installer/","wiiflow/"})if(p.rfind(prefix,0)==0)return true;
     return p=="wiiu/apps/compat_installer.wuhb"||p=="wiiu/environments/aroma/modules/RPXLoadingModule.wms"||p=="wiiu/environments/aroma/modules/PluginBackend.wms"||
         p=="wiiu/environments/aroma/modules/uFlowRawKernel.wms"||p=="wiiu/environments/aroma/modules/setup/00_mocha.rpx"||p=="wiiu/environments/aroma/modules/setup/99_autoboot.rpx"||
@@ -101,7 +109,25 @@ inline std::vector<std::pair<std::string,std::string>> Configs(uint32_t bits,std
     if(On(bits,1))add(1,"wii",".wbfs","wbfs","wiiflow");
     if(On(bits,2))add(2,"gamecube",".iso","games","nintendont");
     const char *exts[]={".nds,.srl",".nes,.unf,.unif,.zip",".sfc,.smc",".gba",".z64,.v64,.n64",".pce",".rom,.mx1,.mx2"};
-    for(int i=3;i<=9;++i)if(On(bits,i)||(i==3&&On(bits,10)))add(i,"files",exts[i-3],std::string("wiiu/roms/")+components[i].id, i==3&&!On(bits,3)?"noods":std::string(components[i].id)+"-vc");
+    // NES, SNES and GBA play through a VC injector or RetroArch. Either one
+    // creates the content type; RetroArch is its default when selected.
+    const int retroArch[]={-1,NesRetroArch,SnesRetroArch,GbaRetroArch,-1,-1,-1};
+    for(int i=3;i<=9;++i){
+        const bool viaRetroArch=retroArch[i-3]>=0&&On(bits,retroArch[i-3]);
+        if(On(bits,i)||(i==3&&On(bits,10))||viaRetroArch)
+            add(i,"files",exts[i-3],std::string("wiiu/roms/")+components[i].id,
+                viaRetroArch?std::string(components[retroArch[i-3]].id):i==3&&!On(bits,3)?"noods":std::string(components[i].id)+"-vc");
+    }
+    if(On(bits,PlayStation)) {
+        // CD jewel case, launched one-press through the retroarch-ps1 module.
+        const std::string id=components[PlayStation].id,folder="wiiu/roms/ps1";
+        libraries+=id+"\tPlayStation\tfiles\twiiflow\t.cue,.chd,.pbp\t1\t"+std::to_string(PlayStation)+"\tps1\t142\t125\t10\t1\n";
+        content+="files\t1\t3\tfs:/vol/external01/"+folder+"\twiiflow\t"+id+"\tps1\n";dirs.push_back(folder);
+        for(const char *kind:{"front","back","spine","fullcovers","backgrounds","logos","previews","metadata"}){
+            std::string path="wiiu/apps/uFlow/media/"+id+"/"+kind;dirs.push_back(path);
+            media+=std::string(kind)+"\tid:"+id+"\t1\t1\tfs:/vol/external01/"+path+"\t1000\t1\t70\t\t100\n";
+        }
+    }
     std::string settings="show_installed="+std::to_string(On(bits,0))+"\nshow_raw_wiiu="+std::to_string(On(bits,0))+"\nshow_wii="+std::to_string(On(bits,1))+"\nshow_gamecube="+std::to_string(On(bits,2))+"\n";
     return {{"libraries.cfg",libraries},{"content_sources.cfg",content},{"media_sources.cfg",media},{"uflow.cfg",settings}};
 }

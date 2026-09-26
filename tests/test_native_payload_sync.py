@@ -46,6 +46,11 @@ class PayloadSyncTest(unittest.TestCase):
         original_backend = sync.PLUGIN_BACKEND_HASH
         self.addCleanup(setattr, sync, "PLUGIN_BACKEND_HASH", original_backend)
         sync.PLUGIN_BACKEND_HASH = sync.digest(self.sources / "WiiUPluginLoaderBackend/PluginBackend.wms")
+        # The RetroArch components are pinned the same way as the other tested builds.
+        original_retroarch = dict(sync.RETROARCH_INPUTS)
+        self.addCleanup(setattr, sync, "RETROARCH_INPUTS", original_retroarch)
+        sync.RETROARCH_INPUTS = {path: (name, sync.digest(self.sources / "retroarch-aroma" / name), mask)
+                                 for path, (name, _, mask) in original_retroarch.items()}
         original_ftp = sync.FTPIIU_PATCH_HASH
         self.addCleanup(setattr, sync, "FTPIIU_PATCH_HASH", original_ftp)
         sync.FTPIIU_PATCH_HASH = sync.digest(self.sources / "ftpiiu_plugin/ftpiiu.wps")
@@ -171,6 +176,40 @@ class PayloadSyncTest(unittest.TestCase):
         entry = next(m for m in sync.ENTRY.finditer(self.manifest.read_text()) if m[1] == sync.WIIFLOW_FORWARDER)
         self.assertEqual((entry[4], entry[5]), ("6", "r"))
         self.assertEqual((self.payload / sync.WIIFLOW_FORWARDER).read_bytes(), sync.inputs(self.project, self.sources)[sync.WIIFLOW_FORWARDER].read_bytes())
+
+
+    def test_retroarch_components_pinned_and_kept(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            sync.synchronize(self.project, self.sources, sync=True)
+        text = self.manifest.read_text()
+
+        def mask_and_mode(path):
+            self.assertIn(f'"{path}",', text)
+            entry = next(m for m in sync.ENTRY.finditer(text) if m[1] == path)
+            return int(entry[4]), entry[5]
+
+        # The frontend ships with any RetroArch system; each core only with its own.
+        self.assertEqual(mask_and_mode("wiiu/apps/retroarch.wuhb"), (sync.RETROARCH_SYSTEMS, "k"))
+        for core, mask in (("pcsx_rearmed", sync.PLAYSTATION), ("snes9x", sync.SNES_RETROARCH),
+                           ("nestopia", sync.NES_RETROARCH), ("mgba", sync.GBA_RETROARCH)):
+            self.assertEqual(mask_and_mode(f"retroarch/cores/{core}_libretro.rpx"), (mask, "k"))
+            self.assertEqual(mask_and_mode(f"retroarch/cores/info/{core}_libretro.info"), (mask, "k"))
+        for system, mask in (("ps1", sync.PLAYSTATION), ("snes", sync.SNES_RETROARCH),
+                             ("nes", sync.NES_RETROARCH), ("gba", sync.GBA_RETROARCH)):
+            self.assertEqual(mask_and_mode(f"wiiu/apps/uFlow/launchers/retroarch-{system}.ufmod"), (mask, "r"))
+        # A system chosen only through RetroArch still gets its default sleeve.
+        for system, mask in (("nes", (1 << 4) | sync.NES_RETROARCH), ("snes", (1 << 5) | sync.SNES_RETROARCH),
+                             ("gba", (1 << 6) | sync.GBA_RETROARCH)):
+            self.assertEqual(mask_and_mode(f"wiiu/apps/uFlow/media/{system}/fullcovers/Default.png"), (mask, "k"))
+        before = self.manifest.read_text()
+        for name in ("pcsx_rearmed_libretro.rpx", "snes9x_libretro.rpx"):
+            core = self.sources / "retroarch-aroma" / name
+            original = core.read_bytes()
+            core.write_bytes(b"a buildbot core that does not run under Aroma")
+            with self.assertRaisesRegex(ValueError, "RetroArch input differs"):
+                sync.synchronize(self.project, self.sources, sync=True)
+            self.assertEqual(before, self.manifest.read_text())
+            core.write_bytes(original)
 
 
 class DefaultCoverGeometryTest(unittest.TestCase):
