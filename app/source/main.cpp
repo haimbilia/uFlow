@@ -1228,7 +1228,7 @@ public:
         RebuildVisible();
         PrepareBuiltInIcons();
 #ifndef UFLOW_HOST_PREVIEW
-        startupIntroPending_=preferences_.preloadBuiltInCovers && preferences_.backgroundMotion;
+        startupIntroPending_=preferences_.startupVideo;
         musicTracks_=ListMusicTracks();
         ApplyMusic();
 #endif
@@ -1269,7 +1269,7 @@ public:
         iconPreparationSkipped_=false;
     }
     bool PreparingIcons() const { return !iconPreparationSkipped_ && (textures_.PreparingIcons() || startupIntroPending_); }
-    void SkipIconPreparation() { iconPreparationSkipped_=true; startupIntroPending_=false; video_.Stop(); }
+    void SkipIconPreparation() { iconPreparationSkipped_=true; if(startupIntroPending_)FinishStartupIntro(); }
     // Reversible fixtures: never scan, launch, or save settings while previewing.
     bool VisualPreview(const std::string &screen) {
         welcomeOpen_=false;
@@ -1391,15 +1391,21 @@ public:
 #ifdef UFLOW_HOST_PREVIEW
     bool CheckStartupAnimation(const std::string &output) {
         VisualPreview("library");startupIntroPending_=true;
-        const auto began=SDL_GetTicks();int capture=0;
-        const std::array<unsigned,5> times={1000,3500,6200,6900,7700};
-        while(SDL_GetTicks()-began<8500) {
+        const auto began=SDL_GetTicks();int capture=0;bool heardAudio=false;
+        const std::array<unsigned,5> times={1000,3500,6800,7500,8300};
+        while(SDL_GetTicks()-began<9200) {
             std::string path;
             if(capture<5 && SDL_GetTicks()-began>=times[capture])path=output+"-"+std::to_string(capture++)+".png";
             if(!Render(0,path))return false;
+            heardAudio=heardAudio || video_.Statistics().audioFrames>0;
+            if(video_.Statistics().loops)return false;
             SDL_Delay(16);
         }
+        if(!heardAudio)return false;
         if(!startupIntroReady_ || startupIntroPending_ || startupFrame_ || !video_.CanStart())return false;
+        musicStatus_="already playing";SkipIconPreparation();
+        if(musicStatus_!="already playing")return false; // cover-only skip must not restart music
+        iconPreparationSkipped_=false;
         startupIntroPending_=true;startupIntroRequested_=startupIntroReady_=false;
         Render(0);SkipIconPreparation();Render(0);
         if(PreparingIcons() || video_.Active())return false;
@@ -1419,10 +1425,13 @@ public:
         if(!preparationLogo_)return false;
         settingsCategory_=3;settingsRow_=10;audioSettings_=false;
         preferences_.preloadBuiltInCovers=true;
-        if(SettingsRowCount()!=11 || !SettingsSelectorRow(10))return false;
+        if(SettingsRowCount()!=12 || !SettingsSelectorRow(10))return false;
         SettingsAdjust(1);if(preferences_.preloadBuiltInCovers)return false;
         SettingsAdjust(-1);if(!preferences_.preloadBuiltInCovers)return false;
-        VisualPreview("settings");settingsCategory_=3;sourceManager_=false;settingsRow_=10;
+        settingsRow_=11;preferences_.startupVideo=true;
+        SettingsAdjust(1);if(preferences_.startupVideo || !preferences_.preloadBuiltInCovers)return false;
+        SettingsAdjust(-1);if(!preferences_.startupVideo)return false;
+        VisualPreview("settings");settingsCategory_=3;sourceManager_=false;settingsRow_=11;
         if(!Render(0,output+"-settings.png"))return false;
         SDL_Log("Preparation PASS: both skins, all accents, motion on/off, packaged logo and settings toggle");
         return true;
@@ -2981,7 +2990,7 @@ public:
             else if (settingsRow_ == 4) preferences_.reflections = !preferences_.reflections;
             else if(settingsRow_==5) preferences_.theme = (preferences_.theme + amount + 4) % 4;
             else {
-                bool *values[]={&preferences_.useBoxArt,&preferences_.useBackgrounds,&preferences_.useLogos,&preferences_.usePreviews,&preferences_.preloadBuiltInCovers};
+                bool *values[]={&preferences_.useBoxArt,&preferences_.useBackgrounds,&preferences_.useLogos,&preferences_.usePreviews,&preferences_.preloadBuiltInCovers,&preferences_.startupVideo};
                 *values[settingsRow_-6]=!*values[settingsRow_-6];
             }
         }
@@ -3005,6 +3014,7 @@ public:
         SettingsAdjust(1);
     }
     void ApplyMusic() {
+        if(startupIntroPending_)return;
         if(!preferences_.musicEnabled) { music_.Stop(); musicStatus_="MUSIC OFF"; return; }
         if(musicTracks_.empty()) musicTracks_=ListMusicTracks();
         if(preferences_.musicTrack.empty() && !musicTracks_.empty()) preferences_.musicTrack=musicTracks_.front();
@@ -3083,7 +3093,7 @@ public:
     bool SettingsSelectorRow(int row) const {
         if(audioSettings_) return row>=0 && row<3;
         if(settingsCategory_==0) return (row>=0 && row<4) || row==5;
-        return settingsCategory_==3 && row>=0 && row<11;
+        return settingsCategory_==3 && row>=0 && row<12;
     }
     bool SettingsSelectorSelected() const {
         if(settingsSidebar_ || directoryBrowser_ || mediaHelp_) return false;
@@ -4060,15 +4070,18 @@ public:
             SDL_Rect logo{640-int(w*scale)/2,264-int(h*scale)/2+drift,int(w*scale),int(h*scale)};
             SDL_RenderCopy(renderer_,preparationLogo_,nullptr,&logo);
         } else DrawText(renderer_,"uFlow",640,245,5,ink,true);
-        DrawText(renderer_,"PREPARING BUILT-IN COVERS",640,456,2,ink,true);
-        DrawText(renderer_,std::to_string(done)+" / "+std::to_string(total)+"   "+
-                 std::to_string(int(progress*100))+" PERCENT",640,492,glass?1:2,muted,true);
+        DrawText(renderer_,total?"PREPARING BUILT-IN COVERS":"OPENING YOUR LIBRARY",640,456,2,ink,true);
+        DrawText(renderer_,total?std::to_string(done)+" / "+std::to_string(total)+"   "+
+                 std::to_string(int(progress*100))+" PERCENT":"READY TO PLAY",640,492,glass?1:2,muted,true);
         FillRoundedRect(renderer_,{450,526,380,6},3,{accent.r,accent.g,accent.b,40});
         if(progress>0) FillRoundedRect(renderer_,{450,526,std::max(1,int(380*progress)),6},3,accent);
-        DrawText(renderer_,"GETTING YOUR LIBRARY READY FOR SMOOTH SCROLLING",640,560,glass?1:2,muted,true);
-        DrawText(renderer_,"B  CONTINUE WHILE COVERS LOAD",640,654,glass?1:2,muted,true);
+        DrawText(renderer_,total?"GETTING YOUR LIBRARY READY FOR SMOOTH SCROLLING":"YOUR GAMES, READY TO EXPLORE",640,560,glass?1:2,muted,true);
+        DrawText(renderer_,total?"B  CONTINUE WHILE COVERS LOAD":"B  SKIP INTRO",640,654,glass?1:2,muted,true);
     }
     static float SmoothFade(float amount) { amount=std::clamp(amount,0.f,1.f);return amount*amount*(3.f-2.f*amount); }
+    void FinishStartupIntro() {
+        startupIntroPending_=false;video_.Stop();ApplyMusic();
+    }
     void DrawStartupIntro() {
         if(!startupIntroPending_)return;
         const auto now=SDL_GetTicks();
@@ -4081,28 +4094,29 @@ public:
 #else
             const char *path="fs:/vol/content/ui/startup.mp4";
 #endif
-            if(!sceneTexture_ || !video_.Start(path,0)) {startupIntroPending_=false;return;}
+            music_.Stop();
+            if(!sceneTexture_ || !video_.Start(path,100,false)) {FinishStartupIntro();return;}
         }
         video_.Update();
         if(!video_.TakeError().empty() || (!video_.Ready() && now-startupRequestAt_>3000)) {
-            startupIntroPending_=false;video_.Stop();return;
+            FinishStartupIntro();return;
         }
         if(video_.Ready() && !startupIntroReady_) {startupIntroReady_=true;startupVideoAt_=now;}
         const float elapsed=startupIntroReady_?(now-startupVideoAt_)/1000.f:0.f;
-        if(elapsed>=6.6f) {startupIntroPending_=false;video_.Stop();return;}
+        if(elapsed>=7.2f) {FinishStartupIntro();return;}
         // Fade through the clip's dark background so two different-sized logos
         // never overlap. The second half reveals the selected theme smoothly.
-        if(elapsed<6.2f) {SetColor(renderer_,{2,8,13,255});SDL_RenderClear(renderer_);}
+        if(elapsed<6.8f) {SetColor(renderer_,{2,8,13,255});SDL_RenderClear(renderer_);}
         else {
-            SetColor(renderer_,{2,8,13,Uint8((1.f-SmoothFade((elapsed-6.2f)/.4f))*255)});
+            SetColor(renderer_,{2,8,13,Uint8((1.f-SmoothFade((elapsed-6.8f)/.4f))*255)});
             SDL_RenderFillRect(renderer_,nullptr);return;
         }
         if(!startupIntroReady_)return;
         SDL_Texture *target=SDL_GetRenderTarget(renderer_);
-        if(SDL_SetRenderTarget(renderer_,sceneTexture_)!=0) {startupIntroPending_=false;video_.Stop();return;}
+        if(SDL_SetRenderTarget(renderer_,sceneTexture_)!=0) {FinishStartupIntro();return;}
         SetColor(renderer_,{2,8,13,255});SDL_RenderClear(renderer_);video_.Draw(kWidth,kHeight);
         SDL_SetRenderTarget(renderer_,target);
-        const float alpha=SmoothFade(elapsed/.35f)*(1.f-SmoothFade((elapsed-5.8f)/.4f));
+        const float alpha=SmoothFade(elapsed/.35f)*(1.f-SmoothFade((elapsed-6.4f)/.4f));
         SDL_SetTextureBlendMode(sceneTexture_,SDL_BLENDMODE_BLEND);
         SDL_SetTextureAlphaMod(sceneTexture_,Uint8(alpha*255));
         SDL_RenderCopy(renderer_,sceneTexture_,nullptr,nullptr);
@@ -4367,11 +4381,11 @@ private:
         sideCases_.clear();
         sideCaseBytes_ = 0;
     }
-    int SettingsFirstRow() const { return settingsCategory_==3?std::clamp(settingsRow_-5,0,5):0; }
+    int SettingsFirstRow() const { return settingsCategory_==3?std::clamp(settingsRow_-5,0,6):0; }
     int SettingsRowCount() const {
         if(audioSettings_) return 4;
         if(settingsCategory_==4)return static_cast<int>(ControlAction::Count)+1;
-        static constexpr int counts[] = {6, 0, 0, 11, 0, 0};
+        static constexpr int counts[] = {6, 0, 0, 12, 0, 0};
         return counts[settingsCategory_];
     }
     void RefreshBrowser() {
@@ -5457,6 +5471,7 @@ private:
             drawRow(8,"TITLE LOGOS",OnOff(preferences_.useLogos));
             drawRow(9,"GAMEPLAY PREVIEWS",OnOff(preferences_.usePreviews));
             drawRow(10,"PRELOAD BUILT-IN COVERS",OnOff(preferences_.preloadBuiltInCovers));
+            drawRow(11,"STARTUP VIDEO",OnOff(preferences_.startupVideo));
         }else if(audioSettings_){
             drawRow(0,"MENU MUSIC",OnOff(preferences_.musicEnabled));
             drawRow(1,"TRACK",preferences_.musicTrack.empty()?"NO TRACK":preferences_.musicTrack);
@@ -5484,7 +5499,7 @@ private:
         DrawSettingsActions(contentX,accent,{"SECTIONS","PREVIOUS","NEXT",settingsEditing_?"B  DONE":"B  BACK"});
         const char *footerHelp = settingsCategory_==4 ?
             (bindingCapture_>=0 ? "PRESS A BUTTON TO BIND    HOME STAYS SYSTEM-OWNED" : "A  CHANGE BINDING    RESET DEFAULTS AVAILABLE") :
-            (settingsCategory_==3 ? (settingsRow_==10?"PRELOAD CHANGE APPLIES NEXT LAUNCH":"UP/DOWN  MORE DISPLAY OPTIONS") :
+            (settingsCategory_==3 ? (settingsRow_>=10?"CHANGE APPLIES NEXT LAUNCH":"UP/DOWN  MORE DISPLAY OPTIONS") :
              settingsEditing_ ? "UP/DOWN  NEXT ROW    A / B  DONE" : "A  SELECT / EDIT");
         DrawText(renderer_,footerHelp,contentX,564,1,help);
     }

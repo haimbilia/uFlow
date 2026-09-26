@@ -16,6 +16,7 @@ struct UserSettings {
     bool showGameCube = true;
     bool backgroundMotion = true;
     bool preloadBuiltInCovers = true;
+    bool startupVideo = true;
     bool useBoxArt = true;
     bool useBackgrounds = true;
     bool useLogos = true;

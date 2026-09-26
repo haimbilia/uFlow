@@ -100,7 +100,7 @@ struct VideoPlayer::Impl {
     std::uint32_t uploadUs=0;
     std::uint32_t presented = 0;
     Uint32 firstFrameAt=0, lastPresentedAt=0, maxPresentGap=0, longPresentGaps=0;
-    bool buffering=false;
+    bool buffering=false,loop=true;
     std::array<Frame,4> frames;
     // Three waiting frames plus one leased to the converter. Only the decoder
     // changes AVFrame references; the converter only reads a leased image.
@@ -503,7 +503,7 @@ struct VideoPlayer::Impl {
                     if (started.load() && empty && silent && Clock() >= lastVideo) break;
                     SDL_Delay(3);
                 }
-                if (!Running()) break;
+                if (!Running() || !loop) break;
                 if (av_seek_frame(d.format,vi,vs->start_time == AV_NOPTS_VALUE ? 0 : vs->start_time,AVSEEK_FLAG_BACKWARD) < 0) {
                     Fail("VIDEO CANNOT LOOP"); break;
                 }
@@ -557,7 +557,7 @@ VideoPlayer::~VideoPlayer() {
     // errors and menu entry never wait on the hardware decoder.
     if (impl_->thread) { SDL_WaitThread(impl_->thread,nullptr); impl_->thread=nullptr; }
 }
-bool VideoPlayer::Start(const std::string &path, int volume) {
+bool VideoPlayer::Start(const std::string &path, int volume, bool loop) {
     Stop();
     av_log_set_level(AV_LOG_ERROR);
     auto &s = *impl_;
@@ -567,7 +567,7 @@ bool VideoPlayer::Start(const std::string &path, int volume) {
         if(!slot.frame) slot.frame=av_frame_alloc();
         if(!slot.frame) return false;
     }
-    s.path = path; s.volume = std::clamp(volume,0,100);
+    s.path = path; s.volume = std::clamp(volume,0,100); s.loop=loop;
     s.cancel.store(false); s.suspended.store(false); s.started.store(false); s.done.store(false);
     s.producerDone.store(false); s.converting.store(false);
     s.error.clear();

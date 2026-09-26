@@ -15,6 +15,7 @@ int main(int argc,char **argv){
         bool found=false;
         for(const auto &[name,body]:Configs(bits,dirs)) if(name=="uflow.cfg") {
             found=true;assert(body.find("preload_builtin_covers=1\n")!=std::string::npos);
+            assert(body.find("startup_video=1\n")!=std::string::npos);
         }
         assert(found);
     }
@@ -77,9 +78,9 @@ int main(int argc,char **argv){
     auto fresh=root+"/fresh";Aroma(fresh);
     auto minimal=Prepare(fresh,bundle,defs,0,{});assert(minimal.items.size()==5&&minimal.dirs.empty());
     Install(fresh,bundle,minimal,"minimal",{});assert(Size(fresh+"/wiiu/apps/uFlow/libraries.cfg")==0);
-    Put(fresh+"/wiiu/apps/uFlow/uflow.cfg","preload_builtin_covers=0\n");
+    Put(fresh+"/wiiu/apps/uFlow/uflow.cfg","preload_builtin_covers=0\nstartup_video=0\n");
     Install(fresh,bundle,Prepare(fresh,bundle,defs,0,{}),"preload-preserved",{});
-    assert(HashFile(fresh+"/wiiu/apps/uFlow/uflow.cfg",{},"")==Hash("preload_builtin_covers=0\n"));
+    assert(HashFile(fresh+"/wiiu/apps/uFlow/uflow.cfg",{},"")==Hash("preload_builtin_covers=0\nstartup_video=0\n"));
     assert(!File(fresh+"/apps/nintendont/boot.dol"));
     assert(!File(fresh+"/"+regionPlugin));
     assert(!File(fresh+"/"+ftpPlugin));

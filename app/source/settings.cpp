@@ -28,6 +28,7 @@ void SetValue(UserSettings &settings, const std::string &key, int value) {
     else if (key == "show_wii") settings.showWii = enabled;
     else if (key == "show_gamecube") settings.showGameCube = enabled;
     else if (key == "background_motion") settings.backgroundMotion = enabled;
+    else if (key == "startup_video") settings.startupVideo = enabled;
     else if (key == "preload_builtin_covers") settings.preloadBuiltInCovers = enabled;
     else if (key == "use_box_art") settings.useBoxArt = enabled;
     else if (key == "use_backgrounds") settings.useBackgrounds = enabled;
@@ -95,6 +96,7 @@ void SaveSettings(const UserSettings &settings) {
     output << "show_wii=" << settings.showWii << '\n';
     output << "show_gamecube=" << settings.showGameCube << '\n';
     output << "background_motion=" << settings.backgroundMotion << '\n';
+    output << "startup_video=" << settings.startupVideo << '\n';
     output << "preload_builtin_covers=" << settings.preloadBuiltInCovers << '\n';
     output << "use_box_art=" << settings.useBoxArt << '\n';
     output << "use_backgrounds=" << settings.useBackgrounds << '\n';

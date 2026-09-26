@@ -48,7 +48,7 @@ public:
     ~VideoPlayer();
     VideoPlayer(const VideoPlayer &) = delete;
     VideoPlayer &operator=(const VideoPlayer &) = delete;
-    bool Start(const std::string &path, int volume);
+    bool Start(const std::string &path, int volume, bool loop = true);
     bool CanStart(); // Reap completed cancellation without blocking.
     void Stop();
     void Suspend(bool suspended); // atomics only; safe on foreground release
