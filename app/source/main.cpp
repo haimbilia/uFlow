@@ -1228,6 +1228,7 @@ public:
         RebuildVisible();
         PrepareBuiltInIcons();
 #ifndef UFLOW_HOST_PREVIEW
+        startupIntroPending_=preferences_.preloadBuiltInCovers && preferences_.backgroundMotion;
         musicTracks_=ListMusicTracks();
         ApplyMusic();
 #endif
@@ -1246,6 +1247,7 @@ public:
         if (blurTexture_) SDL_DestroyTexture(blurTexture_);
         if (sceneTexture_) SDL_DestroyTexture(sceneTexture_);
         if (preparationLogo_) SDL_DestroyTexture(preparationLogo_);
+        if (startupFrame_) SDL_DestroyTexture(startupFrame_);
     }
 
     void ReplaceGames(std::vector<GameEntry> games) {
@@ -1266,8 +1268,8 @@ public:
         textures_.PrepareIcons(paths);
         iconPreparationSkipped_=false;
     }
-    bool PreparingIcons() const { return !iconPreparationSkipped_ && textures_.PreparingIcons(); }
-    void SkipIconPreparation() { iconPreparationSkipped_=true; }
+    bool PreparingIcons() const { return !iconPreparationSkipped_ && (textures_.PreparingIcons() || startupIntroPending_); }
+    void SkipIconPreparation() { iconPreparationSkipped_=true; startupIntroPending_=false; video_.Stop(); }
     // Reversible fixtures: never scan, launch, or save settings while previewing.
     bool VisualPreview(const std::string &screen) {
         welcomeOpen_=false;
@@ -1387,6 +1389,23 @@ public:
         return result;
     }
 #ifdef UFLOW_HOST_PREVIEW
+    bool CheckStartupAnimation(const std::string &output) {
+        VisualPreview("library");startupIntroPending_=true;
+        const auto began=SDL_GetTicks();int capture=0;
+        const std::array<unsigned,5> times={1000,3500,6200,6900,7700};
+        while(SDL_GetTicks()-began<8500) {
+            std::string path;
+            if(capture<5 && SDL_GetTicks()-began>=times[capture])path=output+"-"+std::to_string(capture++)+".png";
+            if(!Render(0,path))return false;
+            SDL_Delay(16);
+        }
+        if(!startupIntroReady_ || startupIntroPending_ || startupFrame_ || !video_.CanStart())return false;
+        startupIntroPending_=true;startupIntroRequested_=startupIntroReady_=false;
+        Render(0);SkipIconPreparation();Render(0);
+        if(PreparingIcons() || video_.Active())return false;
+        SDL_Log("Startup animation PASS: real packaged clip, single reveal, dissolve, library fade, decoder release and skip");
+        return true;
+    }
     bool CheckIconPreparation(const std::string &output) {
         for(int skin=0;skin<2;++skin) for(int theme=0;theme<4;++theme) {
             preferences_.skin=skin; preferences_.theme=theme;
@@ -1398,12 +1417,12 @@ public:
             }
         }
         if(!preparationLogo_)return false;
-        settingsCategory_=2;settingsRow_=4;audioSettings_=false;
+        settingsCategory_=3;settingsRow_=10;audioSettings_=false;
         preferences_.preloadBuiltInCovers=true;
-        if(SettingsRowCount()!=5 || !SettingsSelectorRow(4))return false;
+        if(SettingsRowCount()!=11 || !SettingsSelectorRow(10))return false;
         SettingsAdjust(1);if(preferences_.preloadBuiltInCovers)return false;
         SettingsAdjust(-1);if(!preferences_.preloadBuiltInCovers)return false;
-        VisualPreview("settings");settingsCategory_=2;sourceManager_=false;settingsRow_=4;
+        VisualPreview("settings");settingsCategory_=3;sourceManager_=false;settingsRow_=10;
         if(!Render(0,output+"-settings.png"))return false;
         SDL_Log("Preparation PASS: both skins, all accents, motion on/off, packaged logo and settings toggle");
         return true;
@@ -1671,6 +1690,7 @@ public:
         return true;
     }
     bool CheckMediaAccordion(const std::string &output) {
+        const auto failed=[](int line){SDL_Log("Media accordion failure line %d",line);return false;};
         for(int skin:{1,0}) {
             VisualPreview("media"); preferences_.skin=skin; settingsSidebar_=false;
             libraries_={{"wiiu","Wii U"},{"wii","Wii"},{"gc","GameCube"},{"ds","Nintendo DS"}};
@@ -1680,48 +1700,46 @@ public:
                 {MediaType::Logo,-1,"fs:/vol/external01/wiiu/apps/uFlow/media/Wii/Logos",false,0,"wii"},
                 {MediaType::Cover,-1,"fs:/vol/external01/wiiu/apps/uFlow/media/DS/Covers",true,0,"ds"}};
             auto rows=MediaRows();
-            if(rows.size()!=8 || rows[2].key!="wii" || rows[2].directories!=2) return false;
+            if(rows.size()!=7 || rows[2].key!="wii" || rows[2].directories!=2) return failed(__LINE__);
             const auto suffix=skin==1?"-glass":"-pixel";
-            if(!Render(0,output+suffix+"-collapsed.png")) return false;
+            if(!Render(0,output+suffix+"-collapsed.png")) return failed(__LINE__);
             sourceRow_=2; SettingsInput(0,0,true);
-            if(sourceEditor_ || MediaRows().size()!=10 || sourceRow_!=2) return false;
+            if(sourceEditor_ || MediaRows().size()!=9 || sourceRow_!=2) return failed(__LINE__);
             SourceMove(1); SettingsInput(0,0,true);
-            if(!sourceEditor_ || editingSourceIndex_!=1 || draftMediaSource_.type!=MediaType::Preview) return false;
+            if(!sourceEditor_ || editingSourceIndex_!=1 || draftMediaSource_.type!=MediaType::Preview) return failed(__LINE__);
             CloseOverlay();
             SourceMove(1); SourceActivate();
-            if(editingSourceIndex_!=3 || draftMediaSource_.enabled) return false;
+            if(editingSourceIndex_!=3 || draftMediaSource_.enabled) return failed(__LINE__);
             CloseOverlay(); sourceRow_=2;
-            if(!Render(0,output+suffix+"-expanded.png")) return false;
+            if(!Render(0,output+suffix+"-expanded.png")) return failed(__LINE__);
             // Touch the header to collapse, then re-expand and touch its child.
             SettingsTouch(500,278+2*48);
-            if(MediaRows().size()!=8 || sourceEditor_) return false;
+            if(MediaRows().size()!=7 || sourceEditor_) return failed(__LINE__);
             SettingsTouch(500,278+2*48); SettingsTouch(500,278+3*48);
-            if(!sourceEditor_ || editingSourceIndex_!=1) return false;
+            if(!sourceEditor_ || editingSourceIndex_!=1) return failed(__LINE__);
             CloseOverlay(); sourceRow_=2; SourceAdd();
-            if(!sourceEditor_ || editingSourceIndex_!=-1 || draftMediaSource_.libraryId!="wii") return false;
+            if(!sourceEditor_ || editingSourceIndex_!=-1 || draftMediaSource_.libraryId!="wii") return failed(__LINE__);
             CloseOverlay();
             // Simulate saved reassignment/add/remove; selection follows the saved source.
             mediaSources_[1].libraryId="ds"; FocusMediaSource(1);
-            if(MediaRows()[sourceRow_].source!=1 || MediaRows()[sourceRow_].key!="ds") return false;
+            if(MediaRows()[sourceRow_].source!=1 || MediaRows()[sourceRow_].key!="ds") return failed(__LINE__);
             for(int i=0;i<9;++i) mediaSources_.push_back({MediaType::Background,-1,"fs:/vol/external01/media/Wii/extra-"+std::to_string(i),true,0,"wii"});
             FocusMediaSource(static_cast<int>(mediaSources_.size())-1);
             const int expected=MediaRows()[sourceRow_].source;
             const int first=std::max(0,std::min(sourceRow_-4,SourceListCount()-6));
-            if(first<=0) return false;
-            if(!Render(0,output+suffix+"-scrolled.png")) return false;
+            if(first<=0) return failed(__LINE__);
+            if(!Render(0,output+suffix+"-scrolled.png")) return failed(__LINE__);
             SettingsTouch(500,278+(sourceRow_-first)*48);
-            if(!sourceEditor_ || editingSourceIndex_!=expected) return false;
+            if(!sourceEditor_ || editingSourceIndex_!=expected) return failed(__LINE__);
             CloseOverlay();
             sourceRow_=0; SourceMove(-1);
-            if(MediaRows()[sourceRow_].kind!=MediaDirectoryRow::Help) return false;
-            SourceActivate(); if(!mediaHelp_) return false; CloseOverlay();
-            sourceRow_=SourceListCount()-3; scanRequested_=false; SourceActivate();
-            if(!scanRequested_) return false; scanRequested_=false;
-            sourceRow_=SourceListCount()-2; SourceActivate();
-            if(sourceManager_) return false;
+            if(MediaRows()[sourceRow_].kind!=MediaDirectoryRow::Help) return failed(__LINE__);
+            SourceActivate(); if(!mediaHelp_) return failed(__LINE__); CloseOverlay();
+            sourceRow_=SourceListCount()-2; scanRequested_=false; SourceActivate();
+            if(!scanRequested_) return failed(__LINE__); scanRequested_=false;
             sourceManager_=true; mediaSources_.clear(); sourceRow_=0;
-            if(SourceListCount()!=4 || !Render(0,output+suffix+"-empty.png")) return false;
-            SourceActivate(); if(!sourceEditor_ || editingSourceIndex_!=-1) return false;
+            if(SourceListCount()!=3 || !Render(0,output+suffix+"-empty.png")) return failed(__LINE__);
+            SourceActivate(); if(!sourceEditor_ || editingSourceIndex_!=-1) return failed(__LINE__);
         }
         SDL_Log("Media accordion PASS: populated content types, controller/touch expand-collapse, correct editor mapping, add group inheritance, reassignment, scroll hit targets, wrapping/actions, empty state, both skins");
         return true;
@@ -2122,6 +2140,36 @@ public:
         if (casesBefore != sideCases_.size() || artBefore != textures_.Count() || textBefore != gSmoothTextCache.size()) return false;
         return true;
     }
+    bool CheckWrapDisplay(const std::string &output) {
+        VisualPreview("library");preferences_.backgroundMotion=false;
+        const auto seed=games_.front();
+        while(games_.size()<40) {auto g=seed;g.name="TITLE "+std::to_string(games_.size());games_.push_back(g);}
+        RebuildVisible();
+        const int count=static_cast<int>(visible_.size());
+        const auto has=[&](int index,float side){return std::any_of(carouselCards_.begin(),carouselCards_.end(),
+            [&](const auto &card){return card.first==index && std::abs(card.second-side)<.01f;});};
+        for(int layout=0;layout<4;++layout) for(int wrap=0;wrap<2;++wrap) {
+            preferences_.coverLayout=layout;preferences_.wrapNavigation=wrap;
+            for(int end:{0,count-1}) {
+                selected_=end;visualSelected_=float(end);
+                if(!Render(0,output+"-"+std::to_string(layout)+"-"+std::to_string(wrap)+"-"+std::to_string(end)+".png"))return false;
+                if(has(end==0?count-1:0,end==0?-1.f:1.f)!=bool(wrap))return false;
+            }
+        }
+        preferences_.wrapNavigation=true; selected_=0;visualSelected_=0;
+        Move(-1);if(selected_!=std::size_t(count-1) || visualSelected_!=count)return false;
+        visualSelected_=count-1;Move(1);if(selected_!=0 || visualSelected_!=-1)return false;
+        visualSelected_=-.5f;if(!Render(0,output+"-seam.png"))return false;
+        if(!has(count-1,-.5f) || !has(0,.5f))return false;
+        games_.resize(1);RebuildVisible();selected_=0;visualSelected_=0;Render(0);
+        if(carouselCards_.size()!=1 || carouselCards_[0].first!=0)return false;
+        VisualPreview("settings");settingsCategory_=3;sourceManager_=false;settingsSidebar_=false;
+        settingsRow_=10;preferences_.preloadBuiltInCovers=true;
+        SettingsTouch(1100,520);if(preferences_.preloadBuiltInCovers || settingsRow_!=10)return false;
+        if(!Render(0,output+"-display.png"))return false;
+        SDL_Log("Wrap/display PASS: first/last neighbors on/off, all layouts, seam animation, singleton, scrolled touch mapping");
+        return true;
+    }
     // ZL/ZR on a 14-title library (the user's): never backwards, stop at the
     // ends, wrap only on a fresh press, not on a held repeat.
     bool CheckPaging() {
@@ -2352,8 +2400,9 @@ public:
             const int count = static_cast<int>(visible_.size());
             // Accelerated steps of four must not stall a four-title library.
             if (amount != 0 && amount % count == 0) next = static_cast<int>(selected_) + (amount > 0 ? 1 : -1);
+            const int logicalNext=next;
             next = (next % count + count) % count;
-            if (std::abs(next - static_cast<int>(selected_)) > count / 2) visualSelected_ = static_cast<float>(next);
+            visualSelected_ += next-logicalNext;
         } else {
             next = std::clamp(next, 0, static_cast<int>(visible_.size()) - 1);
         }
@@ -2924,18 +2973,17 @@ public:
                 preferences_.showInstalled = !preferences_.showInstalled;
                 RebuildVisible();
             }
-        } else if (settingsCategory_ == 2) {
-            bool *values[] = {&preferences_.useBoxArt, &preferences_.useBackgrounds,
-                              &preferences_.useLogos, &preferences_.usePreviews, &preferences_.preloadBuiltInCovers};
-            *values[settingsRow_] = !*values[settingsRow_];
-            if(settingsRow_==4) SetStatus("PRELOAD CHANGE APPLIES NEXT LAUNCH",5000);
         } else if (settingsCategory_ == 3) {
             if (settingsRow_ == 0) preferences_.coverLayout = (preferences_.coverLayout + amount + 4) % 4;
             else if (settingsRow_ == 1) preferences_.animationSpeed = (preferences_.animationSpeed + amount + 3) % 3;
             else if (settingsRow_ == 2) preferences_.coverSpacing = (preferences_.coverSpacing + amount + 3) % 3;
             else if (settingsRow_ == 3) preferences_.backgroundMotion = !preferences_.backgroundMotion;
             else if (settingsRow_ == 4) preferences_.reflections = !preferences_.reflections;
-            else preferences_.theme = (preferences_.theme + amount + 4) % 4;
+            else if(settingsRow_==5) preferences_.theme = (preferences_.theme + amount + 4) % 4;
+            else {
+                bool *values[]={&preferences_.useBoxArt,&preferences_.useBackgrounds,&preferences_.useLogos,&preferences_.usePreviews,&preferences_.preloadBuiltInCovers};
+                *values[settingsRow_-6]=!*values[settingsRow_-6];
+            }
         }
         QueueSettingsSave();
     }
@@ -2972,6 +3020,7 @@ public:
     void PauseMusic(bool pause) { music_.Pause(pause); }
     void StopMusic() { StopVideo(false); glassBackground_.Stop(); music_.Stop(); }
     void PrepareSystemBackground() {
+        startupIntroPending_=false; // returning from HOME must not replay the reveal
         if(injectionDialog_.state==InjectionDialog::State::Working)injectionDialog_.cancel=true;
         else injectionDialog_.Reset();
         // SDL Wii U queues WILLENTERBACKGROUND before ProcUIDrawDoneRelease.
@@ -3034,8 +3083,7 @@ public:
     bool SettingsSelectorRow(int row) const {
         if(audioSettings_) return row>=0 && row<3;
         if(settingsCategory_==0) return (row>=0 && row<4) || row==5;
-        if(settingsCategory_==2) return row>=0 && row<5;
-        return settingsCategory_==3 && row>=0 && row<6;
+        return settingsCategory_==3 && row>=0 && row<11;
     }
     bool SettingsSelectorSelected() const {
         if(settingsSidebar_ || directoryBrowser_ || mediaHelp_) return false;
@@ -3209,7 +3257,7 @@ public:
             const bool controls=settingsCategory_==4;
             const int pitch=controls?29:(settingsCategory_==3 || settingsCategory_==2 || (settingsCategory_==0 && !audioSettings_)?62:76);
             const int top=controls?233:187, bottomOffset=controls?28:57;
-            for(int row=0;row<SettingsRowCount();++row) if(y>=top+row*pitch && y<top+bottomOffset+row*pitch) {
+            for(int row=SettingsFirstRow();row<std::min(SettingsRowCount(),SettingsFirstRow()+ (controls?12:6));++row) if(y>=top+(row-SettingsFirstRow())*pitch && y<top+bottomOffset+(row-SettingsFirstRow())*pitch) {
                 settingsRow_=row;
                 if(SettingsSelectorSelected() && x>=860) SettingsAdjust(x<990?-1:1);
                 else SettingsInput(0,0,true);
@@ -3768,7 +3816,6 @@ public:
                 return;
             }
             if(row.kind==MediaDirectoryRow::Scan) { SourceScan(); return; }
-            if(row.kind==MediaDirectoryRow::Display) { sourceManager_=false; settingsRow_=0; return; }
             if(row.kind==MediaDirectoryRow::Help) { mediaHelp_=true; return; }
             actual=row.kind==MediaDirectoryRow::Directory?row.source:SourceCount();
         }
@@ -3788,7 +3835,7 @@ public:
         if(mediaMode_) {
             const auto rows=MediaRows();
             const auto selected=rows[std::clamp(sourceRow_,0,static_cast<int>(rows.size())-1)];
-            sourceRow_=static_cast<int>(rows.size())-4; SourceActivate();
+            sourceRow_=static_cast<int>(std::find_if(rows.begin(),rows.end(),[](const auto &row){return row.kind==MediaDirectoryRow::Add;})-rows.begin()); SourceActivate();
             if(selected.kind==MediaDirectoryRow::Header || selected.kind==MediaDirectoryRow::Directory)
                 draftMediaSource_.libraryId=selected.key;
             return;
@@ -4021,6 +4068,47 @@ public:
         DrawText(renderer_,"GETTING YOUR LIBRARY READY FOR SMOOTH SCROLLING",640,560,glass?1:2,muted,true);
         DrawText(renderer_,"B  CONTINUE WHILE COVERS LOAD",640,654,glass?1:2,muted,true);
     }
+    static float SmoothFade(float amount) { amount=std::clamp(amount,0.f,1.f);return amount*amount*(3.f-2.f*amount); }
+    void DrawStartupIntro() {
+        if(!startupIntroPending_)return;
+        const auto now=SDL_GetTicks();
+        if(!startupIntroRequested_) {
+            glassBackground_.Stop();
+            if(!glassBackground_.Released())return;
+            startupIntroRequested_=true;startupRequestAt_=now;
+#ifdef UFLOW_HOST_PREVIEW
+            const char *path="/project/app/content/ui/startup.mp4";
+#else
+            const char *path="fs:/vol/content/ui/startup.mp4";
+#endif
+            if(!sceneTexture_ || !video_.Start(path,0)) {startupIntroPending_=false;return;}
+        }
+        video_.Update();
+        if(!video_.TakeError().empty() || (!video_.Ready() && now-startupRequestAt_>3000)) {
+            startupIntroPending_=false;video_.Stop();return;
+        }
+        if(video_.Ready() && !startupIntroReady_) {startupIntroReady_=true;startupVideoAt_=now;}
+        const float elapsed=startupIntroReady_?(now-startupVideoAt_)/1000.f:0.f;
+        if(elapsed>=6.6f) {startupIntroPending_=false;video_.Stop();return;}
+        // Fade through the clip's dark background so two different-sized logos
+        // never overlap. The second half reveals the selected theme smoothly.
+        if(elapsed<6.2f) {SetColor(renderer_,{2,8,13,255});SDL_RenderClear(renderer_);}
+        else {
+            SetColor(renderer_,{2,8,13,Uint8((1.f-SmoothFade((elapsed-6.2f)/.4f))*255)});
+            SDL_RenderFillRect(renderer_,nullptr);return;
+        }
+        if(!startupIntroReady_)return;
+        SDL_Texture *target=SDL_GetRenderTarget(renderer_);
+        if(SDL_SetRenderTarget(renderer_,sceneTexture_)!=0) {startupIntroPending_=false;video_.Stop();return;}
+        SetColor(renderer_,{2,8,13,255});SDL_RenderClear(renderer_);video_.Draw(kWidth,kHeight);
+        SDL_SetRenderTarget(renderer_,target);
+        const float alpha=SmoothFade(elapsed/.35f)*(1.f-SmoothFade((elapsed-5.8f)/.4f));
+        SDL_SetTextureBlendMode(sceneTexture_,SDL_BLENDMODE_BLEND);
+        SDL_SetTextureAlphaMod(sceneTexture_,Uint8(alpha*255));
+        SDL_RenderCopy(renderer_,sceneTexture_,nullptr,nullptr);
+        SDL_SetTextureAlphaMod(sceneTexture_,255);
+        SDL_SetTextureBlendMode(sceneTexture_,SDL_BLENDMODE_NONE);
+    }
     bool Render(float deltaSeconds, const std::string &capturePath = {}) {
         const Uint64 performanceStart=SDL_GetPerformanceCounter();
         textures_.BeginFrame();
@@ -4029,8 +4117,18 @@ public:
         if (PreparingIcons() && !scanOpen_) {
             // A cheap preparation frame lets decoding run without competing with
             // animated case rendering. Events/HOME still pump in the normal loop.
-            SDL_SetRenderTarget(renderer_,nullptr);
+            if(!startupFrame_) {
+                startupFrame_=SDL_CreateTexture(renderer_,SDL_PIXELFORMAT_RGBA8888,SDL_TEXTUREACCESS_TARGET,kWidth,kHeight);
+                if(startupFrame_)SDL_SetTextureBlendMode(startupFrame_,SDL_BLENDMODE_BLEND);
+            }
+            if(SDL_SetRenderTarget(renderer_,startupFrame_)!=0) {
+                SDL_DestroyTexture(startupFrame_);startupFrame_=nullptr;SDL_SetRenderTarget(renderer_,nullptr);
+            }
             DrawIconPreparation(textures_.IconsDone(),textures_.IconsTotal(),SDL_GetTicks()/1000.f);
+            DrawStartupIntro();
+            SDL_SetRenderTarget(renderer_,nullptr);
+            if(startupFrame_) {SDL_SetTextureAlphaMod(startupFrame_,255);SDL_RenderCopy(renderer_,startupFrame_,nullptr,nullptr);}
+            startupFadeAt_=0;
             const bool captured=capturePath.empty() || SaveVisualFrame(renderer_,capturePath);
             SDL_RenderPresent(renderer_);
 #ifndef UFLOW_HOST_PREVIEW
@@ -4184,6 +4282,13 @@ public:
         if (videoOptions_.foreground) video_.Draw(kWidth,kHeight);
         if (!status_.empty() && SDL_TICKS_PASSED(SDL_GetTicks(), statusUntil_)) status_.clear();
         if (!status_.empty()&&!scanOpen_&&!InjectionDialogOpen()&&!WelcomeOpen()&&!updateOpen_&&!launchOptionsOpen_) DrawToast(accent);
+        if(startupFrame_) {
+            if(!startupFadeAt_)startupFadeAt_=SDL_GetTicks();
+            const float fade=SmoothFade((SDL_GetTicks()-startupFadeAt_)/650.f);
+            SDL_SetTextureAlphaMod(startupFrame_,Uint8((1.f-fade)*255));
+            SDL_RenderCopy(renderer_,startupFrame_,nullptr,nullptr);
+            if(fade>=1.f) {SDL_DestroyTexture(startupFrame_);startupFrame_=nullptr;}
+        }
         const bool captured = capturePath.empty() || SaveVisualFrame(renderer_, capturePath);
         SDL_RenderPresent(renderer_);
 #ifndef UFLOW_HOST_PREVIEW
@@ -4262,10 +4367,11 @@ private:
         sideCases_.clear();
         sideCaseBytes_ = 0;
     }
+    int SettingsFirstRow() const { return settingsCategory_==3?std::clamp(settingsRow_-5,0,5):0; }
     int SettingsRowCount() const {
         if(audioSettings_) return 4;
         if(settingsCategory_==4)return static_cast<int>(ControlAction::Count)+1;
-        static constexpr int counts[] = {6, 0, 5, 6, 0, 0};
+        static constexpr int counts[] = {6, 0, 0, 11, 0, 0};
         return counts[settingsCategory_];
     }
     void RefreshBrowser() {
@@ -4327,12 +4433,19 @@ private:
             for(int distance=first;distance<=last;++distance) {
                 const int before=center-distance;
                 const int after=center+distance;
-                if(before>=0) queue(games_[visible_[before]]);
-                if(after<static_cast<int>(visible_.size())) queue(games_[visible_[after]]);
+                const int count=static_cast<int>(visible_.size());
+                if(preferences_.wrapNavigation && distance<count) {
+                    queue(games_[visible_[(before%count+count)%count]]);
+                    queue(games_[visible_[after%count]]);
+                } else if(!preferences_.wrapNavigation) {
+                    if(before>=0) queue(games_[visible_[before]]);
+                    if(after<count) queue(games_[visible_[after]]);
+                }
             }
         };
         // Visible fronts must beat selected-title backgrounds and hidden backs.
-        const int shown=std::clamp(static_cast<int>(std::round(visualSelected_)),0,static_cast<int>(visible_.size())-1);
+        const int count=static_cast<int>(visible_.size()),rounded=static_cast<int>(std::round(visualSelected_));
+        const int shown=preferences_.wrapNavigation?(rounded%count+count)%count:std::clamp(rounded,0,count-1);
         queueFront(games_[visible_[shown]]);
         neighbors(shown,1,8,queueFront);
         queueFront(games_[visible_[selected_]]);
@@ -4959,13 +5072,15 @@ private:
         const CoverStyle style = CurrentCoverStyle();
         const float rightYaw = style.shelf ? kPi - style.sideYaw : -style.sideYaw;
         const int count = static_cast<int>(visible_.size());
+        if(!count)return;
+        const auto actual=[&](int index){return (index%count+count)%count;};
         const float reach = kWidth * .5f + std::abs(tabSlide_);
         // Resting offsets from the screen centre with `center` selected. Cases are
         // placed outward, each leaving its side face plus `reveal` of its face
         // uncovered by the nearer one, so mixed case sizes pack like books.
         struct Rest { int first; std::vector<float> offsets; };
         const auto rest = [&](int center) {
-            const CoverSpan focus = MeasureCover(games_[visible_[center]], focusWidth, focusHeight, 0.f, CaseView::kCamera);
+            const CoverSpan focus = MeasureCover(games_[visible_[actual(center)]], focusWidth, focusHeight, 0.f, CaseView::kCamera);
             std::vector<float> sides[2];
             for (int side = 0; side < 2; ++side) {
                 const int direction = side == 0 ? -1 : 1;
@@ -4973,9 +5088,9 @@ private:
                 CoverSpan previous{};
                 float x = 0.f;
                 // Two past the screen edge, so neighbouring rests share every visible case.
-                for (int index = center + direction, beyond = 0; index >= 0 && index < count && beyond < 2 &&
-                     sides[side].size() < 64; index += direction) {
-                    const CoverSpan span = MeasureCover(games_[visible_[index]], style.sideWidth, style.sideHeight, yaw, style.camera);
+                for (int index = center + direction, beyond = 0; (preferences_.wrapNavigation || (index >= 0 && index < count)) && beyond < 2 &&
+                     sides[side].size() < static_cast<std::size_t>(std::min(64,count-1)); index += direction) {
+                    const CoverSpan span = MeasureCover(games_[visible_[actual(index)]], style.sideWidth, style.sideHeight, yaw, style.camera);
                     const float reveal = span.outer + style.reveal * (span.right - span.left - span.outer);
                     if (sides[side].empty()) x = side == 0 ? focus.left - style.gap - span.right : focus.right + style.gap - span.left;
                     else x += side == 0 ? previous.left - span.left - reveal : previous.right - span.right + reveal;
@@ -4990,10 +5105,10 @@ private:
             return result;
         };
         // Between two resting views every case moves straight to its next place.
-        const float position = std::clamp(visualSelected_, 0.f, static_cast<float>(count - 1));
-        const int base = static_cast<int>(position);
+        const float position = preferences_.wrapNavigation?visualSelected_:std::clamp(visualSelected_, 0.f, static_cast<float>(count - 1));
+        const int base = static_cast<int>(std::floor(position));
         const float blend = position - base;
-        const Rest from = rest(base), to = blend > 0.f && base + 1 < count ? rest(base + 1) : from;
+        const Rest from = rest(base), to = blend > 0.f && (preferences_.wrapNavigation || base + 1 < count) ? rest(base + 1) : from;
         struct Card { int index; float relative, offset; };
         std::vector<Card> cards;
         const int last = std::min(from.first + static_cast<int>(from.offsets.size()),
@@ -5006,9 +5121,13 @@ private:
             return std::abs(left.relative) > std::abs(right.relative);
         });
         sideCaseFrame_ = sideCaseUse_;
+#ifdef UFLOW_HOST_PREVIEW
+        carouselCards_.clear();
+        for(const auto &card:cards) carouselCards_.push_back({actual(card.index),card.relative});
+#endif
         for (const Card &card : cards) {
-            if (card.index == static_cast<int>(selected_) && (detailsProgress_ > .015f || coverInspectProgress_ > .015f)) continue;
-            const GameEntry &game = games_[visible_[card.index]];
+            if (actual(card.index) == static_cast<int>(selected_) && (detailsProgress_ > .015f || coverInspectProgress_ > .015f)) continue;
+            const GameEntry &game = games_[visible_[actual(card.index)]];
             const float distance = std::abs(card.relative);
             float focus = std::max(0.0f, 1.0f - distance);
             focus = focus * focus * (3.0f - 2.0f * focus);
@@ -5016,7 +5135,7 @@ private:
             const int height = static_cast<int>(style.sideHeight + (focusHeight - style.sideHeight) * focus);
             const float depthPush = std::pow(std::min(4.0f, distance), style.pushPower) * style.push;
             const int x = static_cast<int>(640.0f + tabSlide_ + card.offset - width / 2.0f);
-            const bool selected = card.index == static_cast<int>(selected_) && focus > .78f;
+            const bool selected = actual(card.index) == static_cast<int>(selected_) && focus > .78f;
             if (!preferences_.useBoxArt) {
                 DrawCover(game, {x, static_cast<int>(312.0f - height / 2.0f + depthPush), width, height}, selected, accent);
                 continue;
@@ -5299,7 +5418,8 @@ private:
         }
         const int rowPitch=settingsCategory_==3 || settingsCategory_==2 || (settingsCategory_==0 && !audioSettings_)?62:76;
         const auto drawRow=[&](int row,const std::string &label,const std::string &value){
-            const int y=205+row*rowPitch;
+            if(row<SettingsFirstRow() || row>=SettingsFirstRow()+6)return;
+            const int y=205+(row-SettingsFirstRow())*rowPitch;
             if(row==settingsRow_ && !settingsSidebar_){
                 if(glass) DrawGlassSurface(renderer_,{contentX-18,y-18,760,57},14,accent,74,true);
                 else FillRoundedRect(renderer_,{contentX-18,y-18,760,57},14,{accent.r,accent.g,accent.b,42});
@@ -5321,14 +5441,6 @@ private:
             drawRow(3,"SHOW INSTALLED WII U",OnOff(preferences_.showInstalled));
             drawRow(4,"AUDIO","A  OPEN");
             drawRow(5,"START UFLOW ON BOOT",OnOff(preferences_.startOnBoot));
-        }else if(settingsCategory_==2){
-            drawRow(0,"3D BOX ART",OnOff(preferences_.useBoxArt));
-            drawRow(1,"BACKGROUNDS",OnOff(preferences_.useBackgrounds));
-            drawRow(2,"TITLE LOGOS",OnOff(preferences_.useLogos));
-            drawRow(3,"GAMEPLAY PREVIEWS",OnOff(preferences_.usePreviews));
-            drawRow(4,"PRELOAD BUILT-IN COVERS",OnOff(preferences_.preloadBuiltInCovers));
-            DrawText(renderer_,"PRELOAD CHANGE APPLIES NEXT LAUNCH",contentX,508,1,glass?Color{65,79,90,255}:Color{180,195,210,255});
-            DrawText(renderer_,"B  BACK TO MEDIA DIRECTORIES",contentX,542,1,{65,79,90,255});
         }else if(settingsCategory_==3){
             static constexpr const char *layouts[]={"CLASSIC FLOW","CAROUSEL","FLAT ROW","STACKED"};
             static constexpr const char *speeds[]={"RELAXED","SMOOTH","FAST"};
@@ -5340,6 +5452,11 @@ private:
             drawRow(3,"BACKGROUND MOTION",OnOff(preferences_.backgroundMotion));
             drawRow(4,"REFLECTIONS",OnOff(preferences_.reflections));
             drawRow(5,"ACCENT THEME",themes[preferences_.theme]);
+            drawRow(6,"3D BOX ART",OnOff(preferences_.useBoxArt));
+            drawRow(7,"BACKGROUNDS",OnOff(preferences_.useBackgrounds));
+            drawRow(8,"TITLE LOGOS",OnOff(preferences_.useLogos));
+            drawRow(9,"GAMEPLAY PREVIEWS",OnOff(preferences_.usePreviews));
+            drawRow(10,"PRELOAD BUILT-IN COVERS",OnOff(preferences_.preloadBuiltInCovers));
         }else if(audioSettings_){
             drawRow(0,"MENU MUSIC",OnOff(preferences_.musicEnabled));
             drawRow(1,"TRACK",preferences_.musicTrack.empty()?"NO TRACK":preferences_.musicTrack);
@@ -5367,7 +5484,8 @@ private:
         DrawSettingsActions(contentX,accent,{"SECTIONS","PREVIOUS","NEXT",settingsEditing_?"B  DONE":"B  BACK"});
         const char *footerHelp = settingsCategory_==4 ?
             (bindingCapture_>=0 ? "PRESS A BUTTON TO BIND    HOME STAYS SYSTEM-OWNED" : "A  CHANGE BINDING    RESET DEFAULTS AVAILABLE") :
-            (settingsEditing_ ? "UP/DOWN  NEXT ROW    A / B  DONE" : "A  SELECT / EDIT");
+            (settingsCategory_==3 ? (settingsRow_==10?"PRELOAD CHANGE APPLIES NEXT LAUNCH":"UP/DOWN  MORE DISPLAY OPTIONS") :
+             settingsEditing_ ? "UP/DOWN  NEXT ROW    A / B  DONE" : "A  SELECT / EDIT");
         DrawText(renderer_,footerHelp,contentX,564,1,help);
     }
     void DrawSourceManager(Color accent, int x) {
@@ -5399,7 +5517,7 @@ private:
                     SourceCount()+static_cast<int>(entry.kind)-static_cast<int>(MediaDirectoryRow::Add);
             }
             if (sourceIndex>=SourceCount()) {
-                constexpr const char *actions[]={"+  ADD DIRECTORY","SCAN NOW","DISPLAY OPTIONS","MEDIA SETUP GUIDE"};
+                constexpr const char *actions[]={"+  ADD DIRECTORY","SCAN NOW","MEDIA SETUP GUIDE"};
                 DrawText(renderer_,actions[sourceIndex-SourceCount()],x+10,y+8,2,selected?text:muted);
                 continue;
             }
@@ -5677,6 +5795,9 @@ private:
     TextureCache textures_;
     bool iconPreparationSkipped_=false;
     SDL_Texture *preparationLogo_=nullptr;
+    SDL_Texture *startupFrame_=nullptr;
+    bool startupIntroPending_=false,startupIntroRequested_=false,startupIntroReady_=false;
+    Uint32 startupRequestAt_=0,startupVideoAt_=0,startupFadeAt_=0;
     bool preparationLogoTried_=false;
     UserSettings preferences_;
     bool welcomeOpen_=false;
@@ -5800,6 +5921,7 @@ private:
     std::uint64_t sideCaseUse_ = 0, sideCaseFrame_ = 0;
     std::size_t sideCaseBytes_ = 0;
 #ifdef UFLOW_HOST_PREVIEW
+    std::vector<std::pair<int,float>> carouselCards_;
     unsigned caseDraws_ = 0;
     unsigned caseDirectFallbacks_ = 0;
 #endif
@@ -6408,6 +6530,8 @@ int main(int argc, char **argv) {
       if(std::string(argv[1])=="scanchecks")ok=dashboard.CheckScanDialog(argv[2]);
       else if(std::string(argv[1])=="asyncbrowserchecks")ok=dashboard.CheckAsyncBrowser(argv[2]);
       else if(std::string(argv[1])=="asyncartworkchecks")ok=dashboard.CheckAsyncArtwork(argv[2]);
+      else if(std::string(argv[1])=="wrapdisplaychecks")ok=dashboard.CheckWrapDisplay(argv[2]);
+      else if(std::string(argv[1])=="startupanimationchecks")ok=dashboard.CheckStartupAnimation(argv[2]);
       else if(std::string(argv[1])=="iconpreparationchecks")ok=dashboard.CheckIconPreparation(argv[2]);
       else if(std::string(argv[1])=="glassbackgroundchecks")ok=dashboard.CheckGlassBackground(argv[2]);
       else if(std::string(argv[1])=="coverfacechecks")ok=dashboard.CheckCoverFaces(argv[2]);

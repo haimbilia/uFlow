@@ -66,7 +66,7 @@ else
 .PHONY: all
 DEPENDS := $(OFILES:.o=.d)
 all: $(OUTPUT).wuhb
-$(OUTPUT).wuhb: $(OUTPUT).rpx ../content/ui/logo.png $(wildcard ../content/skins/glass/background.mp4) ../content/updates/cacert.pem ../content/updates/install-helper.rpx
+$(OUTPUT).wuhb: $(OUTPUT).rpx ../content/ui/logo.png ../content/ui/startup.mp4 $(wildcard ../content/skins/glass/background.mp4) ../content/updates/cacert.pem ../content/updates/install-helper.rpx
 $(OUTPUT).rpx: $(OUTPUT).elf
 $(OUTPUT).elf: $(OFILES)
 $(OFILES_SOURCES): $(HFILES)

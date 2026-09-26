@@ -12,7 +12,7 @@ inline std::string MediaGroupKey(const MediaSource &source) {
 }
 
 struct MediaDirectoryRow {
-    enum Kind { Header, Directory, Add, Scan, Display, Help } kind=Header;
+    enum Kind { Header, Directory, Add, Scan, Help } kind=Header;
     std::string key, label;
     int source=-1, directories=0;
     bool expanded=false;
@@ -47,7 +47,7 @@ inline std::vector<MediaDirectoryRow> MediaDirectoryRows(const std::vector<Media
             if(key==DefaultLibraryId(static_cast<Platform>(p))) label=MediaLibraryName(p);
         append(key,label);
     }
-    for(auto kind:{MediaDirectoryRow::Add,MediaDirectoryRow::Scan,MediaDirectoryRow::Display,MediaDirectoryRow::Help})
+    for(auto kind:{MediaDirectoryRow::Add,MediaDirectoryRow::Scan,MediaDirectoryRow::Help})
         rows.push_back({kind,{},{}});
     return rows;
 }

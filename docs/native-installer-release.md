@@ -1,5 +1,29 @@
 # Native installer release workflow
 
+Startup reveal (2026-09-26): embed the user-supplied `uflow_startup.mp4` as
+`app/content/ui/startup.mp4`, converted to silent H.264 High Level 3.1, 1280x720,
+30 fps. It plays once during initial cover preparation, with a 0.8-second
+dissolve to the selected theme and a 0.65-second fade into the library. B skips;
+preloading OFF or background motion OFF avoids the clip. Cover loading continues
+while it plays. Decoder failure/initial buffering timeout falls back to the
+themed screen; cancel and foreground release use the existing video teardown.
+The theme decoder retires before starting the reveal; game/theme playback waits
+for the shared video player to retire afterwards. Run `startupanimationchecks`
+with the actual packaged clip and inspect transition frames. Host validation is
+not evidence of hardware playback smoothness. Keep the installer local.
+
+Display menu and circular carousel (2026-09-26): the five former Media/Display
+Options switches now live directly in Display, below Accent Theme. Eleven rows
+scroll in a six-row viewport with matching controller and touch selection. Media
+keeps directory, scan and help actions. Existing settings values are unchanged.
+Wrap Navigation now applies to carousel neighbors and artwork lookahead as well
+as selection; crossing the first/last boundary preserves the adjacent animation
+instead of jumping across the library. OFF keeps finite ends. The existing page
+button end-stop behavior is unchanged. Run `wrapdisplaychecks`,
+`mediagroupchecks`, `iconpreparationchecks`, media_groups tests and normal layout/
+paging checks. Rebuild/sync/test the local native installer; deploy only the app.
+Console confirmation remains separate from host previews/tests.
+
 Cover preparation preferences and design (2026-09-26): Media display settings
 include PRELOAD BUILT-IN COVERS, enabled by default. The persisted
 `preload_builtin_covers` switch applies on the next launch; disabling it skips
