@@ -1063,10 +1063,13 @@ public:
     void PumpOne() {
         if (!worker_) return;
         worker_->Request(pending_);
-        auto ready = worker_->Take();
-        if (ready.available) {
+        const auto start=SDL_GetTicks();
+        for(unsigned uploaded=0;uploaded<ArtworkWorker::ReadyCapacity;++uploaded) {
+            auto ready = worker_->Take();
+            if(!ready.available) break;
             if (!textures_.contains(ready.path)) Upload(ready.path, ready.surface);
             else if (ready.surface) SDL_FreeSurface(ready.surface);
+            if(SDL_GetTicks()-start>=3) break;
         }
     }
     void Clear() {
@@ -1077,13 +1080,13 @@ public:
         bytes_ = 0;
     }
 private:
-    static constexpr std::size_t kMaxEntries = 32;
+    static constexpr std::size_t kMaxEntries = 128;
     static constexpr std::size_t kMaxBytes = 48 * 1024 * 1024;
 
     void Queue(const std::string &path) {
         if (std::find(pending_.begin(), pending_.end(), path) != pending_.end()) return;
         // A bounded queue keeps a rapid scroll from retaining obsolete covers.
-        if (pending_.size() >= 24) return;
+        if (pending_.size() >= ArtworkWorker::Capacity) return;
         pending_.push_back(path);
     }
     void RemoveOldest() {
@@ -4116,6 +4119,34 @@ private:
     }
     void PrefetchArtwork() {
         if (visible_.empty()) return;
+        const auto queueFront = [&](const GameEntry &game) {
+            textures_.Prefetch(game.fullCoverPath);
+            if(game.fullCoverPath.empty() || (textures_.Known(game.fullCoverPath) && !textures_.HasTexture(game.fullCoverPath)))
+                textures_.Prefetch(game.coverPath);
+        };
+        const auto neighbors = [&](int center,int first,int last,auto queue) {
+            for(int distance=first;distance<=last;++distance) {
+                const int before=center-distance;
+                const int after=center+distance;
+                if(before>=0) queue(games_[visible_[before]]);
+                if(after<static_cast<int>(visible_.size())) queue(games_[visible_[after]]);
+            }
+        };
+        // Visible fronts must beat selected-title backgrounds and hidden backs.
+        const int shown=std::clamp(static_cast<int>(std::round(visualSelected_)),0,static_cast<int>(visible_.size())-1);
+        queueFront(games_[visible_[shown]]);
+        neighbors(shown,1,8,queueFront);
+        queueFront(games_[visible_[selected_]]);
+        neighbors(static_cast<int>(selected_),1,3,queueFront);
+        const auto queueBuiltIn = [&](const GameEntry &game) {
+            const auto &path=game.coverPath;
+            if(game.fullCoverPath.empty() && (path.find("/cache/icons/")!=std::string::npos ||
+                path.find("/cache/rom-art/")!=std::string::npos || path.ends_with("/meta/iconTex.tga")))
+                textures_.Prefetch(path);
+        };
+        // Extended lookahead is for small extracted icons, not dozens of
+        // full-resolution scans that would churn the 48 MiB texture cache.
+        neighbors(static_cast<int>(selected_),4,24,queueBuiltIn);
         const auto queueGame = [&](const GameEntry &game, bool selected) {
             textures_.Prefetch(game.fullCoverPath);
             if(game.fullCoverPath.empty() || (textures_.Known(game.fullCoverPath) && !textures_.HasTexture(game.fullCoverPath))) {
@@ -4131,12 +4162,7 @@ private:
         };
         queueGame(games_[visible_[selected_]],true);
         // The centre cover is followed by the cards that can enter view next.
-        for (int distance = 1; distance <= 3; ++distance) {
-            const int before = static_cast<int>(selected_) - distance;
-            const int after = static_cast<int>(selected_) + distance;
-            if (before >= 0) queueGame(games_[visible_[before]],false);
-            if (after < static_cast<int>(visible_.size())) queueGame(games_[visible_[after]],false);
-        }
+        neighbors(shown,1,3,[&](const GameEntry &game){queueGame(game,false);});
     }
     const std::vector<std::string> &LibraryTabs() const { return libraryTabs_; }
     std::string CurrentLibraryId() const {

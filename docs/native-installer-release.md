@@ -1,5 +1,17 @@
 # Native installer release workflow
 
+Artwork scrolling (2026-09-26): preload fronts for the animated on-screen
+position first, then built-in icons up to 24 titles either side of the selected title before
+background/back/spine work. The texture cache retains up to 128 entries with
+the existing 48 MiB byte limit. The CPU decoder can produce four results
+between UI frames, stopping when completed surfaces reach 8 MiB (plus at most
+one bounded decode). Upload at most four results or 3 ms of work per frame;
+one upload itself is not preemptible. Keep all renderer calls on the UI thread.
+Run `tools/test-artwork-worker.ps1` and the `asyncartworkchecks` host preview;
+rebuild the app and synchronize/rebuild this installer. This improves bounded
+lookahead and reuse; fast scrolling through never-read SD artwork still requires
+hardware measurement and cannot guarantee zero placeholders at every speed.
+
 Every shipped uFlow fix must survive a fresh installation. A one-off SD edit is
 not a completed release: keep the native payload, defaults, tests and packaging
 recipe current. Preserve existing user settings, ROMs and saves on reinstall.

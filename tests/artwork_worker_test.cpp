@@ -11,6 +11,7 @@ static SDL_Surface *Decode(const std::string &path) {
     ++calls; SDL_SemPost(entered);
     assert(SDL_SemWaitTimeout(releaseDecode, 3000) == 0);
     if (path == "bad") return nullptr;
+    if (path == "large") return SDL_CreateRGBSurfaceWithFormat(0,2048,1024,32,SDL_PIXELFORMAT_RGBA32);
     return SDL_CreateRGBSurfaceWithFormat(0, 8, 8, 32, SDL_PIXELFORMAT_RGBA32);
 }
 static ArtworkWorker::Result Wait(ArtworkWorker &worker) {
@@ -46,10 +47,18 @@ int main() {
         worker.Request({"bad"});
         assert(SDL_SemWaitTimeout(entered, 3000) == 0); SDL_SemPost(releaseDecode);
         result = Wait(worker); assert(result.path == "bad" && !result.surface);
-        worker.Request({"one", "two", "three"});
-        assert(SDL_SemWaitTimeout(entered, 3000) == 0); SDL_SemPost(releaseDecode);
-        SDL_Delay(30);
-        assert(SDL_SemValue(entered) == 0); // a ready surface blocks further decoding
+        worker.Request({"one", "two", "three", "four", "five"});
+        // Four icons decode without a single UI Take/frame in between.
+        for(unsigned i=0;i<ArtworkWorker::ReadyCapacity;++i) {
+            assert(SDL_SemWaitTimeout(entered,3000)==0); SDL_SemPost(releaseDecode);
+        }
+        assert(SDL_SemWaitTimeout(entered,50)==SDL_MUTEX_TIMEDOUT);
+        worker.Reset(); worker.Request({"large","after-large"});
+        assert(SDL_SemWaitTimeout(entered,3000)==0); SDL_SemPost(releaseDecode);
+        assert(SDL_SemWaitTimeout(entered,100)==SDL_MUTEX_TIMEDOUT); // byte budget stops batch early
+        result=Wait(worker); assert(result.path=="large" && result.surface); SDL_FreeSurface(result.surface);
+        assert(SDL_SemWaitTimeout(entered,3000)==0); SDL_SemPost(releaseDecode);
+        result=Wait(worker); assert(result.path=="after-large"); SDL_FreeSurface(result.surface);
         worker.Reset(); worker.Request({"shutdown"});
         assert(SDL_SemWaitTimeout(entered, 3000) == 0);
         SDL_SemPost(releaseDecode); // destructor must join and discard/free the result
