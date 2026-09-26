@@ -1,5 +1,18 @@
 # Native installer release workflow
 
+Cover preparation preferences and design (2026-09-26): Media display settings
+include PRELOAD BUILT-IN COVERS, enabled by default. The persisted
+`preload_builtin_covers` switch applies on the next launch; disabling it skips
+whole-library preparation and uses normal on-demand artwork loading. Existing
+resident textures remain usable for the current session. Installer defaults
+enable it for every component selection and preserve an existing OFF setting.
+The preparation screen uses the selected skin/accent, the supplied logo embedded
+at `/vol/content/ui/logo.png`, and lightweight ring/wave/logo animation respecting
+BACKGROUND MOTION. No external SD logo is required. Run `iconpreparationchecks`,
+settings persistence and actual-bundle installer tests; inspect both skins.
+Rebuild the local installer, deploy only the app. The preceding resident-cache
+change was confirmed by the user to keep up with fast scrolling on hardware.
+
 Resident built-in covers (2026-09-26): prepare SD-cached native icons before
 browsing and retain them in a separate, non-evicting 96 MiB texture pool (up to
 2,048 unique paths). The user's 1,338 128x128 icons require about 84 MiB. Large

@@ -128,7 +128,7 @@ inline std::vector<std::pair<std::string,std::string>> Configs(uint32_t bits,std
             media+=std::string(kind)+"\tid:"+id+"\t1\t1\tfs:/vol/external01/"+path+"\t1000\t1\t70\t\t100\n";
         }
     }
-    std::string settings="show_installed="+std::to_string(On(bits,0))+"\nshow_raw_wiiu="+std::to_string(On(bits,0))+"\nshow_wii="+std::to_string(On(bits,1))+"\nshow_gamecube="+std::to_string(On(bits,2))+"\n";
+    std::string settings="preload_builtin_covers=1\nshow_installed="+std::to_string(On(bits,0))+"\nshow_raw_wiiu="+std::to_string(On(bits,0))+"\nshow_wii="+std::to_string(On(bits,1))+"\nshow_gamecube="+std::to_string(On(bits,2))+"\n";
     return {{"libraries.cfg",libraries},{"content_sources.cfg",content},{"media_sources.cfg",media},{"uflow.cfg",settings}};
 }
 inline Plan Prepare(const std::string &sd,const std::string &bundle,const std::vector<FileDef> &files,uint32_t selected,const Progress &progress){

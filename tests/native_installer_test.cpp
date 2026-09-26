@@ -10,6 +10,14 @@ void Put(const std::string &p,const std::string &s){fs::create_directories(fs::p
 template<class F>void Fails(F f,const std::string &s){bool failed=false;try{f();}catch(const std::exception &e){failed=std::string(e.what()).find(s)!=std::string::npos;if(!failed)std::cerr<<e.what()<<'\n';}assert(failed);}
 void Aroma(const std::string &sd){for(const char *p:{"wiiu/environments/aroma/root.rpx","wiiu/environments/aroma/modules/setup/10_wums_loader.rpx","wiiu/environments/aroma/modules/ContentRedirectionModule.wms","wiiu/environments/aroma/modules/WUHBUtilsModule.wms"})Put(sd+"/"+p,"stock");}
 int main(int argc,char **argv){
+    for(uint32_t bits:{0u,All,2u,4u}) {
+        std::vector<std::string> dirs;
+        bool found=false;
+        for(const auto &[name,body]:Configs(bits,dirs)) if(name=="uflow.cfg") {
+            found=true;assert(body.find("preload_builtin_covers=1\n")!=std::string::npos);
+        }
+        assert(found);
+    }
     assert(Hash("")=="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     assert(Hash("abc")=="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     assert(Hash(std::string(1000000,'a'))=="cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
@@ -69,6 +77,9 @@ int main(int argc,char **argv){
     auto fresh=root+"/fresh";Aroma(fresh);
     auto minimal=Prepare(fresh,bundle,defs,0,{});assert(minimal.items.size()==5&&minimal.dirs.empty());
     Install(fresh,bundle,minimal,"minimal",{});assert(Size(fresh+"/wiiu/apps/uFlow/libraries.cfg")==0);
+    Put(fresh+"/wiiu/apps/uFlow/uflow.cfg","preload_builtin_covers=0\n");
+    Install(fresh,bundle,Prepare(fresh,bundle,defs,0,{}),"preload-preserved",{});
+    assert(HashFile(fresh+"/wiiu/apps/uFlow/uflow.cfg",{},"")==Hash("preload_builtin_covers=0\n"));
     assert(!File(fresh+"/apps/nintendont/boot.dol"));
     assert(!File(fresh+"/"+regionPlugin));
     assert(!File(fresh+"/"+ftpPlugin));

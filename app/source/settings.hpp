@@ -15,6 +15,7 @@ struct UserSettings {
     bool showWii = true;
     bool showGameCube = true;
     bool backgroundMotion = true;
+    bool preloadBuiltInCovers = true;
     bool useBoxArt = true;
     bool useBackgrounds = true;
     bool useLogos = true;

@@ -1245,6 +1245,7 @@ public:
         if (blurScratch_) SDL_DestroyTexture(blurScratch_);
         if (blurTexture_) SDL_DestroyTexture(blurTexture_);
         if (sceneTexture_) SDL_DestroyTexture(sceneTexture_);
+        if (preparationLogo_) SDL_DestroyTexture(preparationLogo_);
     }
 
     void ReplaceGames(std::vector<GameEntry> games) {
@@ -1257,6 +1258,7 @@ public:
         PrepareBuiltInIcons();
     }
     void PrepareBuiltInIcons() {
+        if (!preferences_.preloadBuiltInCovers) return;
         std::vector<std::string> paths;
         for (const auto &game:games_) if (game.fullCoverPath.empty() &&
             (game.coverPath.find("/cache/icons/")!=std::string::npos ||
@@ -1385,6 +1387,27 @@ public:
         return result;
     }
 #ifdef UFLOW_HOST_PREVIEW
+    bool CheckIconPreparation(const std::string &output) {
+        for(int skin=0;skin<2;++skin) for(int theme=0;theme<4;++theme) {
+            preferences_.skin=skin; preferences_.theme=theme;
+            for(int frame=0;frame<2;++frame) {
+                preferences_.backgroundMotion=frame!=0;
+                DrawIconPreparation(frame?973:0,1338,frame?2.5f:0.f);
+                if(!SaveVisualFrame(renderer_,output+"-"+std::to_string(skin)+"-"+std::to_string(theme)+"-"+std::to_string(frame)+".png"))return false;
+                SDL_RenderPresent(renderer_);
+            }
+        }
+        if(!preparationLogo_)return false;
+        settingsCategory_=2;settingsRow_=4;audioSettings_=false;
+        preferences_.preloadBuiltInCovers=true;
+        if(SettingsRowCount()!=5 || !SettingsSelectorRow(4))return false;
+        SettingsAdjust(1);if(preferences_.preloadBuiltInCovers)return false;
+        SettingsAdjust(-1);if(!preferences_.preloadBuiltInCovers)return false;
+        VisualPreview("settings");settingsCategory_=2;sourceManager_=false;settingsRow_=4;
+        if(!Render(0,output+"-settings.png"))return false;
+        SDL_Log("Preparation PASS: both skins, all accents, motion on/off, packaged logo and settings toggle");
+        return true;
+    }
     bool CheckScanDialog(const std::string &output) {
         VisualPreview("settings");scanApplied_=true;scanOpen_=true;
         for(int skin=0;skin<2;++skin){
@@ -2903,8 +2926,9 @@ public:
             }
         } else if (settingsCategory_ == 2) {
             bool *values[] = {&preferences_.useBoxArt, &preferences_.useBackgrounds,
-                              &preferences_.useLogos, &preferences_.usePreviews};
+                              &preferences_.useLogos, &preferences_.usePreviews, &preferences_.preloadBuiltInCovers};
             *values[settingsRow_] = !*values[settingsRow_];
+            if(settingsRow_==4) SetStatus("PRELOAD CHANGE APPLIES NEXT LAUNCH",5000);
         } else if (settingsCategory_ == 3) {
             if (settingsRow_ == 0) preferences_.coverLayout = (preferences_.coverLayout + amount + 4) % 4;
             else if (settingsRow_ == 1) preferences_.animationSpeed = (preferences_.animationSpeed + amount + 3) % 3;
@@ -3010,7 +3034,7 @@ public:
     bool SettingsSelectorRow(int row) const {
         if(audioSettings_) return row>=0 && row<3;
         if(settingsCategory_==0) return (row>=0 && row<4) || row==5;
-        if(settingsCategory_==2) return row>=0 && row<4;
+        if(settingsCategory_==2) return row>=0 && row<5;
         return settingsCategory_==3 && row>=0 && row<6;
     }
     bool SettingsSelectorSelected() const {
@@ -3183,7 +3207,7 @@ public:
             }
         } else if(!mediaHelp_) {
             const bool controls=settingsCategory_==4;
-            const int pitch=controls?29:(settingsCategory_==3 || (settingsCategory_==0 && !audioSettings_)?62:76);
+            const int pitch=controls?29:(settingsCategory_==3 || settingsCategory_==2 || (settingsCategory_==0 && !audioSettings_)?62:76);
             const int top=controls?233:187, bottomOffset=controls?28:57;
             for(int row=0;row<SettingsRowCount();++row) if(y>=top+row*pitch && y<top+bottomOffset+row*pitch) {
                 settingsRow_=row;
@@ -3929,6 +3953,74 @@ public:
         RefreshBrowser();
     }
 
+    void DrawIconPreparation(std::size_t done,std::size_t total,float seconds) {
+        const bool glass=preferences_.skin==1;
+        gSmoothText=glass; gGlassBackdrop=nullptr; gGlassOverVideo=false;
+        const Color accent=AccentFor(Selected()?Selected()->platform:Platform::WiiU,preferences_.theme);
+        const Color ink=glass?Color{38,57,72,255}:Color{236,244,255,255};
+        const Color muted=glass?Color{78,99,113,255}:Color{154,176,199,255};
+        const float phase=preferences_.backgroundMotion?seconds:0.f;
+        const float progress=total?std::clamp(float(done)/total,0.f,1.f):1.f;
+        for(int y=0;y<kHeight;++y) {
+            const float t=float(y)/kHeight;
+            SetColor(renderer_,glass?Color{Uint8(237-23*t),Uint8(246-18*t),Uint8(251-14*t),255}:
+                Color{Uint8(12+7*t),Uint8(19+9*t),Uint8(33+12*t),255});
+            SDL_RenderDrawLine(renderer_,0,y,kWidth,y);
+        }
+        // Lightweight waves and a traveling ring; no video decoder or artwork queue.
+        for(int wave=0;wave<3;++wave) {
+            SetColor(renderer_,{accent.r,accent.g,accent.b,Uint8(glass?24:30)});
+            int previous=0;
+            for(int x=0;x<=kWidth;x+=8) {
+                const int y=520+wave*35+int(std::sin(x/260.f+phase*.35f+wave*.8f)*65);
+                if(x) SDL_RenderDrawLine(renderer_,x-8,previous,x,y);
+                previous=y;
+            }
+        }
+        FillRoundedRect(renderer_,{350,72,580,542},glass?32:8,
+                        glass?Color{255,255,255,155}:Color{21,34,53,225});
+        for(int i=0;i<160;++i) {
+            const float a=i*6.2831853f/160-1.5707963f,b=(i+1)*6.2831853f/160-1.5707963f;
+            const bool filled=i<progress*160;
+            SetColor(renderer_,{accent.r,accent.g,accent.b,Uint8(filled?190:35)});
+            for(int radius=165;radius<=167;++radius)
+                SDL_RenderDrawLine(renderer_,640+int(std::cos(a)*radius),264+int(std::sin(a)*radius),
+                                   640+int(std::cos(b)*radius),264+int(std::sin(b)*radius));
+        }
+        if(preferences_.backgroundMotion) {
+            const float a=phase*.85f-1.5707963f;
+            const int x=640+int(std::cos(a)*166),y=264+int(std::sin(a)*166);
+            FillRoundedRect(renderer_,{x-10,y-10,20,20},10,{accent.r,accent.g,accent.b,45});
+            FillRoundedRect(renderer_,{x-4,y-4,8,8},4,{accent.r,accent.g,accent.b,230});
+        }
+        if(!preparationLogoTried_) {
+            preparationLogoTried_=true;
+#ifdef UFLOW_HOST_PREVIEW
+            auto *surface=LoadPng("/project/app/content/ui/logo.png");
+#else
+            auto *surface=LoadPng("/vol/content/ui/logo.png");
+#endif
+            if(surface) {
+                preparationLogo_=SDL_CreateTextureFromSurface(renderer_,surface); SDL_FreeSurface(surface);
+                if(preparationLogo_) { SDL_SetTextureBlendMode(preparationLogo_,SDL_BLENDMODE_BLEND);
+                    SDL_SetTextureScaleMode(preparationLogo_,SDL_ScaleModeLinear); }
+            }
+        }
+        if(preparationLogo_) {
+            int w=1,h=1; SDL_QueryTexture(preparationLogo_,nullptr,nullptr,&w,&h);
+            const float scale=310.f/std::max(w,h);
+            const int drift=preferences_.backgroundMotion?int(std::sin(phase*1.4f)*4):0;
+            SDL_Rect logo{640-int(w*scale)/2,264-int(h*scale)/2+drift,int(w*scale),int(h*scale)};
+            SDL_RenderCopy(renderer_,preparationLogo_,nullptr,&logo);
+        } else DrawText(renderer_,"uFlow",640,245,5,ink,true);
+        DrawText(renderer_,"PREPARING BUILT-IN COVERS",640,456,2,ink,true);
+        DrawText(renderer_,std::to_string(done)+" / "+std::to_string(total)+"   "+
+                 std::to_string(int(progress*100))+" PERCENT",640,492,glass?1:2,muted,true);
+        FillRoundedRect(renderer_,{450,526,380,6},3,{accent.r,accent.g,accent.b,40});
+        if(progress>0) FillRoundedRect(renderer_,{450,526,std::max(1,int(380*progress)),6},3,accent);
+        DrawText(renderer_,"GETTING YOUR LIBRARY READY FOR SMOOTH SCROLLING",640,560,glass?1:2,muted,true);
+        DrawText(renderer_,"B  CONTINUE WHILE COVERS LOAD",640,654,glass?1:2,muted,true);
+    }
     bool Render(float deltaSeconds, const std::string &capturePath = {}) {
         const Uint64 performanceStart=SDL_GetPerformanceCounter();
         textures_.BeginFrame();
@@ -3938,14 +4030,7 @@ public:
             // A cheap preparation frame lets decoding run without competing with
             // animated case rendering. Events/HOME still pump in the normal loop.
             SDL_SetRenderTarget(renderer_,nullptr);
-            SetColor(renderer_,{12,20,32,255}); SDL_RenderClear(renderer_);
-            DrawText(renderer_,"PREPARING BUILT-IN COVERS",640,280,3,{235,241,250,255},true);
-            DrawText(renderer_,std::to_string(textures_.IconsDone())+" / "+std::to_string(textures_.IconsTotal()),
-                     640,340,2,{160,195,220,255},true);
-            FillRoundedRect(renderer_,{340,395,600,8},4,{35,50,65,255});
-            const int width=static_cast<int>(600*textures_.IconsDone()/std::max<std::size_t>(1,textures_.IconsTotal()));
-            if(width) FillRoundedRect(renderer_,{340,395,width,8},4,{70,190,235,255});
-            DrawText(renderer_,"B  CONTINUE WHILE COVERS LOAD",640,455,1,{180,195,210,255},true);
+            DrawIconPreparation(textures_.IconsDone(),textures_.IconsTotal(),SDL_GetTicks()/1000.f);
             const bool captured=capturePath.empty() || SaveVisualFrame(renderer_,capturePath);
             SDL_RenderPresent(renderer_);
 #ifndef UFLOW_HOST_PREVIEW
@@ -4180,7 +4265,7 @@ private:
     int SettingsRowCount() const {
         if(audioSettings_) return 4;
         if(settingsCategory_==4)return static_cast<int>(ControlAction::Count)+1;
-        static constexpr int counts[] = {6, 0, 4, 6, 0, 0};
+        static constexpr int counts[] = {6, 0, 5, 6, 0, 0};
         return counts[settingsCategory_];
     }
     void RefreshBrowser() {
@@ -5212,7 +5297,7 @@ private:
             else DrawSourceManager(accent, contentX);
             return;
         }
-        const int rowPitch=settingsCategory_==3 || (settingsCategory_==0 && !audioSettings_)?62:76;
+        const int rowPitch=settingsCategory_==3 || settingsCategory_==2 || (settingsCategory_==0 && !audioSettings_)?62:76;
         const auto drawRow=[&](int row,const std::string &label,const std::string &value){
             const int y=205+row*rowPitch;
             if(row==settingsRow_ && !settingsSidebar_){
@@ -5241,6 +5326,8 @@ private:
             drawRow(1,"BACKGROUNDS",OnOff(preferences_.useBackgrounds));
             drawRow(2,"TITLE LOGOS",OnOff(preferences_.useLogos));
             drawRow(3,"GAMEPLAY PREVIEWS",OnOff(preferences_.usePreviews));
+            drawRow(4,"PRELOAD BUILT-IN COVERS",OnOff(preferences_.preloadBuiltInCovers));
+            DrawText(renderer_,"PRELOAD CHANGE APPLIES NEXT LAUNCH",contentX,508,1,glass?Color{65,79,90,255}:Color{180,195,210,255});
             DrawText(renderer_,"B  BACK TO MEDIA DIRECTORIES",contentX,542,1,{65,79,90,255});
         }else if(settingsCategory_==3){
             static constexpr const char *layouts[]={"CLASSIC FLOW","CAROUSEL","FLAT ROW","STACKED"};
@@ -5589,6 +5676,8 @@ private:
     std::vector<GameEntry> &games_;
     TextureCache textures_;
     bool iconPreparationSkipped_=false;
+    SDL_Texture *preparationLogo_=nullptr;
+    bool preparationLogoTried_=false;
     UserSettings preferences_;
     bool welcomeOpen_=false;
     std::vector<std::string> libraryTabs_{kFavoritesLibraryId};
@@ -6319,6 +6408,7 @@ int main(int argc, char **argv) {
       if(std::string(argv[1])=="scanchecks")ok=dashboard.CheckScanDialog(argv[2]);
       else if(std::string(argv[1])=="asyncbrowserchecks")ok=dashboard.CheckAsyncBrowser(argv[2]);
       else if(std::string(argv[1])=="asyncartworkchecks")ok=dashboard.CheckAsyncArtwork(argv[2]);
+      else if(std::string(argv[1])=="iconpreparationchecks")ok=dashboard.CheckIconPreparation(argv[2]);
       else if(std::string(argv[1])=="glassbackgroundchecks")ok=dashboard.CheckGlassBackground(argv[2]);
       else if(std::string(argv[1])=="coverfacechecks")ok=dashboard.CheckCoverFaces(argv[2]);
       else if(std::string(argv[1])=="firstrunchecks")ok=dashboard.CheckFirstRun(argv[2]);
