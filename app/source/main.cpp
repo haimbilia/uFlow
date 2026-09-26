@@ -1,4 +1,5 @@
 #include "library.hpp"
+#include "library_sort.hpp"
 #include "browser_path.hpp"
 #ifndef UFLOW_HOST_PREVIEW
 #include "usb_storage.hpp"
@@ -1180,6 +1181,7 @@ public:
     Dashboard(SDL_Renderer *renderer, std::vector<GameEntry> &games)
         : renderer_(renderer), games_(games), textures_(renderer), preferences_(LoadSettings()),
           sources_(LoadContentSources()), mediaSources_(LoadMediaSources()) {
+        history_.Load(kHistoryPath);
         sceneTexture_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGBA8888,
                                           SDL_TEXTUREACCESS_TARGET, kWidth, kHeight);
         blurTexture_ = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGBA8888,
@@ -1412,6 +1414,32 @@ public:
         SDL_Log("Startup animation PASS: real packaged clip, single reveal, dissolve, library fade, decoder release and skip");
         return true;
     }
+    bool CheckSorting(const std::string &output) {
+        VisualPreview("library");
+        settingsCategory_=3;settingsRow_=12;sourceManager_=false;audioSettings_=false;
+        if(visible_.size()<2 || SettingsFirstRow()!=7 || !SettingsSelectorRow(12))return false;
+        const auto selected=visible_[selected_];
+        for(int mode=0;mode<LibrarySort::Count;++mode) {
+            SettingsAdjust(1);
+            if(visible_[selected_]!=selected || visualSelected_!=float(selected_))return false;
+        }
+        for(int skin=0;skin<2;++skin){
+            preferences_.skin=skin;settings_=true;settingsSidebar_=false;settingsEditing_=true;
+            preferences_.sortMode=2;
+            if(!Render(0,output+"-"+std::to_string(skin)+".png"))return false;
+        }
+        settings_=false;preferences_.sortMode=0;
+        OpenSort();SortInput(1,false,true);if(SortOpen()||preferences_.sortMode!=0)return false;
+        OpenSort();SortInput(2,true,false);if(SortOpen()||preferences_.sortMode!=2)return false;
+        OpenSort();SortInput(0,false,false,640,190+4*48+10);if(SortOpen()||preferences_.sortMode!=4)return false;
+        for(int skin=0;skin<2;++skin){
+            preferences_.skin=skin;OpenSort();sortChoice_=2;
+            if(!Render(0,output+"-popup-"+std::to_string(skin)+".png"))return false;
+            SortInput(0,false,true);
+        }
+        SDL_Log("Sorting PASS: all modes, selection retained and scrollable settings in both skins");
+        return true;
+    }
     bool CheckIconPreparation(const std::string &output) {
         for(int skin=0;skin<2;++skin) for(int theme=0;theme<4;++theme) {
             preferences_.skin=skin; preferences_.theme=theme;
@@ -1425,7 +1453,7 @@ public:
         if(!preparationLogo_)return false;
         settingsCategory_=3;settingsRow_=10;audioSettings_=false;
         preferences_.preloadBuiltInCovers=true;
-        if(SettingsRowCount()!=12 || !SettingsSelectorRow(10))return false;
+        if(SettingsRowCount()!=13 || !SettingsSelectorRow(10))return false;
         SettingsAdjust(1);if(preferences_.preloadBuiltInCovers)return false;
         SettingsAdjust(-1);if(!preferences_.preloadBuiltInCovers)return false;
         settingsRow_=11;preferences_.startupVideo=true;
@@ -2074,11 +2102,13 @@ public:
             if (!Render(0)) return false;
             if (footerHints_[0].button != "A" || footerHints_[1].button != "Y" ||
                 footerHints_[2].button != "X" || footerHints_[3].button != "L/R" ||
-                footerHints_[4].button != "+" || favoriteHint_ != "MARK A GAME WITH X") return false;
+                footerHints_[4].button != "+" || footerHints_[5].button != "B" || favoriteHint_ != "MARK A GAME WITH X") return false;
+            bind(ControlAction::Sort, 0x0080);
+            if(!ButtonPressed(ControlAction::Sort,0x0080)||ButtonPressed(ControlAction::Sort,0x4000))return false;
             bind(ControlAction::Launch, 0x1000);
             bind(ControlAction::Details, 0x8000);
             if (!Render(0, output + suffix + ".png")) return false;
-            if (footerHints_[0].button != "Y" || footerHints_[1].button != "A" ||
+            if (footerHints_[0].button != "Y" || footerHints_[1].button != "A" || footerHints_[5].button != "ZL" ||
                 !ButtonPressed(ControlAction::Launch, 0x1000) || ButtonPressed(ControlAction::Launch, 0x8000) ||
                 !ButtonPressed(ControlAction::Details, 0x8000) || ButtonPressed(ControlAction::Details, 0x1000)) return false;
             bind(ControlAction::Favorite, 0x0040);
@@ -2676,7 +2706,7 @@ public:
         if(CurrentLibraryId()!=kFavoritesLibraryId || tab_!=0 || !visible_.empty())return false;
         std::puts("PASS: Glass Flow default, one-time welcome, empty/fill/hide tabs and removed-tab clamping");return true;
     }
-    bool OverlayOpen() const { return launchOptionsOpen_ || scanOpen_ || updateOpen_ || WelcomeOpen() || InjectionDialogOpen() || CoverInspectOpen() || details_ || settings_ || sourceManager_ || sourceEditor_ || directoryBrowser_; }
+    bool OverlayOpen() const { return sortOpen_ || launchOptionsOpen_ || scanOpen_ || updateOpen_ || WelcomeOpen() || InjectionDialogOpen() || CoverInspectOpen() || details_ || settings_ || sourceManager_ || sourceEditor_ || directoryBrowser_; }
     bool ScanOpen() const {return scanOpen_;}
     void StartScan() {
         if(scanOpen_)return;
@@ -2983,7 +3013,10 @@ public:
                 RebuildVisible();
             }
         } else if (settingsCategory_ == 3) {
-            if (settingsRow_ == 0) preferences_.coverLayout = (preferences_.coverLayout + amount + 4) % 4;
+            if (settingsRow_ == 12) {
+                ApplySort((preferences_.sortMode+amount+LibrarySort::Count)%LibrarySort::Count);
+            }
+            else if (settingsRow_ == 0) preferences_.coverLayout = (preferences_.coverLayout + amount + 4) % 4;
             else if (settingsRow_ == 1) preferences_.animationSpeed = (preferences_.animationSpeed + amount + 3) % 3;
             else if (settingsRow_ == 2) preferences_.coverSpacing = (preferences_.coverSpacing + amount + 3) % 3;
             else if (settingsRow_ == 3) preferences_.backgroundMotion = !preferences_.backgroundMotion;
@@ -3008,6 +3041,30 @@ public:
                 preferences_.musicVolume=std::clamp(preferences_.musicVolume+amount*5,0,100);
                 music_.Volume(preferences_.musicVolume);
             } else { musicTracks_=ListMusicTracks(); SetStatus("MUSIC LIST RELOADED"); }
+    }
+
+    void ApplySort(int mode) {
+        const size_t current=visible_.empty()?games_.size():visible_[selected_];
+        preferences_.sortMode=std::clamp(mode,0,LibrarySort::Count-1);
+        RebuildVisible();
+        const auto found=std::find(visible_.begin(),visible_.end(),current);
+        selected_=found==visible_.end()?0:static_cast<size_t>(found-visible_.begin());
+        visualSelected_=static_cast<float>(selected_);
+        PrefetchArtwork(); QueueSettingsSave();
+    }
+    bool SortOpen() const { return sortOpen_; }
+    void OpenSort() { DismissVideo();sortChoice_=preferences_.sortMode;sortOpen_=true; }
+    void SortInput(int direction,bool accept,bool cancel,int x=-1,int y=-1) {
+        if(cancel){sortOpen_=false;return;}
+        sortChoice_=(sortChoice_+direction+LibrarySort::Count)%LibrarySort::Count;
+        if(x>=410 && x<870 && y>=190 && y<190+LibrarySort::Count*48){
+            sortChoice_=(y-190)/48;accept=true;
+        }
+        if(accept){ApplySort(sortChoice_);sortOpen_=false;}
+    }
+    void RecordPlayed(const GameEntry &game) {
+        if(!preview_ && !history_.Record(game,kHistoryPath))
+            Trace("play-history-save-failed");
     }
 
     void SettingsActivate() {
@@ -3093,7 +3150,7 @@ public:
     bool SettingsSelectorRow(int row) const {
         if(audioSettings_) return row>=0 && row<3;
         if(settingsCategory_==0) return (row>=0 && row<4) || row==5;
-        return settingsCategory_==3 && row>=0 && row<12;
+        return settingsCategory_==3 && row>=0 && row<13;
     }
     bool SettingsSelectorSelected() const {
         if(settingsSidebar_ || directoryBrowser_ || mediaHelp_) return false;
@@ -3265,9 +3322,9 @@ public:
             }
         } else if(!mediaHelp_) {
             const bool controls=settingsCategory_==4;
-            const int pitch=controls?29:(settingsCategory_==3 || settingsCategory_==2 || (settingsCategory_==0 && !audioSettings_)?62:76);
-            const int top=controls?233:187, bottomOffset=controls?28:57;
-            for(int row=SettingsFirstRow();row<std::min(SettingsRowCount(),SettingsFirstRow()+ (controls?12:6));++row) if(y>=top+(row-SettingsFirstRow())*pitch && y<top+bottomOffset+(row-SettingsFirstRow())*pitch) {
+            const int pitch=controls?26:(settingsCategory_==3 || settingsCategory_==2 || (settingsCategory_==0 && !audioSettings_)?62:76);
+            const int top=controls?233:187, bottomOffset=controls?26:57;
+            for(int row=SettingsFirstRow();row<std::min(SettingsRowCount(),SettingsFirstRow()+ (controls?static_cast<int>(ControlAction::Count)+1:6));++row) if(y>=top+(row-SettingsFirstRow())*pitch && y<top+bottomOffset+(row-SettingsFirstRow())*pitch) {
                 settingsRow_=row;
                 if(SettingsSelectorSelected() && x>=860) SettingsAdjust(x<990?-1:1);
                 else SettingsInput(0,0,true);
@@ -4287,6 +4344,7 @@ public:
         gGlassBackdrop = offscreen && blurTexture_ && overlayProgress > .01f ? lensTexture_ : nullptr;
         if (detailsProgress_ > .01f) DrawDetails(accent, detailsProgress_);
         if (settingsProgress_ > .01f) DrawSettings(accent, settingsProgress_);
+        if(sortOpen_)DrawSort(accent);
         if (InjectionDialogOpen()) DrawInjectionDialog(accent);
         if (WelcomeOpen()) DrawWelcome(accent);
         if (updateOpen_) DrawUpdate(accent);
@@ -4381,11 +4439,11 @@ private:
         sideCases_.clear();
         sideCaseBytes_ = 0;
     }
-    int SettingsFirstRow() const { return settingsCategory_==3?std::clamp(settingsRow_-5,0,6):0; }
+    int SettingsFirstRow() const { return settingsCategory_==3?std::clamp(settingsRow_-5,0,7):0; }
     int SettingsRowCount() const {
         if(audioSettings_) return 4;
         if(settingsCategory_==4)return static_cast<int>(ControlAction::Count)+1;
-        static constexpr int counts[] = {6, 0, 0, 12, 0, 0};
+        static constexpr int counts[] = {6, 0, 0, 13, 0, 0};
         return counts[settingsCategory_];
     }
     void RefreshBrowser() {
@@ -4434,6 +4492,7 @@ private:
                 (selectedLibrary == kFavoritesLibraryId && game.favorite) ||
                 (selectedLibrary == GameLibraryId(game))) visible_.push_back(index);
         }
+        LibrarySort::Apply(visible_,games_,preferences_.sortMode,history_);
         selected_ = visible_.empty() ? 0 : std::min(selected_, visible_.size() - 1);
     }
     void PrefetchArtwork() {
@@ -5203,9 +5262,9 @@ private:
         hintSkin_ = preferences_.skin;
         std::copy(std::begin(preferences_.bindings), std::end(preferences_.bindings), hintBindings_.begin());
         constexpr ControlAction actions[] = {ControlAction::Launch, ControlAction::Details,
-            ControlAction::Favorite, ControlAction::PreviousLibrary, ControlAction::Settings};
-        constexpr const char *labels[] = {"LAUNCH", "DETAILS", "FAVORITE", "FILTER", "SETTINGS"};
-        constexpr int positions[] = {58,238,428,638,918,1148};
+            ControlAction::Favorite, ControlAction::PreviousLibrary, ControlAction::Settings, ControlAction::Sort};
+        constexpr const char *labels[] = {"LAUNCH", "DETAILS", "FAVORITE", "FILTER", "SETTINGS", "SORT"};
+        constexpr int positions[] = {58,238,428,638,918,1100,1248};
         for (std::size_t i = 0; i < footerHints_.size(); ++i) {
             auto &hint = footerHints_[i];
             hint.button = ActionButton(actions[i]);
@@ -5218,6 +5277,21 @@ private:
         favoriteHint_ = std::string("MARK A GAME WITH ") + ActionButton(ControlAction::Favorite);
         coverInspectHint_ = std::string("HOLD ") + ActionButton(ControlAction::ZoomFront) +
             "  FRONT    HOLD " + ActionButton(ControlAction::ZoomBack) + "  BACK    B  RETURN";
+    }
+    void DrawSort(Color accent) {
+        const bool glass=preferences_.skin==1;
+        SetColor(renderer_,{0,0,0,135});SDL_RenderFillRect(renderer_,nullptr);
+        if(glass){FillRoundedRect(renderer_,{390,110,500,490},24,{235,243,246,248});DrawGlassSurface(renderer_,{390,110,500,490},24,accent,100,true);}
+        else FillRoundedRect(renderer_,{390,110,500,490},24,{10,19,32,250});
+        const Color ink=glass?Color{45,56,64,255}:Color{238,244,252,255};
+        DrawText(renderer_,"SORT BY",430,140,3,ink);
+        for(int row=0;row<LibrarySort::Count;++row){
+            const int y=190+row*48;
+            if(row==sortChoice_)FillRoundedRect(renderer_,{410,y,460,42},10,{accent.r,accent.g,accent.b,95});
+            DrawText(renderer_,LibrarySort::Name(row),430,y+10,2,ink);
+            if(row==preferences_.sortMode)DrawText(renderer_,"*",838,y+10,2,ink);
+        }
+        DrawText(renderer_,"A  APPLY     B  CANCEL",430,555,2,ink);
     }
     void DrawFooter(Color accent) {
         const bool glass = preferences_.skin == 1;
@@ -5236,7 +5310,6 @@ private:
             DrawText(renderer_,hint.action,hint.stacked ? hint.x : hint.x+hint.buttonWidth+hint.gap,
                      hint.stacked ? (glass ? 663 : 657) : y,2,ink);
         }
-        DrawText(renderer_,"HOME",1148,glass ? 653 : 648,2,glass ? Color{68,78,87,255} : accent);
     }
     void DrawPanelBase(Color accent, int x, int width, float progress) {
         if (preferences_.skin == 1) {
@@ -5472,6 +5545,7 @@ private:
             drawRow(9,"GAMEPLAY PREVIEWS",OnOff(preferences_.usePreviews));
             drawRow(10,"PRELOAD BUILT-IN COVERS",OnOff(preferences_.preloadBuiltInCovers));
             drawRow(11,"STARTUP VIDEO",OnOff(preferences_.startupVideo));
+            drawRow(12,"SORT BY",LibrarySort::Name(preferences_.sortMode));
         }else if(audioSettings_){
             drawRow(0,"MENU MUSIC",OnOff(preferences_.musicEnabled));
             drawRow(1,"TRACK",preferences_.musicTrack.empty()?"NO TRACK":preferences_.musicTrack);
@@ -5486,8 +5560,8 @@ private:
             const Color controlMuted=glass?Color{65,79,90,255}:Color{130,147,171,255};
             DrawText(renderer_,bindingCapture_>=0?"PRESS A BUTTON":"CONTROLLER BINDINGS",contentX,205,3,controlText);
             for(int row=0;row<=static_cast<int>(ControlAction::Count);++row){
-                const int y=238+row*29; const bool selected=row==settingsRow_&&!settingsSidebar_;
-                if(selected) FillRoundedRect(renderer_,{contentX-12,y-4,750,27},9,{accent.r,accent.g,accent.b,65});
+                const int y=238+row*26; const bool selected=row==settingsRow_&&!settingsSidebar_;
+                if(selected) FillRoundedRect(renderer_,{contentX-12,y-4,750,25},9,{accent.r,accent.g,accent.b,65});
                 if(row==static_cast<int>(ControlAction::Count)) DrawText(renderer_,"RESET DEFAULTS",contentX,y,2,selected?controlText:controlMuted);
                 else { DrawText(renderer_,ControlActionName(static_cast<ControlAction>(row)),contentX,y,2,selected?controlText:controlMuted);
                     DrawText(renderer_,bindingCapture_==row?"LISTENING...":ControlBindingName(preferences_.bindings[row]),contentX+620,y,2,selected?accent:controlMuted,true); }
@@ -5499,7 +5573,7 @@ private:
         DrawSettingsActions(contentX,accent,{"SECTIONS","PREVIOUS","NEXT",settingsEditing_?"B  DONE":"B  BACK"});
         const char *footerHelp = settingsCategory_==4 ?
             (bindingCapture_>=0 ? "PRESS A BUTTON TO BIND    HOME STAYS SYSTEM-OWNED" : "A  CHANGE BINDING    RESET DEFAULTS AVAILABLE") :
-            (settingsCategory_==3 ? (settingsRow_>=10?"CHANGE APPLIES NEXT LAUNCH":"UP/DOWN  MORE DISPLAY OPTIONS") :
+            (settingsCategory_==3 ? ((settingsRow_==10 || settingsRow_==11)?"CHANGE APPLIES NEXT LAUNCH":"UP/DOWN  MORE DISPLAY OPTIONS") :
              settingsEditing_ ? "UP/DOWN  NEXT ROW    A / B  DONE" : "A  SELECT / EDIT");
         DrawText(renderer_,footerHelp,contentX,564,1,help);
     }
@@ -5815,6 +5889,10 @@ private:
     Uint32 startupRequestAt_=0,startupVideoAt_=0,startupFadeAt_=0;
     bool preparationLogoTried_=false;
     UserSettings preferences_;
+    static constexpr const char *kHistoryPath="fs:/vol/external01/wiiu/apps/uFlow/play_history.cfg";
+    LibrarySort::History history_;
+    bool sortOpen_=false;
+    int sortChoice_=0;
     bool welcomeOpen_=false;
     std::vector<std::string> libraryTabs_{kFavoritesLibraryId};
     struct FooterHint {
@@ -5823,7 +5901,7 @@ private:
         int x = 0, width = 0, buttonWidth = 0, gap = 0;
         bool stacked = false;
     };
-    std::array<FooterHint,5> footerHints_{};
+    std::array<FooterHint,6> footerHints_{};
     std::array<std::uint32_t,static_cast<int>(ControlAction::Count)> hintBindings_{};
     int hintSkin_ = -1;
     std::string favoriteHint_, coverInspectHint_;
@@ -6189,6 +6267,14 @@ int main(int, char **) {
             else if(action==-1)updater.Dismiss();
             heldHorizontal=heldVertical=0;touchHeld=false;dashboard.Render(delta);continue;
         }
+        if(dashboard.SortOpen()){
+            int x=-1,y=-1;VPADTouchData point{};
+            if(gamePadReady){VPADGetTPCalibratedPointEx(VPAD_CHAN_0,VPAD_TP_1280X720,&point,&input.tpNormal);
+                if(point.touched&&point.validity==VPAD_VALID&&!launchOptionsTouchHeld){x=point.x;y=point.y;}}
+            launchOptionsTouchHeld=gamePadReady&&point.touched;
+            dashboard.SortInput(popupDirection(input),input.trigger&VPAD_BUTTON_A,input.trigger&VPAD_BUTTON_B,x,y);
+            heldHorizontal=heldVertical=0;touchHeld=false;dashboard.Render(delta);continue;
+        }
         if(dashboard.LaunchOptionsOpen()){
             int x=-1,y=-1;VPADTouchData point{};
             if(gamePadReady){VPADGetTPCalibratedPointEx(VPAD_CHAN_0,VPAD_TP_1280X720,&point,&input.tpNormal);
@@ -6305,10 +6391,10 @@ int main(int, char **) {
                 dashboard.DetailsInput(horizontalEdge?horizontal:0,(verticalEdge||verticalRepeat)?vertical:0,
                     input.trigger&VPAD_BUTTON_A,input.trigger&VPAD_BUTTON_B,input.trigger&VPAD_BUTTON_PLUS);
             }
+            else if(!dashboard.OverlayOpen()&&dashboard.ButtonPressed(ControlAction::Sort,actionTrigger))dashboard.OpenSort();
             else if (input.trigger&VPAD_BUTTON_B) {
                 dashboard.DismissVideo();
                 if(dashboard.OverlayOpen()) dashboard.CloseOverlay();
-                // B is back-only. HOME/system events own exit to Wii U Menu.
             }
             else if(inspectFrontHeld)dashboard.OpenCoverInspect(false);
             else if(inspectBackHeld)dashboard.OpenCoverInspect(true);
@@ -6327,6 +6413,7 @@ int main(int, char **) {
             const bool optionLaunch=dashboard.ConsumeLaunchOption(launchMethod);
             if((dialogLaunch || optionLaunch || (!modalInput&&(dashboard.ConsumeDetailsLaunch() || (libraryInput && !dashboard.OverlayOpen() &&
                 dashboard.ButtonPressed(ControlAction::Launch,actionTrigger))))) && dashboard.Selected()) {
+                const GameEntry historyGame=game;
                 dashboard.DismissVideo();
                 if(!optionLaunch&&!dialogLaunch)dashboard.ClearLaunchOverride(); // plain A uses the default
                 if(!dialogLaunch&&dashboard.GateInjection(game)){dashboard.Render(delta);continue;}
@@ -6377,7 +6464,7 @@ int main(int, char **) {
                                                      launchPlan.arguments.data(),
                                                      static_cast<uint32_t>(launchPlan.arguments.size()));
                     Trace((std::string("retroarch-launch-result ")+RPXLoader_GetStatusStr(result)).c_str());
-                    if(result==RPX_LOADER_RESULT_SUCCESS)launchRequested=true;
+                    if(result==RPX_LOADER_RESULT_SUCCESS){dashboard.RecordPlayed(historyGame);launchRequested=true;}
                     else{UFlowReturn::Clear();dashboard.ApplyMusic();
                          dashboard.SetStatus(std::string("RETROARCH LAUNCH FAILED  ")+RPXLoader_GetStatusStr(result),10000);}
                 } else if(!emulatorPath.empty()) {
@@ -6388,7 +6475,7 @@ int main(int, char **) {
                     dashboard.StopMusic();
                     if(!UFlowReturn::Arm()){if(!romRequest.empty())UFlowRom::Clear(romRequest);dashboard.ApplyMusic();dashboard.SetStatus("CANNOT SAVE RETURN-TO-UFLOW REQUEST",10000);continue;}
                     const auto result=RPXLoader_LaunchPreparedHomebrew();
-                    if(result==RPX_LOADER_RESULT_SUCCESS)launchRequested=true;
+                    if(result==RPX_LOADER_RESULT_SUCCESS){if(!romRequest.empty())dashboard.RecordPlayed(historyGame);launchRequested=true;}
                     else{UFlowReturn::Clear();if(!romRequest.empty())UFlowRom::Clear(romRequest);dashboard.ApplyMusic();dashboard.SetStatus(RPXLoader_GetStatusStr(result),10000);}
                 } else if(game.installed) {
                     dashboard.SetStatus("LAUNCHING "+Ellipsize(game.name,38),10000); dashboard.Render(delta);
@@ -6396,6 +6483,7 @@ int main(int, char **) {
                     if(launchPath.rfind("fs:",0)==0)launchPath.erase(0,3);
                     dashboard.StopMusic();
                     if(!UFlowReturn::Arm()){dashboard.ApplyMusic();dashboard.SetStatus("CANNOT SAVE RETURN-TO-UFLOW REQUEST",10000);continue;}
+                    dashboard.RecordPlayed(historyGame);
                     _SYSLaunchTitleByPathFromLauncher(launchPath.c_str(),static_cast<uint32_t>(launchPath.size()));
                     launchRequested=true;
                 } else if(game.platform==Platform::Wii || game.platform==Platform::GameCube) {
@@ -6414,6 +6502,7 @@ int main(int, char **) {
                     const auto launchError = LaunchWiiGame(request);
                     if (launchError.empty()) {
                         Trace("wii-forwarder-launch-accepted");
+                        dashboard.RecordPlayed(historyGame);
                         launchRequested = true;
                     } else {
                         UFlowReturn::Clear();
@@ -6443,7 +6532,7 @@ int main(int, char **) {
                         dashboard.StopMusic();
                         if(!UFlowReturn::Arm()){dashboard.ApplyMusic();dashboard.SetStatus("CANNOT SAVE RETURN-TO-UFLOW REQUEST",10000);continue;}
                         const auto launchError = LaunchWiiGame(request);
-                        if (launchError.empty()) { Trace("wii-vc-injection-launch-accepted"); launchRequested = true; }
+                        if (launchError.empty()) { Trace("wii-vc-injection-launch-accepted"); dashboard.RecordPlayed(historyGame); launchRequested = true; }
                         else { UFlowReturn::Clear(); Trace(("wii-vc-launch-failed " + launchError).c_str()); dashboard.ApplyMusic(); dashboard.SetStatus(launchError, 10000); }
                         continue;
                     }
@@ -6471,7 +6560,7 @@ int main(int, char **) {
                     const RPXLoaderStatus result=launchLoose(game.rpxRelative.c_str(),game.contentRelative.c_str(),game.codeRelative.c_str(),
                             game.saveRelative.c_str(),game.name.c_str(),game.name.c_str(),game.publisher.c_str());
                     Trace((std::string("raw-launch-result ")+RPXLoader_GetStatusStr(result)).c_str());
-                    if(result==RPX_LOADER_RESULT_SUCCESS)launchRequested=true;
+                    if(result==RPX_LOADER_RESULT_SUCCESS){dashboard.RecordPlayed(historyGame);launchRequested=true;}
                     else { UFlowReturn::Clear();dashboard.ApplyMusic(); dashboard.SetStatus(std::string("LAUNCH FAILED  ")+RPXLoader_GetStatusStr(result),10000); }
                 }
             }
@@ -6545,6 +6634,7 @@ int main(int argc, char **argv) {
       if(std::string(argv[1])=="scanchecks")ok=dashboard.CheckScanDialog(argv[2]);
       else if(std::string(argv[1])=="asyncbrowserchecks")ok=dashboard.CheckAsyncBrowser(argv[2]);
       else if(std::string(argv[1])=="asyncartworkchecks")ok=dashboard.CheckAsyncArtwork(argv[2]);
+      else if(std::string(argv[1])=="sortingchecks")ok=dashboard.CheckSorting(argv[2]);
       else if(std::string(argv[1])=="wrapdisplaychecks")ok=dashboard.CheckWrapDisplay(argv[2]);
       else if(std::string(argv[1])=="startupanimationchecks")ok=dashboard.CheckStartupAnimation(argv[2]);
       else if(std::string(argv[1])=="iconpreparationchecks")ok=dashboard.CheckIconPreparation(argv[2]);

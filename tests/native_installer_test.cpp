@@ -14,7 +14,7 @@ int main(int argc,char **argv){
         std::vector<std::string> dirs;
         bool found=false;
         for(const auto &[name,body]:Configs(bits,dirs)) if(name=="uflow.cfg") {
-            found=true;assert(body.find("preload_builtin_covers=1\n")!=std::string::npos);
+            found=true;assert(body.find("sort_mode=0\n")!=std::string::npos);assert(body.find("preload_builtin_covers=1\n")!=std::string::npos);
             assert(body.find("startup_video=1\n")!=std::string::npos);
         }
         assert(found);
@@ -60,6 +60,7 @@ int main(int argc,char **argv){
     const std::string existing=sd+"/wiiu/environments/aroma/modules/RPXLoadingModule.wms";
     Put(existing,"original");Put(sd+"/games/keep.sav","save");Put(sd+"/wiiu/apps/uFlow/libraries.cfg","custom");
     Put(sd+"/"+regionPlugin,"stock region plugin");Put(sd+"/"+regionConfig,"saved user region choices");
+    Put(sd+"/wiiu/apps/uFlow/play_history.cfg","preserve play history");
     auto full=Prepare(sd,bundle,defs,All,{});assert(full.preserved==1);assert(!fs::exists(sd+"/.uflow-setup"));
     auto report=Install(sd,bundle,full,"test",{});assert(File(report));
     assert(HashFile(sd+"/games/keep.sav",{},"")==Hash("save"));
@@ -73,14 +74,15 @@ int main(int argc,char **argv){
     assert(HashFile(sd+"/.uflow-setup/test/backup/wiiu/environments/aroma/modules/RPXLoadingModule.wms",{},"")==Hash("original"));
     assert(Prepare(sd,bundle,defs,All,{}).bytes==0);
     Put(sd+"/"+dsCover,"user custom sleeve");
+    assert(HashFile(sd+"/wiiu/apps/uFlow/play_history.cfg",{},"")==Hash("preserve play history"));
     auto preserved=Prepare(sd,bundle,defs,All,{});assert(preserved.bytes==0&&preserved.preserved==2);
     assert(HashFile(sd+"/"+dsCover,{},"")==Hash("user custom sleeve"));
     auto fresh=root+"/fresh";Aroma(fresh);
     auto minimal=Prepare(fresh,bundle,defs,0,{});assert(minimal.items.size()==5&&minimal.dirs.empty());
     Install(fresh,bundle,minimal,"minimal",{});assert(Size(fresh+"/wiiu/apps/uFlow/libraries.cfg")==0);
-    Put(fresh+"/wiiu/apps/uFlow/uflow.cfg","preload_builtin_covers=0\nstartup_video=0\n");
+    Put(fresh+"/wiiu/apps/uFlow/uflow.cfg","sort_mode=2\npreload_builtin_covers=0\nstartup_video=0\n");
     Install(fresh,bundle,Prepare(fresh,bundle,defs,0,{}),"preload-preserved",{});
-    assert(HashFile(fresh+"/wiiu/apps/uFlow/uflow.cfg",{},"")==Hash("preload_builtin_covers=0\nstartup_video=0\n"));
+    assert(HashFile(fresh+"/wiiu/apps/uFlow/uflow.cfg",{},"")==Hash("sort_mode=2\npreload_builtin_covers=0\nstartup_video=0\n"));
     assert(!File(fresh+"/apps/nintendont/boot.dol"));
     assert(!File(fresh+"/"+regionPlugin));
     assert(!File(fresh+"/"+ftpPlugin));

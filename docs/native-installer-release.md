@@ -1,5 +1,21 @@
 # Native installer release workflow
 
+Library sorting (2026-09-26): B opens the sort picker in the library; the new
+SORT LIBRARY action can be rebound in Controls and resets to B. Existing binding
+indices are unchanged, and the footer follows the assigned button. A/touch
+applies and B cancels. Display / SORT BY provides the same persistent selection:
+title ascending/descending, recently played, year newest/oldest, publisher and
+system. Unknown years/publishers sort last, ties use title and stable identity.
+Sorting changes visible indices only, preserving the selected title and artwork
+cache. Play history is recorded for accepted game launches, keyed to the original
+title/ROM before injection; opening an emulator browser alone is not a play.
+`play_history.cfg` uses atomic replacement and a monotonic sequence independent
+of the console clock. It begins with this version, survives rescans/reinstall,
+and is never bundled. Installer defaults include `sort_mode=0`, preserving user
+settings on reinstall. Run library_sort_test with settings.cpp, `sortingchecks`
+and the standard preview suite, and actual-bundle installer tests. Rebuild the
+app and local installer; upload only the running app.
+
 Angry Birds Trilogy save creation (2026-09-26): live console syslog identifies
 ContentRedirection's FSRemoveWrapper mapping ENOENT for
 `/vol/save/80000007/saves/tmp/fs0.fs` to MEDIA_ERROR, making the game's FS client
@@ -17,6 +33,7 @@ installer but keep it local. Deploy only ContentRedirectionModule.wms to the
 verified SD, fully reboot Aroma, then retest save creation and reopening the
 game. Host success does not establish console success. Never delete game saves
 to work around this missing-file error.
+The user confirmed that Angry Birds passed save creation after this fix.
 
 Startup reveal (2026-09-26): embed the user-supplied `uflow_startup.mp4` as
 `app/content/ui/startup.mp4`, converted to H.264 High Level 3.1, 1280x720,

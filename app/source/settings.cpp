@@ -38,6 +38,7 @@ void SetValue(UserSettings &settings, const std::string &key, int value) {
     else if (key == "animation_speed") settings.animationSpeed = std::clamp(value, 0, 2);
     else if (key == "cover_spacing") settings.coverSpacing = std::clamp(value, 0, 2);
     else if (key == "cover_layout") settings.coverLayout = std::clamp(value, 0, 3);
+    else if (key == "sort_mode") settings.sortMode = std::clamp(value, 0, 6);
     else if (key == "skin") settings.skin = std::clamp(value, 0, 1);
     else if (key == "welcome_dismissed") settings.welcomeDismissed = enabled;
     else if (key == "theme") settings.theme = std::clamp(value, 0, 3);
@@ -106,6 +107,7 @@ void SaveSettings(const UserSettings &settings) {
     output << "animation_speed=" << settings.animationSpeed << '\n';
     output << "cover_spacing=" << settings.coverSpacing << '\n';
     output << "cover_layout=" << settings.coverLayout << '\n';
+    output << "sort_mode=" << settings.sortMode << '\n';
     output << "skin=" << settings.skin << '\n';
     output << "welcome_dismissed=" << settings.welcomeDismissed << '\n';
     output << "theme=" << settings.theme << '\n';
@@ -139,7 +141,7 @@ bool SetStartOnBoot(bool enabled) {
 const char *ControlActionName(ControlAction action) {
     static constexpr const char *names[] = {"LAUNCH GAME", "TITLE DETAILS", "FAVORITE", "OPEN SETTINGS",
         "PREVIOUS LIBRARY", "NEXT LIBRARY", "PAGE BACK", "PAGE FORWARD", "ZOOM FRONT COVER", "ZOOM BACK COVER",
-        "LAUNCH OPTIONS"};
+        "LAUNCH OPTIONS", "SORT LIBRARY"};
     const int index = static_cast<int>(action);
     return index >= 0 && index < static_cast<int>(ControlAction::Count) ? names[index] : "UNKNOWN";
 }
@@ -157,6 +159,6 @@ const char *ControlBindingName(std::uint32_t button) {
 }
 
 void ResetControlBindings(UserSettings &settings) {
-    const std::uint32_t defaults[] = {0x8000,0x1000,0x2000,0x0008,0x0020,0x0010,0x0080,0x0040,0x0200,0x0100,0x0004};
+    const std::uint32_t defaults[] = {0x8000,0x1000,0x2000,0x0008,0x0020,0x0010,0x0080,0x0040,0x0200,0x0100,0x0004,0x4000};
     for (int index=0;index<static_cast<int>(ControlAction::Count);++index) settings.bindings[index]=defaults[index];
 }
