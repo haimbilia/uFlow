@@ -1,5 +1,19 @@
 # Native installer release workflow
 
+Resident built-in covers (2026-09-26): prepare SD-cached native icons before
+browsing and retain them in a separate, non-evicting 96 MiB texture pool (up to
+2,048 unique paths). The user's 1,338 128x128 icons require about 84 MiB. Large
+scanned artwork still uses the ordinary 48 MiB/128-entry LRU; it cannot evict
+resident icons. Preparation shows progress and B skips the wait while loading
+continues in the background. This happens on launch and after a rescan; no new
+scan/cache format or settings migration is needed. Failed icons complete without
+stalling; icons exceeding the resident budget retain ordinary on-demand behavior.
+Renderer work stays on the UI thread and preparation continues pumping system
+events. Run `asyncartworkchecks` for >128 resident icons, scanned-art eviction,
+reverse traversal, duplicates, missing files, reset and the 96 MiB boundary.
+Rebuild/sync/test the native installer locally; deploy only the running app.
+Hardware startup time, memory use and fast scrolling remain to be retested.
+
 Built-in USB icon caching (2026-09-26): library cache version 6 forces a
 one-time rescan. Discovery copies supported `meta/iconTex.tga` artwork to the
 SD `cache/icons` tree before publishing the library; source identity, size and

@@ -69,6 +69,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #ifdef UFLOW_HOST_PREVIEW
@@ -1038,16 +1039,32 @@ public:
     }
     ~TextureCache() { worker_.reset(); Clear(); }
     void BeginFrame() { pending_.clear(); }
-    std::size_t Count() const { return textures_.size(); }
-    std::size_t Bytes() const { return bytes_; }
+    std::size_t Count() const { return textures_.size()+resident_.size(); }
+    std::size_t Bytes() const { return bytes_+residentBytes_; }
     std::size_t Pending() const { return pending_.size(); }
-    bool Known(const std::string &path) const { return path.empty() || textures_.contains(path); }
+    std::size_t ResidentCount() const { return resident_.size(); }
+    std::size_t ResidentBytes() const { return residentBytes_; }
+    // Native icons have their own budget: large scanned covers must not evict them.
+    // Preparation is asynchronous, including when the user skips its progress screen.
+    void PrepareIcons(const std::vector<std::string> &paths) {
+        if (!worker_ || !worker_->Available()) return;
+        for (const auto &path:paths) {
+            if (warmPaths_.size()>=2048) break;
+            if (!path.empty() && !Known(path) && warming_.insert(path).second) warmPaths_.push_back(path);
+        }
+    }
+    std::size_t IconsTotal() const { return warmPaths_.size(); }
+    std::size_t IconsDone() const { return warmPaths_.size()-warming_.size(); }
+    bool PreparingIcons() const { return !warming_.empty(); }
+    bool Known(const std::string &path) const { return path.empty() || resident_.contains(path) || textures_.contains(path); }
     bool HasTexture(const std::string &path) const {
+        if (const auto found=resident_.find(path); found!=resident_.end()) return found->second.texture;
         const auto found = textures_.find(path);
         return found != textures_.end() && found->second.info.texture;
     }
     TextureInfo Get(const std::string &path) {
         if (path.empty()) return {};
+        if (const auto found=resident_.find(path); found!=resident_.end()) return found->second;
         if (const auto found = textures_.find(path); found != textures_.end()) {
             found->second.lastUse = SDL_GetTicks();
             return found->second.info;
@@ -1057,17 +1074,20 @@ public:
         return {};
     }
     void Prefetch(const std::string &path) {
-        if (path.empty() || textures_.contains(path)) return;
+        if (Known(path)) return;
         if (!worker_) Load(path); else Queue(path);
     }
     void PumpOne() {
         if (!worker_) return;
+        while (warmCursor_<warmPaths_.size() && !warming_.contains(warmPaths_[warmCursor_])) ++warmCursor_;
+        for (std::size_t i=warmCursor_;i<warmPaths_.size() && pending_.size()<ArtworkWorker::Capacity;++i)
+            if (warming_.contains(warmPaths_[i])) Queue(warmPaths_[i]);
         worker_->Request(pending_);
         const auto start=SDL_GetTicks();
         for(unsigned uploaded=0;uploaded<ArtworkWorker::ReadyCapacity;++uploaded) {
             auto ready = worker_->Take();
             if(!ready.available) break;
-            if (!textures_.contains(ready.path)) Upload(ready.path, ready.surface);
+            if (!Known(ready.path)) Upload(ready.path, ready.surface);
             else if (ready.surface) SDL_FreeSurface(ready.surface);
             if(SDL_GetTicks()-start>=3) break;
         }
@@ -1076,12 +1096,16 @@ public:
         if (worker_) worker_->Reset();
         for (auto &[unused, cached] : textures_) if (cached.info.texture) SDL_DestroyTexture(cached.info.texture);
         textures_.clear();
+        for (auto &[unused, info]:resident_) if(info.texture) SDL_DestroyTexture(info.texture);
+        resident_.clear(); residentBytes_=0;
+        warmPaths_.clear(); warming_.clear(); warmCursor_=0;
         pending_.clear();
         bytes_ = 0;
     }
 private:
     static constexpr std::size_t kMaxEntries = 128;
     static constexpr std::size_t kMaxBytes = 48 * 1024 * 1024;
+    static constexpr std::size_t kResidentBytes = 96 * 1024 * 1024;
 
     void Queue(const std::string &path) {
         if (std::find(pending_.begin(), pending_.end(), path) != pending_.end()) return;
@@ -1117,20 +1141,25 @@ private:
     TextureInfo Upload(const std::string &path, SDL_Surface *surface) {
         TextureInfo result;
         std::size_t bytes = 0;
+        const bool preparing=warming_.erase(path)!=0;
+        // A bounded native icon can stay resident, including a known decode failure.
+        const bool retain=preparing && (!surface || (surface->w<=512 && surface->h<=512 &&
+            residentBytes_+std::size_t(surface->w)*surface->h*4<=kResidentBytes));
         if (surface) {
             result.width = surface->w; result.height = surface->h;
             bytes = static_cast<std::size_t>(result.width) * static_cast<std::size_t>(result.height) * 4;
-            MakeRoom(bytes);
-            result.texture = bytes <= kMaxBytes ? SDL_CreateTextureFromSurface(renderer_, surface) : nullptr;
+            if (!retain) MakeRoom(bytes);
+            result.texture = bytes <= (retain?kResidentBytes:kMaxBytes) ? SDL_CreateTextureFromSurface(renderer_, surface) : nullptr;
             if (result.texture) {
                 SDL_SetTextureBlendMode(result.texture, SDL_BLENDMODE_BLEND);
                 SDL_SetTextureScaleMode(result.texture, SDL_ScaleModeLinear);
-                bytes_ += bytes;
+                if (retain) residentBytes_+=bytes; else bytes_ += bytes;
             } else {
                 bytes = 0;
             }
             SDL_FreeSurface(surface);
         }
+        if (retain) { resident_[path]=result; return result; }
         MakeRoom(0);
         textures_[path] = {result, SDL_GetTicks(), bytes};
         return result;
@@ -1138,6 +1167,10 @@ private:
     SDL_Renderer *renderer_;
     std::unique_ptr<ArtworkWorker> worker_;
     std::unordered_map<std::string, CachedTexture> textures_;
+    std::unordered_map<std::string, TextureInfo> resident_;
+    std::vector<std::string> warmPaths_;
+    std::unordered_set<std::string> warming_;
+    std::size_t residentBytes_=0,warmCursor_=0;
     std::vector<std::string> pending_;
     std::size_t bytes_ = 0;
 };
@@ -1193,6 +1226,7 @@ public:
         tab_ = std::clamp(tab_, 0, std::max(0, initialTabCount - 1));
         visualTab_ = static_cast<float>(tab_);
         RebuildVisible();
+        PrepareBuiltInIcons();
 #ifndef UFLOW_HOST_PREVIEW
         musicTracks_=ListMusicTracks();
         ApplyMusic();
@@ -1220,7 +1254,18 @@ public:
         coverInspectOpen_ = coverInspectBack_ = false;
         coverInspectProgress_ = coverInspectBackProgress_ = 0.f;
         textures_.Clear(); games_ = std::move(games); selected_ = 0; visualSelected_ = 0.0f; RebuildVisible();
+        PrepareBuiltInIcons();
     }
+    void PrepareBuiltInIcons() {
+        std::vector<std::string> paths;
+        for (const auto &game:games_) if (game.fullCoverPath.empty() &&
+            (game.coverPath.find("/cache/icons/")!=std::string::npos ||
+             game.coverPath.find("/cache/rom-art/")!=std::string::npos)) paths.push_back(game.coverPath);
+        textures_.PrepareIcons(paths);
+        iconPreparationSkipped_=false;
+    }
+    bool PreparingIcons() const { return !iconPreparationSkipped_ && textures_.PreparingIcons(); }
+    void SkipIconPreparation() { iconPreparationSkipped_=true; }
     // Reversible fixtures: never scan, launch, or save settings while previewing.
     bool VisualPreview(const std::string &screen) {
         welcomeOpen_=false;
@@ -1326,13 +1371,15 @@ public:
         // On-demand CPU allocator statistics, NOT total RAM or free GPU memory.
         // No disk writes/readback; fixed counters cannot grow during idle.
         const auto heap = mallinfo();
-        char result[512];
+        char result[640];
         std::snprintf(result,sizeof(result),
             "{\"uptime_ms\":%u,\"malloc_used_bytes\":%u,\"malloc_free_bytes\":%u,"
             "\"side_cases\":%zu,\"artwork_entries\":%zu,\"artwork_bytes\":%zu,\"artwork_pending\":%zu,\"text_entries\":%zu,"
+            "\"resident_icons\":%zu,\"resident_icon_bytes\":%zu,\"icons_prepared\":%zu,\"icons_total\":%zu,"
             "\"frames\":%u,\"render_mean_ms\":%.3f,\"render_max_ms\":%.3f}",
             SDL_GetTicks(),static_cast<unsigned>(heap.uordblks),static_cast<unsigned>(heap.fordblks),
-            sideCases_.size(),textures_.Count(),textures_.Bytes(),textures_.Pending(),gSmoothTextCache.size(),performanceFrames_,
+            sideCases_.size(),textures_.Count(),textures_.Bytes(),textures_.Pending(),gSmoothTextCache.size(),
+            textures_.ResidentCount(),textures_.ResidentBytes(),textures_.IconsDone(),textures_.IconsTotal(),performanceFrames_,
             performanceFrames_ ? performanceTotalMs_/performanceFrames_ : 0.,performanceMaxMs_);
         performanceFrames_=0; performanceTotalMs_=0; performanceMaxMs_=0;
         return result;
@@ -1406,7 +1453,54 @@ public:
         if (cache.Count()!=count || cache.Pending()!=0) return false;
         cache.Clear();
         if (cache.Count() || cache.Bytes()) return false;
-        SDL_Log("Async texture cache PASS: actual PNG decode, main-thread upload, cached hits, reset");
+        std::vector<std::string> icons;
+        for(int i=0;i<150;++i) {
+            const auto icon=output+"-resident-"+std::to_string(i)+".png";
+            if(!png_image_write_to_file(&image,icon.c_str(),0,pixels.data(),0,nullptr)) return false;
+            icons.push_back(icon);
+        }
+        icons.push_back(output+"-missing-icon.png");
+        icons.push_back(icons.front()); // duplicate games share one resident texture
+        cache.PrepareIcons(icons);
+        const auto warmDeadline=SDL_GetTicks()+10000;
+        while(cache.PreparingIcons() && !SDL_TICKS_PASSED(SDL_GetTicks(),warmDeadline)) {
+            cache.BeginFrame(); cache.PumpOne(); SDL_Delay(1);
+        }
+        if(cache.PreparingIcons() || cache.IconsTotal()!=151 || cache.ResidentCount()!=151 ||
+           cache.ResidentBytes()!=150*8*8*4 || cache.HasTexture(icons[150]) || !cache.Known(icons[150])) return false;
+        // Scanned art churns the ordinary 128-entry cache; native fronts must survive.
+        for(int i=0;i<150;++i) {
+            const auto scan=output+"-scan-"+std::to_string(i)+".png";
+            if(!png_image_write_to_file(&image,scan.c_str(),0,pixels.data(),0,nullptr)) return false;
+            const auto until=SDL_GetTicks()+3000;
+            while(!cache.Known(scan) && !SDL_TICKS_PASSED(SDL_GetTicks(),until)) {
+                cache.BeginFrame();cache.Prefetch(scan);cache.PumpOne();SDL_Delay(1);
+            }
+            if(!cache.HasTexture(scan)) return false;
+        }
+        for(int i=149;i>=0;--i) if(!cache.Get(icons[i]).texture) return false;
+        if(cache.Count()>151+128 || cache.ResidentCount()!=151) return false;
+        cache.Clear();
+        if(cache.Count() || cache.Bytes() || cache.PreparingIcons() || cache.IconsTotal()) return false;
+        // Large or unexpected native icons must not grow the resident pool without limit.
+        image.width=image.height=512;
+        std::vector<unsigned char> largePixels(512*512*4,255);
+        icons.clear();
+        for(int i=0;i<97;++i) {
+            const auto icon=output+"-large-icon-"+std::to_string(i)+".png";
+            if(!png_image_write_to_file(&image,icon.c_str(),0,largePixels.data(),0,nullptr)) return false;
+            icons.push_back(icon);
+        }
+        cache.PrepareIcons(icons);
+        const auto budgetDeadline=SDL_GetTicks()+15000;
+        while(cache.PreparingIcons() && !SDL_TICKS_PASSED(SDL_GetTicks(),budgetDeadline)) {
+            cache.BeginFrame();cache.PumpOne();SDL_Delay(1);
+        }
+        if(cache.PreparingIcons() || cache.ResidentCount()!=96 || cache.ResidentBytes()!=96*1024*1024 ||
+           !cache.HasTexture(icons.back())) return false;
+        cache.Clear();
+        if(cache.Bytes() || cache.Count()) return false;
+        SDL_Log("Async texture cache PASS: decode/upload, 150 resident icons survive scanned-art eviction and reverse browsing, duplicate/failure completion, reset");
         return true;
     }
     bool CheckArtworkPolish(const std::string &output) {
@@ -3840,6 +3934,26 @@ public:
         textures_.BeginFrame();
         PumpBrowser();
         PollScan();
+        if (PreparingIcons() && !scanOpen_) {
+            // A cheap preparation frame lets decoding run without competing with
+            // animated case rendering. Events/HOME still pump in the normal loop.
+            SDL_SetRenderTarget(renderer_,nullptr);
+            SetColor(renderer_,{12,20,32,255}); SDL_RenderClear(renderer_);
+            DrawText(renderer_,"PREPARING BUILT-IN COVERS",640,280,3,{235,241,250,255},true);
+            DrawText(renderer_,std::to_string(textures_.IconsDone())+" / "+std::to_string(textures_.IconsTotal()),
+                     640,340,2,{160,195,220,255},true);
+            FillRoundedRect(renderer_,{340,395,600,8},4,{35,50,65,255});
+            const int width=static_cast<int>(600*textures_.IconsDone()/std::max<std::size_t>(1,textures_.IconsTotal()));
+            if(width) FillRoundedRect(renderer_,{340,395,width,8},4,{70,190,235,255});
+            DrawText(renderer_,"B  CONTINUE WHILE COVERS LOAD",640,455,1,{180,195,210,255},true);
+            const bool captured=capturePath.empty() || SaveVisualFrame(renderer_,capturePath);
+            SDL_RenderPresent(renderer_);
+#ifndef UFLOW_HOST_PREVIEW
+            GX2WaitForFlip();
+#endif
+            textures_.PumpOne();
+            return captured;
+        }
         if (preview_) deltaSeconds = 0; // deterministic transition samples, not performance measurements
         gSmoothText = preferences_.skin == 1;
         gGlassOverVideo=false;
@@ -5474,6 +5588,7 @@ private:
     SDL_Renderer *renderer_;
     std::vector<GameEntry> &games_;
     TextureCache textures_;
+    bool iconPreparationSkipped_=false;
     UserSettings preferences_;
     bool welcomeOpen_=false;
     std::vector<std::string> libraryTabs_{kFavoritesLibraryId};
@@ -5831,6 +5946,11 @@ int main(int, char **) {
             if(input.trigger&VPAD_BUTTON_B)dashboard.CancelScan();
             dashboard.ScanInput((input.trigger&(VPAD_BUTTON_A|VPAD_BUTTON_B)) || tapped);
             heldHorizontal=heldVertical=0;dashboard.Render(delta);continue;
+        }
+        if(dashboard.PreparingIcons()) {
+            if(input.trigger&VPAD_BUTTON_B) dashboard.SkipIconPreparation();
+            heldHorizontal=heldVertical=heldPage=0; touchHeld=false;
+            dashboard.Render(delta);continue;
         }
         if(dashboard.UpdateOpen()){
             int x=-1,y=-1;VPADTouchData point{};
