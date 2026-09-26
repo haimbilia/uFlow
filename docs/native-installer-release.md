@@ -1,5 +1,16 @@
 # Native installer release workflow
 
+Built-in USB icon caching (2026-09-26): library cache version 6 forces a
+one-time rescan. Discovery copies supported `meta/iconTex.tga` artwork to the
+SD `cache/icons` tree before publishing the library; source identity, size and
+modification time select a cache entry, with 256 directory shards. Scrolling
+then uses the SD path instead of resolving each USB game directory. Custom
+covers retain precedence. Invalid/truncated icons or failed cache writes fall
+back to the source without modifying game files. `builtin_icon_cache_test.cpp`
+covers reuse, corruption, source isolation and write failure. Keep the rebuilt
+native installer local for this update, per the user's deployment preference;
+deploy only the app. Hardware scrolling performance is pending retest.
+
 Artwork scrolling (2026-09-26): preload fronts for the animated on-screen
 position first, then built-in icons up to 24 titles either side of the selected title before
 background/back/spine work. The texture cache retains up to 128 entries with

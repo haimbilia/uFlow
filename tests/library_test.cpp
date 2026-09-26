@@ -58,10 +58,24 @@ int main() {
     // Old catalogs retained folder names for Japan-only titles forever.
     {
         std::fstream old(root+"/wiiu/apps/uFlow/cache/library-v1.bin",std::ios::in|std::ios::out|std::ios::binary);
-        const std::uint32_t version=4;old.seekp(4);old.write(reinterpret_cast<const char *>(&version),sizeof(version));
+        const std::uint32_t version=5;old.seekp(4);old.write(reinterpret_cast<const char *>(&version),sizeof(version));
     }
     assert(!LoadLibraryCache(cached));
     assert(SaveLibraryCache(scan.games)&&LoadLibraryCache(cached));
+    {
+        const auto icon=library+"/extras/update/meta/iconTex.tga";
+        std::string pixels(18+128*128*4,'\0');pixels[2]=2;pixels[12]=128;pixels[14]=128;pixels[16]=32;
+        Write(icon,pixels);
+        const auto iconScan=ScanLibrary();
+        assert(iconScan.games.size()==1);
+        const auto localIcon=iconScan.games[0].coverPath;
+        assert(localIcon.starts_with(root+"/wiiu/apps/uFlow/cache/icons/") && fs::file_size(localIcon)==pixels.size());
+        assert(SaveLibraryCache(iconScan.games) && LoadLibraryCache(cached) && cached[0].coverPath==localIcon);
+        Write(base+"/cover.png","custom cover");
+        assert(ScanLibrary().games[0].coverPath==base+"/cover.png");
+        fs::remove(base+"/cover.png");Write(icon,"icon-fixture");
+        std::cout<<"PASS: discovered metadata icon cached on SD, catalog reload retains local path, custom cover wins\n";
+    }
     const std::string japanese="\xE3\x82\xBC\xE3\x83\xAB\xE3\x83\x80";
     Write(base+"/meta/meta.xml","<menu><longname_en> </longname_en><longname_ja>"+japanese+"\n Title</longname_ja><publisher_ja>Publisher</publisher_ja></menu>");
     auto multilingual=ScanLibrary();

@@ -6,6 +6,7 @@
 #include "saved_file.hpp"
 #include "vc_package.hpp"
 #include "text_utf8.hpp"
+#include "builtin_icon_cache.hpp"
 
 #include <coreinit/mcp.h>
 #include <dirent.h>
@@ -36,7 +37,7 @@ constexpr const char *kSourcesFile = "fs:/vol/external01/wiiu/apps/uFlow/content
 constexpr const char *kLibrariesFile = "fs:/vol/external01/wiiu/apps/uFlow/libraries.cfg";
 constexpr const char *kLibraryCacheFile = "fs:/vol/external01/wiiu/apps/uFlow/cache/library-v1.bin";
 constexpr std::uint32_t kLibraryCacheMagic = 0x55464C43; // UFLC
-constexpr std::uint32_t kLibraryCacheVersion = 5; // Refresh names for multilingual metadata fallback.
+constexpr std::uint32_t kLibraryCacheVersion = 6; // Cache raw USB built-in icons on SD during discovery.
 constexpr std::uint32_t kLibraryCacheMaxEntries = 8192;
 constexpr std::uint32_t kLibraryCacheMaxString = 256 * 1024;
 constexpr std::size_t kLibraryCacheMaxBytes = 32 * 1024 * 1024;
@@ -59,17 +60,8 @@ bool EnsureDirectory(const std::string &path) {
 }
 
 std::string CacheInstalledIcon(const std::string &sourcePath, const std::string &titleId) {
-    const std::string directory = std::string(kAppDirectory) + "/cache/icons";
-    if (!EnsureDirectory(directory)) return {};
-    const std::string destination = directory + "/" + titleId + ".tga";
-    if (IsFile(destination)) return destination;
-    std::ifstream input(sourcePath, std::ios::binary);
-    if (!input) return {};
-    std::ofstream output(destination, std::ios::binary | std::ios::trunc);
-    if (!output) return {};
-    output << input.rdbuf();
-    output.close();
-    return IsFile(destination) ? destination : std::string();
+    (void)titleId;
+    return BuiltinIconCache::Store(sourcePath,kAppDirectory);
 }
 
 std::string ReadTextFile(const std::string &path, std::size_t maximum = 256 * 1024) {
@@ -301,6 +293,10 @@ void ReadWiiUMetadata(GameEntry &game, const std::string &base, const std::strin
     game.name = MetaName(meta);
     game.publisher = MetaText(meta, "publisher");
     game.coverPath = FindCover(base, game.titleId, base + "/meta/iconTex.tga");
+    if(game.coverPath==base+"/meta/iconTex.tga") {
+        const auto cached=BuiltinIconCache::Store(game.coverPath,kAppDirectory);
+        if(!cached.empty()) game.coverPath=cached;
+    }
 }
 
 // Returns true for a title directory, including updates/DLC. Do not descend
