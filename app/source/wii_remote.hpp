@@ -1,3 +1,4 @@
+#include "settings.hpp"
 #pragma once
 #include <array>
 #include <padscore/kpad.h>
@@ -33,6 +34,7 @@ constexpr uint32_t ProControllerButtons(uint32_t buttons) {
         {WPAD_PRO_BUTTON_A, VPAD_BUTTON_A}, {WPAD_PRO_BUTTON_B, VPAD_BUTTON_B},
         {WPAD_PRO_BUTTON_X, VPAD_BUTTON_X}, {WPAD_PRO_BUTTON_Y, VPAD_BUTTON_Y},
         {WPAD_PRO_BUTTON_PLUS, VPAD_BUTTON_PLUS},
+        {WPAD_PRO_BUTTON_STICK_L, VPAD_BUTTON_STICK_L}, {WPAD_PRO_BUTTON_STICK_R, VPAD_BUTTON_STICK_R},
         {WPAD_PRO_TRIGGER_L, VPAD_BUTTON_L}, {WPAD_PRO_TRIGGER_R, VPAD_BUTTON_R},
         {WPAD_PRO_TRIGGER_ZL, VPAD_BUTTON_ZL}, {WPAD_PRO_TRIGGER_ZR, VPAD_BUTTON_ZR},
     };
@@ -79,9 +81,9 @@ public:
             const auto count = KPADReadEx(static_cast<KPADChan>(i), &remote, 1, &error);
             if (count && error == KPAD_ERROR_OK && remote.error == 0) {
                 if (remote.extensionType == WPAD_EXT_PRO_CONTROLLER) {
-                    cached.hold = ProControllerButtons(remote.pro.hold) |
-                        NunchukStick(remote.pro.leftStick.x, remote.pro.leftStick.y, cached.stick);
-                    cached.stick = cached.hold & (VPAD_BUTTON_LEFT | VPAD_BUTTON_RIGHT | VPAD_BUTTON_UP | VPAD_BUTTON_DOWN);
+                    const auto directions=StickButton::Directions(remote.pro.leftStick.x,remote.pro.leftStick.y)|StickButton::RightDirections(remote.pro.rightStick.x,remote.pro.rightStick.y);
+                    input.trigger|=directions&~cached.stick;cached.stick=directions;
+                    cached.hold=ProControllerButtons(remote.pro.hold)|directions;
                     input.trigger |= ProControllerButtons(remote.pro.trigger);
                     cached.updated = ticks;
                     input.hold |= cached.hold;

@@ -50,6 +50,7 @@ public:
             bind(socket_, reinterpret_cast<sockaddr *>(&address), sizeof(address))) Stop();
     }
     ~VisualRemote() { Stop(); }
+    bool Enabled() const { return socket_ >= 0; }
     void Stop() { if (socket_ >= 0) close(socket_); socket_ = -1; }
     std::string Poll() {
         if (socket_ < 0) return {};

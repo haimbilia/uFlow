@@ -10,6 +10,11 @@ int main() {
     using namespace CoverProjection;
     std::array<Vertex,kMaxVertices> vertices;
     std::array<int,kMaxIndices> indices;
+    const std::array<Point,4> nearFace={Point{-200,-100,.2f},Point{1500,50,2.f},Point{1600,1000,2.f},Point{-300,900,.2f}};
+    for(int cap:{1,2,4,8}){int count=0;const auto n=Build(nearFace,0,1,vertices.data(),indices.data(),count,cap);
+        assert(count<=(cap+1)*(cap+1) && n<=6*cap*cap);
+        for(int i=0;i<n;++i)assert(indices[i]>=0 && indices[i]<count);
+    }
     float maxError=0,oldCenterError=0;
     int poses=0;
     for(const char *id: {"wiiu","wii","gc","ds","nes","snes","gba","n64","pce","msx"}) {

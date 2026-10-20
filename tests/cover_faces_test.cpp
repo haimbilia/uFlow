@@ -9,12 +9,25 @@
 namespace fs=std::filesystem;
 int main() {
     using CoverFaces::Face;
+    // Retail SNES front/back and generic sleeve are authored oppositely.
+    for(bool fallback:{false,true})for(auto face:{Face::Front,Face::Back}) {
+        const auto tl=CoverFaces::SidewaysUV(.2f,.8f,0,0,face,fallback);
+        const auto br=CoverFaces::SidewaysUV(.2f,.8f,1,1,face,fallback);
+        const bool cw=(face==Face::Back)!=fallback;
+        assert(std::abs(tl.u-(cw?.2f:.8f))<.00001f && tl.v==(cw?1.f:0.f));
+        assert(std::abs(br.u-(cw?.8f:.2f))<.00001f && br.v==(cw?0.f:1.f));
+    }
+    assert(CoverFaces::TurnSleeve(true,false,true,false,3366,2100));
+    assert(CoverFaces::TurnSleeve(true,false,true,true,1587,991));
+    assert(!CoverFaces::TurnSleeve(true,false,true,true,2172,724));
+    assert(!CoverFaces::TurnSleeve(true,false,false,false,680,498));
+    assert(!CoverFaces::TurnSleeve(false,true,true,false,3366,2100));
     GameEntry g;g.defaultSleevePath="default";
     std::set<std::string> available{"default","front","back","spine","full"};
     auto resolve=[&](Face face){return CoverFaces::Resolve(g,face,.46f,.54f,[&](const auto &p){return available.count(p);});};
-    assert(resolve(Face::Front).path=="default" && resolve(Face::Front).u0==.54f);
+    assert(resolve(Face::Front).path=="default" && resolve(Face::Front).u0==.54f && resolve(Face::Front).sleeve);
     g.coverPath="front";
-    assert(resolve(Face::Front).path=="front" && resolve(Face::Front).u0==0 && resolve(Face::Front).u1==1);
+    assert(resolve(Face::Front).path=="front" && resolve(Face::Front).u0==0 && resolve(Face::Front).u1==1 && !resolve(Face::Front).sleeve);
     assert(resolve(Face::Back).path=="default" && resolve(Face::Back).u1==.46f);
     assert(resolve(Face::Spine).path=="default" && resolve(Face::Spine).u0==.46f && resolve(Face::Spine).u1==.54f);
     g.backCoverPath="back";assert(resolve(Face::Back).path=="back" && resolve(Face::Back).u1==1);
@@ -66,6 +79,16 @@ int main() {
     }
     assert(CaseProfiles::For("custom",{},".gba").height==127);
     assert(CaseProfiles::For("custom","n64-vc").width==178);
+    for(const auto size:{CaseProfiles::For("n64"),CaseProfiles::For("custom","n64-vc"),CaseProfiles::For("custom",{},".v64")}) {
+        assert(size.width==178 && size.height==125 && size.thickness==30);
+        assert(size.sidewaysSleeve && !size.sidewaysDefaultSleeve);
+    }
+    const auto snes=CaseProfiles::For("snes");
+    assert(snes.width==178 && snes.height==125 && snes.thickness==25 && snes.sidewaysSleeve);
+    write(root+"/libraries.cfg","snes\tSNES\tfiles\twiiflow\t.sfc,.smc\t1\t5\tsnes-retroarch\t178\t125\t30\t1\t1\n");
+    const auto migratedSnes=LoadLibraries();
+    assert(migratedSnes.size()==1 && migratedSnes[0].caseWidthMm==178 &&
+           migratedSnes[0].caseHeightMm==125 && migratedSnes[0].caseThicknessMm==25);
     for(const auto size:{CaseProfiles::For("nes"),CaseProfiles::For("custom","nes-vc"),CaseProfiles::For("custom",{},".unif"),CaseProfiles::For("custom",{},".unf"),CaseProfiles::For("custom",{},".nes")}) {
         assert(size.width==130 && size.height==178 && size.thickness==25);
         // Match the user's 3366x2100 sleeve, including its central spine.

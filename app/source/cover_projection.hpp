@@ -34,8 +34,9 @@ inline int Steps(const std::array<Point,4> &p) {
 }
 template<class Vertex>
 inline int Build(const std::array<Point,4> &p, float u0,float u1,
-                 Vertex *vertices,int *indices,int &vertexCount) {
-    const int steps=Steps(p),stride=steps+1;
+                 Vertex *vertices,int *indices,int &vertexCount,int maximumSteps=kMaxSteps) {
+    const int limit=std::clamp(maximumSteps,1,kMaxSteps);
+    const int steps=limit==1?1:std::min(Steps(p),limit),stride=steps+1;
     vertexCount=stride*stride;
     for(int y=0;y<=steps;++y)for(int x=0;x<=steps;++x) {
         const float u=float(x)/steps,v=float(y)/steps;

@@ -14,10 +14,30 @@ int main(int argc,char **argv){
         std::vector<std::string> dirs;
         bool found=false;
         for(const auto &[name,body]:Configs(bits,dirs)) if(name=="uflow.cfg") {
-            found=true;assert(body.find("sort_mode=0\n")!=std::string::npos);assert(body.find("preload_builtin_covers=1\n")!=std::string::npos);
+            found=true;assert(body.find("bind_18=0\n")!=std::string::npos);assert(body.find("inspection_zoom=4\n")!=std::string::npos);assert(body.find("sort_mode=0\n")!=std::string::npos);assert(body.find("preload_builtin_covers=1\n")!=std::string::npos);
             assert(body.find("startup_video=1\n")!=std::string::npos);
+            assert(body.find("background_transparency=50\n")!=std::string::npos);
+            assert(body.find("cover_zoom=120\n")!=std::string::npos);
+            for(const auto *key:{"cover_type=0\n","logo_layout=0\n","media_layout=0\n","thumbnail_layout=0\n","cover_spacing_percent=100\n"})assert(body.find(key)!=std::string::npos);
+            assert(body.find("start_library=__all\n")!=std::string::npos);
+            assert(body.find("demo_mode=0\ndemo_idle_seconds=30\n")!=std::string::npos);
+            assert(body.find("theme=0\n")!=std::string::npos);
+            assert(body.find("auto_sort_installed_vc=0\n")!=std::string::npos);
         }
         assert(found);
+    }
+    {std::vector<std::string> dirs;const auto cfg=Configs(1,dirs);
+     assert(cfg[1].second.find("\twiiu\tnative\t0\n")!=std::string::npos);
+     assert(cfg[2].second.find("media\tid:wiiu\t")!=std::string::npos);
+     assert(std::find(dirs.begin(),dirs.end(),"wiiu/apps/uFlow/media/wiiu/media")!=dirs.end());}
+    for(uint32_t bits:{0u,1u<<TitleInstaller}){
+        std::vector<std::string> dirs;auto cfg=Configs(bits,dirs);
+        for(const auto &[name,body]:cfg){
+            if(name=="libraries.cfg")assert((body.find("Install Content")!=std::string::npos)==bool(bits));
+            if(name=="content_sources.cfg")assert((body.find("fs:/vol/external01/install")!=std::string::npos)==bool(bits));
+            if(name=="uflow.cfg")assert(body.find(std::string("title_installer_enabled=")+(bits?"1":"0"))!=std::string::npos);
+        }
+        assert((std::find(dirs.begin(),dirs.end(),"install")!=dirs.end())==bool(bits));
     }
     assert(Hash("")=="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     assert(Hash("abc")=="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
@@ -35,6 +55,9 @@ int main(int argc,char **argv){
     asset(regionPlugin,1017u,'r');
     const std::string ftpPlugin="wiiu/environments/aroma/plugins/ftpiiu.wps";
     const std::string ftpConfig="wiiu/environments/aroma/plugins/config/ftpiiu.json";
+    const std::string memoryModule="wiiu/environments/aroma/modules/MemoryMappingModule.wms";
+    asset(memoryModule,Core,'r');
+    assert(Allowed(memoryModule));
     asset(ftpPlugin,Core,'r');
     Put(sd+"/"+ftpPlugin,"stock FTP");Put(sd+"/"+ftpConfig,"disabled user FTP settings");
     asset("apps/nintendont/boot.dol",1u<<2,'r');
@@ -78,15 +101,23 @@ int main(int argc,char **argv){
     auto preserved=Prepare(sd,bundle,defs,All,{});assert(preserved.bytes==0&&preserved.preserved==2);
     assert(HashFile(sd+"/"+dsCover,{},"")==Hash("user custom sleeve"));
     auto fresh=root+"/fresh";Aroma(fresh);
-    auto minimal=Prepare(fresh,bundle,defs,0,{});assert(minimal.items.size()==5&&minimal.dirs.empty());
+    auto minimal=Prepare(fresh,bundle,defs,0,{});assert(minimal.items.size()==6&&minimal.dirs.empty());
     Install(fresh,bundle,minimal,"minimal",{});assert(Size(fresh+"/wiiu/apps/uFlow/libraries.cfg")==0);
-    Put(fresh+"/wiiu/apps/uFlow/uflow.cfg","sort_mode=2\npreload_builtin_covers=0\nstartup_video=0\n");
+    Put(fresh+"/wiiu/apps/uFlow/uflow.cfg","demo_mode=1\ndemo_idle_seconds=75\nsort_mode=2\ntheme=12\npreload_builtin_covers=0\nstartup_video=0\nbackground_transparency=65\ncover_zoom=75\nstart_library=ds\nskin=3\ncover_type=3\nthumbnail_layout=1\nlogo_layout=4\nmedia_layout=3\ncover_spacing_percent=135\ncover_layout=9\nbind_18=0\ncombo_18=48\n");
     Install(fresh,bundle,Prepare(fresh,bundle,defs,0,{}),"preload-preserved",{});
-    assert(HashFile(fresh+"/wiiu/apps/uFlow/uflow.cfg",{},"")==Hash("sort_mode=2\npreload_builtin_covers=0\nstartup_video=0\n"));
+    assert(HashFile(fresh+"/wiiu/apps/uFlow/uflow.cfg",{},"")==Hash("demo_mode=1\ndemo_idle_seconds=75\nsort_mode=2\ntheme=12\npreload_builtin_covers=0\nstartup_video=0\nbackground_transparency=65\ncover_zoom=75\nstart_library=ds\nskin=3\ncover_type=3\nthumbnail_layout=1\nlogo_layout=4\nmedia_layout=3\ncover_spacing_percent=135\ncover_layout=9\nbind_18=0\ncombo_18=48\n"));
     assert(!File(fresh+"/apps/nintendont/boot.dol"));
     assert(!File(fresh+"/"+regionPlugin));
     assert(!File(fresh+"/"+ftpPlugin));
     for(int bit=0;bit<ComponentCount;++bit){
+        std::vector<std::string> preloadDirs;
+        for(const auto &[name,body]:Configs(1u<<bit,preloadDirs)) if(name=="uflow.cfg")
+            assert(body.find("preload_builtin_covers=1\n")!=std::string::npos && body.find("background_transparency=50\n")!=std::string::npos && body.find("theme=0\n")!=std::string::npos);
+        for(const auto &[name,body]:Configs(1u<<bit,preloadDirs)) if(name=="media_sources.cfg") {
+            std::istringstream rows(body);std::string row;
+            while(std::getline(rows,row)) if(row.starts_with("previews\t"))
+                assert(row.find("\t1000\t2\t70\t")!=std::string::npos);
+        }
         const auto selected=Prepare(fresh,bundle,defs,1u<<bit,{});
         const bool hasPlugin=std::any_of(selected.items.begin(),selected.items.end(),[&](const auto &i){return i.file.path==regionPlugin;});
         assert(hasPlugin==bool(1017u&(1u<<bit)));
@@ -113,7 +144,7 @@ int main(int argc,char **argv){
         const auto cfg=Configs(1u<<bit,selectedDirs,defs);
         const auto id=std::string(components[bit==10?3:bit].id);
         const auto size=CaseProfiles::For(id);
-        assert(cfg[0].second.find("\t"+std::to_string(size.width)+"\t"+std::to_string(size.height)+"\t"+std::to_string(size.thickness)+"\t1\n")!=std::string::npos);
+        assert(cfg[0].second.find("\t"+std::to_string(size.width)+"\t"+std::to_string(size.height)+"\t"+std::to_string(size.thickness)+"\t1\t0\n")!=std::string::npos);
         for(const auto *part:{"front","back","spine","fullcovers"}) {
             const auto path="wiiu/apps/uFlow/media/"+id+"/"+part;
             assert(std::find(selectedDirs.begin(),selectedDirs.end(),path)!=selectedDirs.end());
@@ -139,7 +170,7 @@ int main(int argc,char **argv){
                Allowed("retroarch/cores/info/pcsx_rearmed_libretro.info"));
         assert(!Allowed("retroarch/retroarch.cfg")&&!Allowed("retroarch/cores/system/scph5501.bin")&&
                !Allowed("retroarch/cores/gambatte_libretro.rpx")&&!Allowed("retroarch/saves/crash.srm"));
-        assert(ComponentCount==17&&std::string(components[PlayStation].id)=="ps1");
+        assert(ComponentCount==18&&std::string(components[PlayStation].id)=="ps1");
         assert(std::string(components[11].id)=="startup"&&std::string(components[12].id)=="vwii-tools");
         // Own bundle: earlier fixture steps deliberately damage the shared one.
         const std::string psBundle=root+"/ps1-bundle";fs::create_directories(psBundle);
@@ -164,7 +195,7 @@ int main(int argc,char **argv){
         auto without=Prepare(psOnly,psBundle,ps1Defs,1u<<4,{});
         assert(!has(without,"wiiu/apps/retroarch.wuhb")&&!has(without,"retroarch/cores/pcsx_rearmed_libretro.rpx"));
         std::vector<std::string> psDirs;auto cfg=Configs(1u<<PlayStation,psDirs);
-        assert(cfg[0].second=="ps1\tPlayStation\tfiles\twiiflow\t.cue,.chd,.pbp\t1\t13\tps1\t142\t125\t10\t1\n");
+        assert(cfg[0].second=="ps1\tPlayStation\tfiles\twiiflow\t.cue,.chd,.pbp\t1\t13\tps1\t142\t125\t10\t1\t0\n");
         assert(cfg[1].second=="files\t1\t3\tfs:/vol/external01/wiiu/roms/ps1\twiiflow\tps1\tps1\n");
         assert(std::find(psDirs.begin(),psDirs.end(),"wiiu/roms/ps1")!=psDirs.end());
         // PS1 together with existing systems.
@@ -178,7 +209,7 @@ int main(int argc,char **argv){
         // libraries (their custom PS1 type) both survive a PS1 install.
         const std::string mine=root+"/ps1-existing";Aroma(mine);
         const std::string theirs="someone else's RetroArch";
-        const std::string library="custom_1\tPS1\tfiles\twiiflow\t.cue\t1\t10\tps1\t142\t125\t10\t1\n";
+        const std::string library="custom_1\tPS1\tfiles\twiiflow\t.cue\t1\t10\tps1\t142\t125\t10\t1\t1\n";
         Put(mine+"/wiiu/apps/retroarch.wuhb",theirs);
         Put(mine+"/wiiu/apps/uFlow/libraries.cfg",library);
         auto keep=Prepare(mine,psBundle,ps1Defs,1u<<PlayStation,{});
@@ -194,13 +225,13 @@ int main(int argc,char **argv){
         struct System {int bit,vcBit;const char *id,*core,*module,*line,*source;};
         const System systems[]={
             {SnesRetroArch,5,"snes-retroarch","snes9x","retroarch-snes",
-             "snes\tSNES\tfiles\twiiflow\t.sfc,.smc\t1\t5\tsnes-retroarch\t178\t125\t30\t1\n",
+             "snes\tSNES\tfiles\twiiflow\t.sfc,.smc\t1\t5\tsnes-retroarch\t178\t125\t25\t1\t0\n",
              "files\t1\t3\tfs:/vol/external01/wiiu/roms/snes\twiiflow\tsnes\tsnes-retroarch\n"},
             {NesRetroArch,4,"nes-retroarch","nestopia","retroarch-nes",
-             "nes\tNES\tfiles\twiiflow\t.nes,.unf,.unif,.zip\t1\t4\tnes-retroarch\t130\t178\t25\t1\n",
+             "nes\tNES\tfiles\twiiflow\t.nes,.unf,.unif,.zip\t1\t4\tnes-retroarch\t130\t178\t25\t1\t0\n",
              "files\t1\t3\tfs:/vol/external01/wiiu/roms/nes\twiiflow\tnes\tnes-retroarch\n"},
             {GbaRetroArch,6,"gba-retroarch","mgba","retroarch-gba",
-             "gba\tGBA\tfiles\twiiflow\t.gba\t1\t6\tgba-retroarch\t127\t127\t25\t1\n",
+             "gba\tGBA\tfiles\twiiflow\t.gba\t1\t6\tgba-retroarch\t127\t127\t25\t1\t0\n",
              "files\t1\t3\tfs:/vol/external01/wiiu/roms/gba\twiiflow\tgba\tgba-retroarch\n"}};
         const uint32_t retroArchBits=(1u<<PlayStation)|(1u<<SnesRetroArch)|(1u<<NesRetroArch)|(1u<<GbaRetroArch);
         const std::string raBundle=root+"/ra-bundle";fs::create_directories(raBundle);
@@ -256,7 +287,10 @@ int main(int argc,char **argv){
         Put(actual+"/"+regionPlugin,"stock Aroma region plugin");
         Put(actual+"/"+regionConfig,"preserve these region choices");
         Put(actual+"/"+ftpPlugin,"stock FTP");Put(actual+"/"+ftpConfig,"preserve FTP choices");
+        const std::string preparedPreview="wiiu/apps/uFlow/media/wiiu/previews/00050000101c0800.mp4";
+        Put(actual+"/"+preparedPreview,"user prepared 720p30 preview");
         auto files=BundledFiles();auto ready=Prepare(actual,argv[1],files,bits,{});
+        assert(std::none_of(files.begin(),files.end(),[](const auto &f){return f.path.ends_with("/visual-check.key");}));
         for(const char *name:{"app_booter.bin","ext_loader.bin","ext_booter.bin"}) {
             const auto path=std::string("apps/wiiflow/bins/")+name;
             assert(std::any_of(files.begin(),files.end(),[&](const auto &f){return f.path==path&&f.mask==6u&&f.mode=='r';}));
@@ -267,6 +301,7 @@ int main(int argc,char **argv){
         assert(std::any_of(files.begin(),files.end(),[&](const auto &f){return f.path==regionPlugin&&f.mask==1017u&&f.mode=='r';}));
         std::cout<<"Real bundle: "<<ready.items.size()<<" files, "<<ready.bytes<<" bytes\n"<<std::flush;
         auto result=Install(actual,argv[1],ready,"real-bundle",{});
+        assert(!File(actual+"/wiiu/apps/uFlow/visual-check.key"));
         const std::string contentModule="wiiu/environments/aroma/modules/ContentRedirectionModule.wms";
         assert(HashFile(actual+"/"+contentModule,{},"")==HashFile(std::string(argv[1])+"/payload/"+contentModule,{},""));
         for(const char *name:{"app_booter.bin","ext_loader.bin","ext_booter.bin"}) {
@@ -274,6 +309,20 @@ int main(int argc,char **argv){
             assert(File(actual+"/"+path)==bool(bits&6u));
             if(bits&6u) assert(HashFile(actual+"/"+path,{},"")==HashFile(std::string(argv[1])+"/payload/"+path,{},""));
         }
+        assert(File(actual+"/wiiu/apps/uFlow/modules/title-installer.ufmod")==bool(bits&(1u<<TitleInstaller)));
+        const std::string sig="wiiu/environments/aroma/modules/setup/01_sigpatches.rpx";
+        assert(File(actual+"/"+sig)==bool(bits&(1u<<TitleInstaller)));
+        if(bits&(1u<<TitleInstaller)) {
+            assert(HashFile(actual+"/"+sig,{},"")==HashFile(std::string(argv[1])+"/payload/"+sig,{},""));
+            Put(actual+"/"+sig,"preserve existing signature module");
+            auto rerun=Prepare(actual,argv[1],files,bits,{});
+            assert(std::none_of(rerun.items.begin(),rerun.items.end(),[&](const auto &item){return item.file.path==sig&&item.write;}));
+        }
+        for(const char *name:{"GameCube Menu.ogg","Wii Menu.ogg","Wii Shop Channel.ogg","Wii U Menu.ogg"}) {
+            const auto path=std::string("wiiu/apps/uFlow/music/")+name;
+            assert(HashFile(actual+"/"+path,{},"")==HashFile(std::string(argv[1])+"/payload/"+path,{},""));
+        }
+        Put(actual+"/wiiu/apps/uFlow/music/Wii Menu.ogg","keep user music");
         assert(!File(actual+"/wiiu/apps/compat_installer.wuhb"));
         assert(!File(actual+"/apps/d2x-cios-installer-vwii/boot.dol"));
         assert(!File(actual+"/apps/wiiflow_channel_installer/boot.dol"));
@@ -281,8 +330,28 @@ int main(int argc,char **argv){
         if(bits&1017u)assert(HashFile(actual+"/"+regionPlugin,{},"")==HashFile(std::string(argv[1])+"/payload/"+regionPlugin,{},""));
         assert(HashFile(actual+"/"+regionConfig,{},"")==Hash("preserve these region choices"));
         assert(HashFile(actual+"/"+ftpPlugin,{},"")==HashFile(std::string(argv[1])+"/payload/"+ftpPlugin,{},""));
+        assert(HashFile(actual+"/"+memoryModule,{},"")==HashFile(std::string(argv[1])+"/payload/"+memoryModule,{},""));
         assert(HashFile(actual+"/"+ftpConfig,{},"")==Hash("preserve FTP choices"));
         assert(Prepare(actual,argv[1],files,bits,{}).bytes==0);
+        Put(actual+"/wiiu/apps/uFlow/skins/switch-dark/skin.ini","user customized skin");
+        Put(actual+"/wiiu/apps/uFlow/skins/my-theme/skin.ini","third party skin");
+        Put(actual+"/wiiu/apps/uFlow/user-stats-1.cfg","user ratings and play counts");
+        Put(actual+"/wiiu/apps/uFlow/cache/library-v1.bin","user saved game catalog");
+        Put(actual+"/wiiu/apps/uFlow/media-refresh.pending","pending\n");
+        Install(actual,argv[1],Prepare(actual,argv[1],files,bits,{}),"real-media-reinstall",{});
+        assert(HashFile(actual+"/wiiu/apps/uFlow/skins/switch-dark/skin.ini",{},"")==Hash("user customized skin"));
+        assert(HashFile(actual+"/wiiu/apps/uFlow/skins/my-theme/skin.ini",{},"")==Hash("third party skin"));
+        assert(HashFile(actual+"/wiiu/apps/uFlow/user-stats-1.cfg",{},"")==Hash("user ratings and play counts"));
+        assert(HashFile(actual+"/wiiu/apps/uFlow/cache/library-v1.bin",{},"")==Hash("user saved game catalog"));
+        assert(HashFile(actual+"/wiiu/apps/uFlow/media-refresh.pending",{},"")==Hash("pending\n"));
+        assert(HashFile(actual+"/"+preparedPreview,{},"")==Hash("user prepared 720p30 preview"));
+        assert(HashFile(actual+"/wiiu/apps/uFlow/music/Wii Menu.ogg",{},"")==Hash("keep user music"));
+        if(bits&(1u<<TitleInstaller))assert(HashFile(actual+"/"+sig,{},"")==Hash("preserve existing signature module"));
+        if(bits&1u) {
+            std::ifstream media(actual+"/wiiu/apps/uFlow/media_sources.cfg");
+            const std::string text((std::istreambuf_iterator<char>(media)),{});
+            assert(text.find("fs:/vol/external01/wiiu/apps/uFlow/media/wiiu/previews\t1000\t2\t70")!=std::string::npos);
+        }
         std::cout<<"PASS: selected actual native payload files installed and verified; rerun unchanged (mask "<<bits<<"). "<<result<<'\n';
     }
 }

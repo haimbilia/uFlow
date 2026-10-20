@@ -14,10 +14,18 @@ public:
     ScanWorker(const ScanWorker &)=delete;
     ScanWorker &operator=(const ScanWorker &)=delete;
     void Start(){
-        Stop();stop_=false;status_={};status_.progress.stage="STARTING SCAN";result_={};
+        Stop();mediaOnly_=false;Begin();
+    }
+    void StartMedia(std::vector<GameEntry> games,std::vector<LibraryDefinition> libraries,bool refreshSources=false){
+        Stop();mediaOnly_=true;refreshSources_=refreshSources;mediaGames_=std::move(games);mediaLibraries_=std::move(libraries);Begin();
+    }
+private:
+    void Begin(){
+        stop_=false;status_={};status_.progress.stage=mediaOnly_?(refreshSources_?"UPDATING MEDIA":"UPDATING CONTENT TYPE MEDIA"):"STARTING SCAN";result_={};
         if(mutex_)thread_=SDL_CreateThreadWithStackSize(Run,"uflow-scan",512*1024,this);
         if(!thread_){status_.finished=true;status_.error="CANNOT START SCAN";}
     }
+public:
     void Stop(){stop_=true;if(thread_){SDL_WaitThread(thread_,nullptr);thread_=nullptr;}}
     void RequestCancel(){stop_=true;}
     Status Poll(){if(!mutex_)return status_;SDL_LockMutex(mutex_);auto value=status_;SDL_UnlockMutex(mutex_);return value;}
@@ -33,18 +41,33 @@ private:
         Status final;
         try {
             Uint32 last=0;std::string stage;
-            auto result=scan_([&](const ScanProgress &progress){
+            const auto report=[&](const ScanProgress &progress){
                 if(stop_)throw Interrupted{};
                 const auto now=SDL_GetTicks();
                 if(progress.stage!=stage || now-last>=50 || (progress.total && progress.completed==progress.total)){
                     SDL_LockMutex(mutex_);status_.progress=progress;SDL_UnlockMutex(mutex_);
                     stage=progress.stage;last=now;
                 }
-            });
+            };
+            ScanResult result;
+            bool persistMedia=false;
+            if(mediaOnly_){
+                result.games=std::move(mediaGames_);
+                if(refreshSources_){
+                    std::vector<GameEntry> cached;
+                    persistMedia=LoadLibraryCache(cached);
+                    RefreshLibraryMedia(result.games,report);
+                }
+                ApplyContentTypeMedia(result.games,mediaLibraries_,report);
+            }
+            else result=scan_(report);
             if(stop_)throw Interrupted{};
             SDL_LockMutex(mutex_);status_.progress={"SAVING LIBRARY","",result.games.size(),0,0};SDL_UnlockMutex(mutex_);
             // Commit is not interrupted halfway; SaveLibraryCache publishes a complete temporary file.
-            final.cacheSaved=save_(result.games);
+            // Appearance is transient. Do not recreate a catalog invalidated by
+            // an unrelated source/scanner edit while applying media settings.
+            final.cacheSaved=mediaOnly_ ? (!refreshSources_ || (persistMedia && save_(result.games))) : save_(result.games);
+            if(final.cacheSaved && (!mediaOnly_ || refreshSources_))CompleteMediaRefresh();
             final.progress={"SCAN COMPLETE","",result.games.size(),1,1};
             SDL_LockMutex(mutex_);result_=std::move(result);SDL_UnlockMutex(mutex_);
         }catch(const Interrupted &){final.error="SCAN INTERRUPTED - LIBRARY UNCHANGED";}
@@ -54,6 +77,10 @@ private:
         return 0;
     }
     Scan scan_;Save save_;
+    bool mediaOnly_=false;
+    bool refreshSources_=false;
+    std::vector<GameEntry> mediaGames_;
+    std::vector<LibraryDefinition> mediaLibraries_;
     SDL_mutex *mutex_=nullptr;
     SDL_Thread *thread_=nullptr;
     std::atomic<bool> stop_{false};

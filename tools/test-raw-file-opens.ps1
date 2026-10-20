@@ -6,7 +6,7 @@ $end = $source.IndexOf('static void PrepareCurrentTitleRelaunch()', $start)
 if ($start -lt 0 -or $end -le $start) { throw 'Production hook boundaries not found' }
 $hooks = $source.Substring($start, $end - $start)
 foreach ($entry in @('FSOpenFile', 'FSOpenFileAsync', 'FSOpenFileEx', 'FSOpenFileExAsync')) {
-    if (!$source.Contains("REPLACE_FUNCTION(Raw_$entry, LIBRARY_COREINIT, $entry)")) {
+    if (!$source.Contains("REPLACE_FUNCTION_FOR_PROCESS(Raw_$entry, LIBRARY_COREINIT, $entry, FP_TARGET_PROCESS_GAME)")) {
         throw "Missing hook registration: $entry"
     }
 }

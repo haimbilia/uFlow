@@ -50,7 +50,11 @@ public:
         SDL_LockMutex(mutex_);
         Result result;
         if(!ready_.empty()) {
-            result=std::move(ready_.front()); ready_.erase(ready_.begin());
+            // Selection can change while decoding: upload in the latest requested order.
+            auto next=std::min_element(ready_.begin(),ready_.end(),[&](const auto &a,const auto &b){
+                return std::find(wanted_.begin(),wanted_.end(),a.path)<std::find(wanted_.begin(),wanted_.end(),b.path);
+            });
+            result=std::move(*next); ready_.erase(next);
             readyBytes_-=Bytes(result.surface);
         }
         SDL_CondSignal(condition_); SDL_UnlockMutex(mutex_);

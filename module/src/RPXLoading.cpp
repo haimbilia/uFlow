@@ -9,6 +9,7 @@
 #include "RawTitleProfile.h"
 #include "RawReadRange.h"
 #include "RawNativePath.h"
+#include "RawNativePathStorage.h"
 #include "RawFrameStats.h"
 #include "../../app/source/return_to_uflow.hpp"
 #include "data/defaultIcon.h"
@@ -159,6 +160,7 @@ static std::atomic<uint32_t> sRawSlowReadSamples{0};
 static std::atomic<uint32_t> sRawNativeOpenSamples{0};
 static std::atomic<uint32_t> sRawSaveOpenSamples{0};
 static std::atomic<uint32_t> sRawFlushSamples{0};
+static std::atomic<uint32_t> sRawSpaceSamples{0};
 static std::atomic<uint32_t> sRawWindowReadCalls{0}, sRawWindowReadMs{0};
 static RawFrameStats sRawFrames;
 static uint32_t sRawFrameReports = 0;
@@ -267,8 +269,11 @@ DECL_FUNCTION(FSStatus, Raw_FSGetStatFile, FSClient *client, FSCmdBlock *block,
 
 DECL_FUNCTION(FSStatus, Raw_FSOpenFile, FSClient *client, FSCmdBlock *block,
               const char *path, const char *mode, FSFileHandle *handle, FSErrorFlag errorMask) {
-    char nativePath[0x400];
-    const bool native = RawNativeOpenPath(nativePath, sizeof(nativePath), gLooseTitleInfo.active,
+    RawNativePathStorage storage(gLooseTitleInfo.active);
+    char *nativePath = storage.get();
+    // Allocation failure must not fall back to the wrapper title's save.
+    if (gLooseTitleInfo.active && !nativePath) return FS_STATUS_FATAL_ERROR;
+    const bool native = RawNativeOpenPath(nativePath, RawNativePathStorage::Capacity, gLooseTitleInfo.active,
                                           path, mode, gLooseTitleInfo.contentPath, gLooseTitleInfo.codePath,
                                           gLooseTitleInfo.savePath);
     auto result = real_Raw_FSOpenFile(client, block, native ? nativePath : path, mode, handle, errorMask);
@@ -294,8 +299,11 @@ DECL_FUNCTION(FSStatus, Raw_FSOpenFile, FSClient *client, FSCmdBlock *block,
 DECL_FUNCTION(FSStatus, Raw_FSOpenFileAsync, FSClient *client, FSCmdBlock *block,
               const char *path, const char *mode, FSFileHandle *handle,
               FSErrorFlag errorMask, FSAsyncData *asyncData) {
-    char nativePath[0x400];
-    const bool native = RawNativeOpenPath(nativePath, sizeof(nativePath), gLooseTitleInfo.active,
+    RawNativePathStorage storage(gLooseTitleInfo.active);
+    char *nativePath = storage.get();
+    // Allocation failure must not fall back to the wrapper title's save.
+    if (gLooseTitleInfo.active && !nativePath) return FS_STATUS_FATAL_ERROR;
+    const bool native = RawNativeOpenPath(nativePath, RawNativePathStorage::Capacity, gLooseTitleInfo.active,
                                           path, mode, gLooseTitleInfo.contentPath, gLooseTitleInfo.codePath,
                                           gLooseTitleInfo.savePath);
     // Native FS copies the path into the command block during submission;
@@ -310,8 +318,11 @@ DECL_FUNCTION(FSStatus, Raw_FSOpenFileEx, FSClient *client, FSCmdBlock *block,
               const char *path, const char *mode, FSMode createMode,
               FSOpenFileFlags openFlag, uint32_t preallocSize,
               FSFileHandle *handle, FSErrorFlag errorMask) {
-    char nativePath[0x400];
-    const bool native = RawNativeOpenPath(nativePath, sizeof(nativePath), gLooseTitleInfo.active,
+    RawNativePathStorage storage(gLooseTitleInfo.active);
+    char *nativePath = storage.get();
+    // Allocation failure must not fall back to the wrapper title's save.
+    if (gLooseTitleInfo.active && !nativePath) return FS_STATUS_FATAL_ERROR;
+    const bool native = RawNativeOpenPath(nativePath, RawNativePathStorage::Capacity, gLooseTitleInfo.active,
                                           path, mode, gLooseTitleInfo.contentPath, gLooseTitleInfo.codePath,
                                           gLooseTitleInfo.savePath);
     const auto result = real_Raw_FSOpenFileEx(client, block, native ? nativePath : path, mode,
@@ -328,8 +339,11 @@ DECL_FUNCTION(FSStatus, Raw_FSOpenFileExAsync, FSClient *client, FSCmdBlock *blo
               const char *path, const char *mode, FSMode createMode,
               FSOpenFileFlags openFlag, uint32_t preallocSize,
               FSFileHandle *handle, FSErrorFlag errorMask, FSAsyncData *asyncData) {
-    char nativePath[0x400];
-    const bool native = RawNativeOpenPath(nativePath, sizeof(nativePath), gLooseTitleInfo.active,
+    RawNativePathStorage storage(gLooseTitleInfo.active);
+    char *nativePath = storage.get();
+    // Allocation failure must not fall back to the wrapper title's save.
+    if (gLooseTitleInfo.active && !nativePath) return FS_STATUS_FATAL_ERROR;
+    const bool native = RawNativeOpenPath(nativePath, RawNativePathStorage::Capacity, gLooseTitleInfo.active,
                                           path, mode, gLooseTitleInfo.contentPath, gLooseTitleInfo.codePath,
                                           gLooseTitleInfo.savePath);
     // Do not replace or wait on the caller's callback/queue. In particular,
@@ -354,13 +368,55 @@ static void PrepareCurrentTitleRelaunch() {
     OSMemoryBarrier();
 }
 
+// Save capacity must describe the same SD destination as file opens. The
+// wrapper title's native save mount has a different quota; ContentRedirection
+// does not redirect free-space queries. Preserve real results, including zero
+// free bytes and all errors, rather than manufacturing available space.
+DECL_FUNCTION(FSStatus, Raw_FSGetFreeSpaceSize, FSClient *client, FSCmdBlock *block,
+              const char *path, uint64_t *outSize, FSErrorFlag errorMask) {
+    RawNativePathStorage storage(gLooseTitleInfo.active);
+    char *nativePath = storage.get();
+    // Allocation failure must not fall back to the wrapper title's save.
+    if (gLooseTitleInfo.active && !nativePath) return FS_STATUS_FATAL_ERROR;
+    const bool redirected = RawNativeSavePath(nativePath, RawNativePathStorage::Capacity,
+                                              gLooseTitleInfo.active, path, gLooseTitleInfo.savePath);
+    const auto result = real_Raw_FSGetFreeSpaceSize(client, block, redirected ? nativePath : path,
+                                                    outSize, errorMask);
+    if (redirected && sRawSpaceSamples.fetch_add(1, std::memory_order_relaxed) < 16) {
+        const uint64_t bytes = result == FS_STATUS_OK && outSize ? *outSize : 0;
+        OSReport("uFlow raw-port15: save space result=%d bytes=%08X%08X path=%s\n",
+                 result, static_cast<uint32_t>(bytes >> 32), static_cast<uint32_t>(bytes), nativePath);
+    }
+    return result;
+}
+
+DECL_FUNCTION(FSStatus, Raw_FSGetFreeSpaceSizeAsync, FSClient *client, FSCmdBlock *block,
+              const char *path, uint64_t *outSize, FSErrorFlag errorMask, FSAsyncData *asyncData) {
+    RawNativePathStorage storage(gLooseTitleInfo.active);
+    char *nativePath = storage.get();
+    // Allocation failure must not fall back to the wrapper title's save.
+    if (gLooseTitleInfo.active && !nativePath) return FS_STATUS_FATAL_ERROR;
+    const bool redirected = RawNativeSavePath(nativePath, RawNativePathStorage::Capacity,
+                                              gLooseTitleInfo.active, path, gLooseTitleInfo.savePath);
+    // Submission copies the path. Keep the caller's output, callback and queue;
+    // only its eventual completion may read outSize.
+    const auto result = real_Raw_FSGetFreeSpaceSizeAsync(client, block, redirected ? nativePath : path,
+                                                         outSize, errorMask, asyncData);
+    if (redirected && sRawSpaceSamples.fetch_add(1, std::memory_order_relaxed) < 16)
+        OSReport("uFlow raw-port15: async save space submit=%d path=%s\n", result, nativePath);
+    return result;
+}
+
 // ContentRedirection handles save file I/O but does not redirect quota flushes.
 // Like Loadiine, submit a REAL flush against the SD save directory. Never turn
 // an error into success: preserve the native status and async completion path.
 DECL_FUNCTION(FSStatus, Raw_FSFlushQuota, FSClient *client, FSCmdBlock *block,
               const char *path, FSErrorFlag errorMask) {
-    char nativePath[0x400];
-    const bool redirected = RawNativeSavePath(nativePath, sizeof(nativePath),
+    RawNativePathStorage storage(gLooseTitleInfo.active);
+    char *nativePath = storage.get();
+    // Allocation failure must not fall back to the wrapper title's save.
+    if (gLooseTitleInfo.active && !nativePath) return FS_STATUS_FATAL_ERROR;
+    const bool redirected = RawNativeSavePath(nativePath, RawNativePathStorage::Capacity,
                                               gLooseTitleInfo.active, path, gLooseTitleInfo.savePath);
     const auto result = real_Raw_FSFlushQuota(client, block, redirected ? nativePath : path, errorMask);
     if (redirected && sRawFlushSamples.fetch_add(1, std::memory_order_relaxed) < 16)
@@ -370,8 +426,11 @@ DECL_FUNCTION(FSStatus, Raw_FSFlushQuota, FSClient *client, FSCmdBlock *block,
 
 DECL_FUNCTION(FSStatus, Raw_FSFlushQuotaAsync, FSClient *client, FSCmdBlock *block,
               const char *path, FSErrorFlag errorMask, FSAsyncData *asyncData) {
-    char nativePath[0x400];
-    const bool redirected = RawNativeSavePath(nativePath, sizeof(nativePath),
+    RawNativePathStorage storage(gLooseTitleInfo.active);
+    char *nativePath = storage.get();
+    // Allocation failure must not fall back to the wrapper title's save.
+    if (gLooseTitleInfo.active && !nativePath) return FS_STATUS_FATAL_ERROR;
+    const bool redirected = RawNativeSavePath(nativePath, RawNativePathStorage::Capacity,
                                               gLooseTitleInfo.active, path, gLooseTitleInfo.savePath);
     const auto result = real_Raw_FSFlushQuotaAsync(client, block, redirected ? nativePath : path,
                                                   errorMask, asyncData);
@@ -410,6 +469,8 @@ function_replacement_data_t rpx_utils_function_replacements[] = {
         REPLACE_FUNCTION_FOR_PROCESS(Raw_TraceExit, LIBRARY_COREINIT, _Exit, FP_TARGET_PROCESS_GAME),
         // Raw-title handles, saves and frame instrumentation belong only to
         // the game process. Do not interpose on Root/Menu loader/bootstrap I/O.
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_FSGetFreeSpaceSize, LIBRARY_COREINIT, FSGetFreeSpaceSize, FP_TARGET_PROCESS_GAME),
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_FSGetFreeSpaceSizeAsync, LIBRARY_COREINIT, FSGetFreeSpaceSizeAsync, FP_TARGET_PROCESS_GAME),
         REPLACE_FUNCTION_FOR_PROCESS(Raw_FSFlushQuota, LIBRARY_COREINIT, FSFlushQuota, FP_TARGET_PROCESS_GAME),
         REPLACE_FUNCTION_FOR_PROCESS(Raw_FSFlushQuotaAsync, LIBRARY_COREINIT, FSFlushQuotaAsync, FP_TARGET_PROCESS_GAME),
         REPLACE_FUNCTION_FOR_PROCESS(Raw_GX2SwapScanBuffers, LIBRARY_GX2, GX2SwapScanBuffers, FP_TARGET_PROCESS_GAME),

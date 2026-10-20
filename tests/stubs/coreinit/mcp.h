@@ -8,6 +8,7 @@ struct MCPTitleListType {
     char indexedDevice[16];
 };
 constexpr uint32_t MCP_APP_TYPE_GAME = 0x80000000;
+constexpr uint32_t MCP_APP_TYPE_GAME_WII = 0x8000002E;
 #ifdef UFLOW_TEST_INSTALLED
 #include <vector>
 #include <cstring>

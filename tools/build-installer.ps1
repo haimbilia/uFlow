@@ -107,9 +107,10 @@ foreach ($system in $systems) {
     $profile = Get-Content -LiteralPath (Join-Path $project "launcher-modules\$id-vc-example.cfg") -Raw
     $profile = [regex]::Replace($profile,'(?m)^base=[^\r\n]*',"base=wiiu/vc-bases/$id/default")
     Add-Text "wiiu/apps/uFlow/launchers/$id-vc.cfg" $profile
-    $height = if ($id -eq 'ds') { '122' } else { '190' }
-    $thickness = if ($id -eq 'ds') { '15' } else { '14' }
-    $libraries.Add(($id,$system.Name,'files','wiiflow',$system.Extensions,'1',"$order","$id-vc",'135',$height,$thickness) -join "`t")
+    $width = if ($id -eq 'snes') { '178' } else { '135' }
+    $height = if ($id -eq 'ds') { '122' } elseif ($id -eq 'snes') { '125' } else { '190' }
+    $thickness = if ($id -eq 'ds') { '15' } elseif ($id -eq 'snes') { '25' } else { '14' }
+    $libraries.Add(($id,$system.Name,'files','wiiflow',$system.Extensions,'1',"$order","$id-vc",$width,$height,$thickness) -join "`t")
     $content.Add(('files','1','3',"fs:/vol/external01/wiiu/roms/$id",'wiiflow',$id,"$id-vc") -join "`t")
     $directories.Add("wiiu/roms/$id"); $order++
 }

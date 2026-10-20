@@ -54,6 +54,24 @@ static std::uint64_t Scan(bool enabled){
     std::printf("%s: %u long-name game folders; raw reads=%llu; host CPU+memory time=%.2fs\n",enabled?"Cached":"Uncached",Games,static_cast<unsigned long long>(rawCalls),seconds);std::fflush(stdout);
     return rawCalls;
 }
+// Retail startup repeatedly opens resources under one late-sorted game.
+// Include bulk reads between lookups so the test is not just a warm path loop.
+static std::uint64_t GameStartup(bool enabled){
+    caching=enabled;cache.Reset();rawCalls=0;FATFS fs;
+    assert(f_mount(&fs,"0:",1)==FR_OK);
+    FILINFO FILINFOForStartup{};
+    std::vector<unsigned char> bulk(64*1024);
+    const auto base="0:/LIBRARY/"+Name(Games-1);
+    for(unsigned i=0;i<600;++i){
+        Read(base+"/code/app.xml");
+        assert(disk_read(0,bulk.data(),40000+(i%16)*128,128)==RES_OK);
+        assert(f_stat((base+"/missing.szs").c_str(),&FILINFOForStartup)==FR_NO_FILE);
+    }
+    f_mount(nullptr,"0:",0);
+    std::printf("%s startup: 600 repeated game opens + missing files + bulk reads; raw reads=%llu\n",
+        enabled?"Cached":"Uncached",static_cast<unsigned long long>(rawCalls));
+    return rawCalls;
+}
 int main(){
     auto *m=image.data();m[450]=12;Put32(m+454,Start);Put32(m+458,Total);m[510]=0x55;m[511]=0xaa;
     auto *b=m+Start*512;b[0]=0xeb;b[1]=0x58;b[2]=0x90;std::memcpy(b+3,"MSWIN4.1",8);Put16(b+11,512);b[13]=1;Put16(b+14,32);b[16]=1;b[21]=0xf8;Put32(b+28,Start);Put32(b+32,Total);Put32(b+36,FatSectors);Put32(b+44,2);Put16(b+48,1);Put16(b+50,6);std::memcpy(b+82,"FAT32   ",8);b[510]=0x55;b[511]=0xaa;
@@ -73,6 +91,8 @@ int main(){
     for(unsigned i=0;i<sectors;++i)Fat(3+i,i+1<sectors?4+i:0x0fffffff);
     Fat(15000);std::memcpy(Cluster(15000),"fixture-data",12);
     const auto uncached=Scan(false),cached=Scan(true);
+    const auto startupUncached=GameStartup(false),startupCached=GameStartup(true);
+    assert(startupCached*10<startupUncached);
     assert(cached*20<uncached);
     std::printf("PASS: identical metadata reads; %.1fx fewer physical read calls (not a Wii U timing claim)\n",double(uncached)/cached);
 }

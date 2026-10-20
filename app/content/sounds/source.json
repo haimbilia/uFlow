@@ -1,0 +1,44 @@
+{
+  "source": "Wii U Menu / Common/Sound/Men/cafe_barista_men.bfsar",
+  "source_sha256": "b0a3d94cc26c642384e208ae9270180451c4c4b4a722bbce64e3573a71b1d13b",
+  "decoder": "vgmstream r2117",
+  "note": "Original PCM samples used by the named sequence instruments; playback does not emulate Nintendo sequence envelopes.",
+  "sounds": [
+    {
+      "file": "move.wav",
+      "cue": "SE_CMN_SELECT_CURSOR",
+      "bank": "BANK_COMMON",
+      "instrument": 9,
+      "wave_archive": 1,
+      "wave_index": 240,
+      "sample_sha256": "6230af4f103e3d20734eb1d563684ff1ff0cf6a79d7daa05b2a1d42d120cb352"
+    },
+    {
+      "file": "confirm.wav",
+      "cue": "SE_CMN_DECIDE",
+      "bank": "BANK_COMMON",
+      "instrument": 4,
+      "wave_archive": 1,
+      "wave_index": 245,
+      "sample_sha256": "8efba750104ecd9c4e65a0da7c4217f2feeca04bc1a8f6943e19debdbba4a400"
+    },
+    {
+      "file": "back.wav",
+      "cue": "SE_CMN_CANCEL",
+      "bank": "BANK_COMMON",
+      "instrument": 5,
+      "wave_archive": 1,
+      "wave_index": 248,
+      "sample_sha256": "a1ce62f818d4e520ef7cd1c752acb2e35790fd98a720b2298ce5fe0d544a0be5"
+    },
+    {
+      "file": "tab.wav",
+      "cue": "SE_CMN_SCROLL",
+      "bank": "BANK_COMMON",
+      "instrument": 11,
+      "wave_archive": 1,
+      "wave_index": 250,
+      "sample_sha256": "1c2e4622bdfbca5df57c56116218da42124172b8bdb76a58af7449feb6183a82"
+    }
+  ]
+}

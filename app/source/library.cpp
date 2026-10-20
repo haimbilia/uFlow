@@ -7,6 +7,7 @@
 #include "vc_package.hpp"
 #include "text_utf8.hpp"
 #include "builtin_icon_cache.hpp"
+#include "wiiu_vc.hpp"
 
 #include <coreinit/mcp.h>
 #include <dirent.h>
@@ -37,7 +38,7 @@ constexpr const char *kSourcesFile = "fs:/vol/external01/wiiu/apps/uFlow/content
 constexpr const char *kLibrariesFile = "fs:/vol/external01/wiiu/apps/uFlow/libraries.cfg";
 constexpr const char *kLibraryCacheFile = "fs:/vol/external01/wiiu/apps/uFlow/cache/library-v1.bin";
 constexpr std::uint32_t kLibraryCacheMagic = 0x55464C43; // UFLC
-constexpr std::uint32_t kLibraryCacheVersion = 6; // Cache raw USB built-in icons on SD during discovery.
+constexpr std::uint32_t kLibraryCacheVersion = 9; // Physical artwork; versions 7/8 migrate without rescanning.
 constexpr std::uint32_t kLibraryCacheMaxEntries = 8192;
 constexpr std::uint32_t kLibraryCacheMaxString = 256 * 1024;
 constexpr std::size_t kLibraryCacheMaxBytes = 32 * 1024 * 1024;
@@ -143,6 +144,12 @@ std::string MetaName(const std::string &meta) {
     return name.empty() ? MetaText(meta, "shortname") : name;
 }
 
+std::string DetectVCSystem(const std::string &base,const std::string &meta) {
+    if(meta.empty())return {}; // Missing/unmounted source: retry on a later load.
+    return WiiUVC::System(XmlValue(meta,"product_code"),IsFile(base+"/code/fw.img"),
+        IsDirectory(base+"/content/pceemu"),IsFile(base+"/code/m2engage.rpx"));
+}
+
 std::string SaveKey(const std::string &titleId, const std::string &folder) {
     const std::string &source = titleId.empty() ? folder : titleId;
     std::string result;
@@ -242,7 +249,9 @@ bool ScanInstalledGames(ScanResult &result, const std::vector<GameEntry> *cached
     if (listResult >= 0) {
         for (uint32_t index = 0; index < std::min(received, static_cast<uint32_t>(count)); ++index) {
             const auto &title = titles[index];
-            if (title.appType != MCP_APP_TYPE_GAME || (title.titleId >> 32) != 0x00050000ULL) continue;
+            const auto titleGroup=title.titleId>>32;
+            if ((title.appType != MCP_APP_TYPE_GAME && title.appType != MCP_APP_TYPE_GAME_WII) ||
+                (titleGroup != 0x00050000ULL && !(titleGroup==0x00050002ULL&&title.appType==MCP_APP_TYPE_GAME_WII))) continue;
             GameEntry game;
             game.platform = Platform::WiiU;
             game.installed = true;
@@ -252,8 +261,9 @@ bool ScanInstalledGames(ScanResult &result, const std::vector<GameEntry> *cached
             game.storage = std::string(title.indexedDevice, strnlen(title.indexedDevice, sizeof(title.indexedDevice)));
             // MCP can also describe redirected titles. An installed entry must
             // point at an actual installed title on MLC or Wii U USB storage.
-            if (game.absolutePath.rfind("fs:/vol/storage_mlc01/usr/title/00050000/", 0) != 0 &&
-                game.absolutePath.rfind("fs:/vol/storage_usb01/usr/title/00050000/", 0) != 0) continue;
+            const auto titleSuffix="/usr/title/"+game.titleId.substr(0,8)+"/"+game.titleId.substr(8);
+            if (game.absolutePath!="fs:/vol/storage_mlc01"+titleSuffix &&
+                game.absolutePath!="fs:/vol/storage_usb01"+titleSuffix) continue;
             if (!IsDirectory(game.absolutePath + "/code") || !IsFile(game.absolutePath + "/code/app.xml")) continue;
             if (cached) {
                 const auto previous = std::find_if(cached->begin(), cached->end(), [&](const auto &entry) {
@@ -270,6 +280,7 @@ bool ScanInstalledGames(ScanResult &result, const std::vector<GameEntry> *cached
             game.name = MetaName(meta);
             if (game.name.empty()) game.name = "INSTALLED TITLE " + game.titleId;
             game.publisher = MetaText(meta, "publisher");
+            game.vcSystem = DetectVCSystem(game.absolutePath,meta);
             game.coverPath = FindCover(metaPath, game.titleId);
             if (game.coverPath.empty()) game.coverPath = CacheInstalledIcon(metaPath + "/iconTex.tga", game.titleId);
             result.games.push_back(std::move(game));
@@ -290,6 +301,7 @@ struct ScanReporter {
 };
 
 void ReadWiiUMetadata(GameEntry &game, const std::string &base, const std::string &meta) {
+    game.vcSystem = DetectVCSystem(base,meta);
     game.name = MetaName(meta);
     game.publisher = MetaText(meta, "publisher");
     game.coverPath = FindCover(base, game.titleId, base + "/meta/iconTex.tga");
@@ -453,6 +465,7 @@ struct CacheReader {
 };
 
 bool WriteCacheGame(std::ofstream &output, const GameEntry &game) {
+    if(game.sourceMedia){auto source=game;RestoreSourceMedia(source);return WriteCacheGame(output,source);}
     const auto platform = static_cast<std::uint8_t>(game.platform);
     const auto launcher = static_cast<std::uint8_t>(game.launcher);
     const std::uint8_t flags = (game.installed ? 1 : 0) | (game.favorite ? 2 : 0);
@@ -466,10 +479,16 @@ bool WriteCacheGame(std::ofstream &output, const GameEntry &game) {
         &game.storage, &game.backCoverPath, &game.spinePath, &game.defaultSleevePath,
     }};
     for (const auto *value : values) if (!WriteCacheString(output, *value)) return false;
-    return WriteValue(output,game.defaultBackEnd) && WriteValue(output,game.defaultFrontStart);
+    if(!WriteValue(output,game.defaultBackEnd) || !WriteValue(output,game.defaultFrontStart))return false;
+    const uint32_t count=game.installPackages.size();if(count>64||!WriteValue(output,count))return false;
+    for(const auto &p:game.installPackages){uint8_t kind=static_cast<uint8_t>(p.kind);
+        if(!WriteValue(output,p.titleId)||!WriteValue(output,p.bytes)||!WriteValue(output,p.version)||!WriteValue(output,kind)||
+           !WriteCacheString(output,p.path)||!WriteCacheString(output,p.error))return false;
+    }
+    return WriteCacheString(output,game.vcSystem) && WriteCacheString(output,game.physicalMediaPath);
 }
 
-bool ReadCacheGame(CacheReader &reader, GameEntry &game) {
+bool ReadCacheGame(CacheReader &reader, GameEntry &game,std::uint32_t version) {
     std::uint8_t platform = 0, launcher = 0, flags = 0;
     if (!ReadValue(reader.input, platform) || !ReadValue(reader.input, launcher) || !ReadValue(reader.input, flags) ||
         !ReadValue(reader.input, game.installedTitleId) || platform > static_cast<std::uint8_t>(Platform::Files) ||
@@ -489,6 +508,14 @@ bool ReadCacheGame(CacheReader &reader, GameEntry &game) {
     if(!ReadValue(reader.input,game.defaultBackEnd) || !ReadValue(reader.input,game.defaultFrontStart))return false;
     if(!((game.defaultBackEnd==0 && game.defaultFrontStart==0) ||
          (game.defaultBackEnd>0 && game.defaultBackEnd<game.defaultFrontStart && game.defaultFrontStart<1)))return false;
+    uint32_t count=0;if(!ReadValue(reader.input,count)||count>64)return false;
+    for(uint32_t i=0;i<count;++i){TitleInstall::Package p;uint8_t kind;
+        if(!ReadValue(reader.input,p.titleId)||!ReadValue(reader.input,p.bytes)||!ReadValue(reader.input,p.version)||!ReadValue(reader.input,kind)||kind>2||
+           !reader.String(p.path)||!reader.String(p.error))return false;
+        p.kind=static_cast<TitleInstall::Kind>(kind);p.selected=p.error.empty()&&std::none_of(game.installPackages.begin(),game.installPackages.end(),[&](const auto&old){return old.kind==p.kind;});game.installPackages.push_back(std::move(p));
+    }
+    if(version>=8&&!reader.String(game.vcSystem))return false;
+    if(version>=9&&!reader.String(game.physicalMediaPath))return false;
     return !game.absolutePath.empty();
 }
 
@@ -540,6 +567,16 @@ std::vector<LibraryDefinition> LoadLibraries() {
         library.caseWidthMm=dimension(8,library.caseWidthMm,50,200);
         library.caseHeightMm=dimension(9,library.caseHeightMm,50,250);
         library.caseThicknessMm=dimension(10,library.caseThicknessMm,2,40);
+        // Migrate only uFlow's former SNES preset.  A user-authored size remains
+        // authoritative, while existing installs gain the sideways carton
+        // profile used by the supplied Full Sleeve and Front Cover collections.
+        if(preset.sidewaysSleeve && library.caseWidthMm==178 &&
+           library.caseHeightMm==125 && library.caseThicknessMm==30) {
+            library.caseWidthMm=preset.width;
+            library.caseHeightMm=preset.height;
+            library.caseThicknessMm=preset.thickness;
+        }
+        if(parts.size()>12)library.mediaByContentType=Trim(parts[12])=="1";
         // Older installers wrote DVD dimensions for every system. Upgrade only
         // that legacy tuple; custom sizes and versioned saves remain untouched.
         if(parts.size()<12 && library.caseWidthMm==135 && library.caseHeightMm==190 && library.caseThicknessMm==14) {
@@ -548,10 +585,12 @@ std::vector<LibraryDefinition> LoadLibraries() {
         if(!library.id.empty()&&!library.name.empty()) libraries.push_back(std::move(library));
     }
     if(!input.is_open()) libraries={{"wiiu","Wii U",Platform::WiiU,GameLauncher::WiiFlow,".rpx",true,0},{"wii","Wii",Platform::Wii,GameLauncher::WiiFlow,".wbfs",true,1},{"gamecube","GameCube",Platform::GameCube,GameLauncher::WiiFlow,".iso,.gcm",true,2}};
+    if(TitleInstall::Available()&&std::none_of(libraries.begin(),libraries.end(),[](const auto&l){return l.id=="install";}))
+        libraries.push_back({"install","Install Content",Platform::WiiU,GameLauncher::WiiFlow,".tmd",true,100,"title-installer"});
     std::sort(libraries.begin(),libraries.end(),[](const auto&a,const auto&b){return a.order<b.order;}); return libraries;
 }
 
-bool SaveLibraries(const std::vector<LibraryDefinition> &libraries) {
+bool SaveLibraries(const std::vector<LibraryDefinition> &libraries,bool invalidateCache) {
     std::set<std::string> ids;
     for(const auto &l:libraries) if(l.id.empty() || l.name.empty() || !ids.insert(l.id).second ||
         (l.id+l.name+l.extensions+l.launcherId).find_first_of("\t\r\n")!=std::string::npos ||
@@ -559,10 +598,10 @@ bool SaveLibraries(const std::vector<LibraryDefinition> &libraries) {
         l.caseThicknessMm<2||l.caseThicknessMm>40) return false;
     EnsureDirectory(kAppDirectory); const std::string temporary=std::string(kLibrariesFile)+".tmp";
     std::ofstream output(temporary,std::ios::trunc);
-    for(const auto &library:libraries) output<<library.id<<'\t'<<library.name<<'\t'<<DefaultLibraryId(library.parser)<<'\t'<<(library.launcher==GameLauncher::USBLoaderGX?"usbloadergx":"wiiflow")<<'\t'<<library.extensions<<'\t'<<library.enabled<<'\t'<<library.order<<'\t'<<library.launcherId<<'\t'<<library.caseWidthMm<<'\t'<<library.caseHeightMm<<'\t'<<library.caseThicknessMm<<"\t1\n";
+    for(const auto &library:libraries) output<<library.id<<'\t'<<library.name<<'\t'<<DefaultLibraryId(library.parser)<<'\t'<<(library.launcher==GameLauncher::USBLoaderGX?"usbloadergx":"wiiflow")<<'\t'<<library.extensions<<'\t'<<library.enabled<<'\t'<<library.order<<'\t'<<library.launcherId<<'\t'<<library.caseWidthMm<<'\t'<<library.caseHeightMm<<'\t'<<library.caseThicknessMm<<"\t1\t"<<library.mediaByContentType<<"\n";
     output.flush(); const bool ok=static_cast<bool>(output); output.close();
     const bool saved = ok && !output.fail() && SavedFile::Commit(temporary,kLibrariesFile);
-    if (saved) InvalidateLibraryCache();
+    if (saved&&invalidateCache) InvalidateLibraryCache();
     return saved;
 }
 
@@ -601,7 +640,11 @@ std::vector<ContentSource> LoadContentSources() {
             if(fifth != std::string::npos) {
                 const auto sixth = line.find('\t', fifth+1);
                 const std::string library = Trim(line.substr(fifth+1, sixth==std::string::npos?std::string::npos:sixth-fifth-1));
-                if(sixth!=std::string::npos) source.launcherId=Trim(line.substr(sixth+1));
+                if(sixth!=std::string::npos) {
+                    const auto seventh=line.find('\t',sixth+1);
+                    source.launcherId=Trim(line.substr(sixth+1,seventh==std::string::npos?std::string::npos:seventh-sixth-1));
+                    if(seventh!=std::string::npos)source.autoSortVC=Trim(line.substr(seventh+1))=="1";
+                }
                 if(!library.empty()) source.libraryId = library;
             }
         }
@@ -616,10 +659,12 @@ std::vector<ContentSource> LoadContentSources() {
             {Platform::GameCube, std::string(kDevice) + "/games", true, 3, GameLauncher::WiiFlow, "gamecube"},
         };
     }
+    if(TitleInstall::Available()&&std::none_of(sources.begin(),sources.end(),[](const auto&s){return s.libraryId=="install";}))
+        sources.push_back({Platform::WiiU,std::string(kDevice)+"/install",true,3,GameLauncher::WiiFlow,"install","title-installer"});
     return sources;
 }
 
-bool SaveContentSources(const std::vector<ContentSource> &sources) {
+bool SaveContentSources(const std::vector<ContentSource> &sources,bool invalidateCache) {
     EnsureDirectory(kAppDirectory);
     for(const auto &s:sources)if((s.path+s.libraryId+s.launcherId).find_first_of("\t\r\n")!=std::string::npos)return false;
     const std::string temporary=std::string(kSourcesFile)+".tmp";
@@ -629,12 +674,12 @@ bool SaveContentSources(const std::vector<ContentSource> &sources) {
         output << type << '\t' << (source.enabled ? 1 : 0) << '\t'
                << std::clamp(source.depth, 0, 8) << '\t' << source.path << '\t'
                << (source.launcher == GameLauncher::USBLoaderGX ? "usbloadergx" : "wiiflow") << '\t'
-               << (source.libraryId.empty() ? DefaultLibraryId(source.platform) : source.libraryId) << '\t' << source.launcherId << '\n';
+               << (source.libraryId.empty() ? DefaultLibraryId(source.platform) : source.libraryId) << '\t' << source.launcherId << '\t' << source.autoSortVC << '\n';
     }
     output.flush();
     const bool ok=static_cast<bool>(output);output.close();
     const bool saved = ok&&!output.fail()&&SavedFile::Commit(temporary,kSourcesFile);
-    if (saved) InvalidateLibraryCache();
+    if (saved&&invalidateCache) InvalidateLibraryCache();
     return saved;
 }
 
@@ -728,7 +773,15 @@ ScanResult ScanLibrary(const ScanObserver &observer) {
         if(definition!=libraries.end()&&!definition->enabled) continue;
         const auto parser=definition==libraries.end()?source.platform:definition->parser;
         const auto firstNew = result.games.size();
-        if (parser == Platform::WiiU) ScanWiiURoot(result, updates, source.path, source.depth,progress);
+        if(source.libraryId=="install") {
+            if(!TitleInstall::Available())continue;
+            for(auto &group:TitleInstall::Scan(source.path,source.depth)){
+                GameEntry g;g.platform=Platform::WiiU;g.libraryId="install";g.titleId=TitleInstall::Id(group.id);g.name=group.name;
+                g.folder=group.name;g.absolutePath="install:"+g.titleId;g.storage="SD installation packages";g.installPackages=std::move(group.packages);
+                result.games.push_back(std::move(g));
+            }
+        }
+        else if (parser == Platform::WiiU) ScanWiiURoot(result, updates, source.path, source.depth,progress);
         else if(parser==Platform::Files) {
             const auto extensions=definition==libraries.end()?"":definition->extensions;
             ScanFiles(result,source.path,source.depth,extensions,progress);
@@ -747,11 +800,26 @@ ScanResult ScanLibrary(const ScanObserver &observer) {
         }
     }
 
+    // One install entry per title even when game/update/DLC use different sources.
+    std::vector<GameEntry> merged;std::map<std::string,size_t> installGroups;
+    for(auto &g:result.games){
+        if(g.installPackages.empty()){merged.push_back(std::move(g));continue;}
+        auto [it,inserted]=installGroups.emplace(g.titleId,merged.size());
+        if(inserted){merged.push_back(std::move(g));continue;}
+        auto &target=merged[it->second];
+        if(std::any_of(g.installPackages.begin(),g.installPackages.end(),[](const auto&p){return p.kind==TitleInstall::Kind::Game;}))target.name=g.name;
+        for(auto &p:g.installPackages)if(std::none_of(target.installPackages.begin(),target.installPackages.end(),[&](const auto&old){return old.path==p.path;}))target.installPackages.push_back(std::move(p));
+    }
+    result.games=std::move(merged);
+    for(auto &g:result.games)if(!g.installPackages.empty()){
+        std::sort(g.installPackages.begin(),g.installPackages.end(),[](const auto&a,const auto&b){return a.kind==b.kind?a.version>b.version:a.kind<b.kind;});
+        std::array<bool,3> seen{};for(auto &p:g.installPackages){p.selected=!seen[int(p.kind)]&&p.error.empty();seen[int(p.kind)]=true;}
+    }
     progress.stage="RESOLVING GAME METADATA";progress.Report("");
     std::set<std::string> installedIds;
     for (const auto &game : result.games) if (game.installed && !game.titleId.empty()) installedIds.insert(game.titleId);
     result.games.erase(std::remove_if(result.games.begin(), result.games.end(), [&](const GameEntry &game) {
-        return !game.installed && game.platform == Platform::WiiU && !game.titleId.empty() && installedIds.contains(game.titleId);
+        return game.installPackages.empty() && !game.installed && game.platform == Platform::WiiU && !game.titleId.empty() && installedIds.contains(game.titleId);
     }), result.games.end());
 
     const auto favorites = LoadFavoriteKeys();
@@ -770,6 +838,13 @@ ScanResult ScanLibrary(const ScanObserver &observer) {
         game.favorite = favorites.contains(FavoriteKey(game));
     }
     EnrichLibraryMedia(result.games,observer);
+    // Installation packages share the game's existing Wii U artwork/metadata.
+    std::vector<GameEntry> installArt;
+    for(const auto &g:result.games)if(!g.installPackages.empty()){installArt.push_back(g);installArt.back().libraryId="wiiu";}
+    if(!installArt.empty()){
+        EnrichLibraryMedia(installArt,observer);size_t index=0;
+        for(auto &g:result.games)if(!g.installPackages.empty()){const auto id=g.libraryId;g=std::move(installArt[index++]);g.libraryId=id;}
+    }
     progress.stage="SORTING LIBRARY";progress.Report("");
     std::sort(result.games.begin(), result.games.end(), [](const GameEntry &left, const GameEntry &right) {
         const std::string leftName = Lower(left.name);
@@ -782,6 +857,47 @@ ScanResult ScanLibrary(const ScanObserver &observer) {
     }), result.games.end());
     progress.Report("");
     return result;
+}
+
+bool MergeInstalledPackages(std::vector<GameEntry> &games) {
+    std::vector<GameEntry> added;
+    const auto favorites=LoadFavoriteKeys();
+    for(const auto &source:games)for(const auto &p:source.installPackages) {
+        if(p.kind!=TitleInstall::Kind::Game || (p.titleId>>32)!=0x50000)continue;
+        for(int target=0;target<2;++target) {
+            if(p.installedVersion[target]<0)continue;
+            const auto id=TitleInstall::Id(p.titleId);
+            const auto path=std::string("fs:/vol/storage_")+(target?"usb01":"mlc01")+"/usr/title/00050000/"+id.substr(8);
+            const auto exists=[&](const auto &g){return g.installed&&g.installedTitleId==p.titleId&&g.absolutePath==path;};
+            if(std::any_of(games.begin(),games.end(),exists)||std::any_of(added.begin(),added.end(),exists))continue;
+            // The MCP title/version query is the installation evidence. Access to
+            // code/app.xml is not required to add a directly launchable title.
+            GameEntry game=source;
+            game.libraryId="wiiu";game.platform=Platform::WiiU;
+            game.installPackages.clear();game.installed=true;game.installedTitleId=p.titleId;
+            game.titleId=id;game.absolutePath=path;game.folder.clear();
+            game.vcSystem=DetectVCSystem(path,ReadTextFile(path+"/meta/meta.xml"));
+            game.navigationLibraryId.clear();
+            game.storage=target?"usb":"mlc";
+            game.rpxRelative.clear();game.contentRelative.clear();game.codeRelative.clear();game.saveRelative.clear();
+            game.privateInjectionStage=false;
+            game.favorite=game.favorite||favorites.contains(FavoriteKey(game));
+            for(const auto &old:games)if(old.installPackages.empty()&&old.titleId==id)game.favorite=game.favorite||old.favorite;
+            added.push_back(std::move(game));
+        }
+    }
+    if(added.empty())return false;
+    // Match the scanner's installed-over-raw preference without touching other titles.
+    games.erase(std::remove_if(games.begin(),games.end(),[&](const auto &g){
+        return !g.installed&&g.installPackages.empty()&&g.platform==Platform::WiiU&&
+            std::any_of(added.begin(),added.end(),[&](const auto &a){return a.titleId==g.titleId;});
+    }),games.end());
+    for(auto &game:added)games.push_back(std::move(game));
+    std::sort(games.begin(),games.end(),[](const auto &a,const auto &b){
+        const auto left=Lower(a.name),right=Lower(b.name);
+        return left==right?a.absolutePath<b.absolutePath:left<right;
+    });
+    return true;
 }
 
 bool RefreshInstalledGames(std::vector<GameEntry> &games) {
@@ -805,7 +921,7 @@ bool RefreshInstalledGames(std::vector<GameEntry> &games) {
     std::set<std::string> ids;
     for (const auto &game : installed.games) ids.insert(game.titleId);
     games.erase(std::remove_if(games.begin(), games.end(), [&](const auto &game) {
-        return game.installed || (game.platform == Platform::WiiU && ids.contains(game.titleId));
+        return game.installed || (game.installPackages.empty() && game.platform == Platform::WiiU && ids.contains(game.titleId));
     }), games.end());
     const auto favorites = LoadFavoriteKeys();
     for (auto &game : installed.games) {
@@ -819,18 +935,43 @@ bool RefreshInstalledGames(std::vector<GameEntry> &games) {
     return true;
 }
 
+void RefreshLibraryMedia(std::vector<GameEntry> &games,const ScanObserver &progress) {
+    // Work from the existing catalog: no game discovery, sorting or removal.
+    for(auto &game:games) {
+        RestoreSourceMedia(game);
+        if(progress)progress({"UPDATING MEDIA",game.absolutePath,games.size(),0,0});
+        const bool wiiu=game.platform==Platform::WiiU && game.installPackages.empty();
+        const auto base=wiiu?game.absolutePath:game.absolutePath.substr(0,game.absolutePath.find_last_of('/'));
+        game.coverPath=FindCover(base,game.titleId,wiiu?base+"/meta/iconTex.tga":"");
+        if(wiiu && game.coverPath==base+"/meta/iconTex.tga") {
+            const auto icon=CacheInstalledIcon(game.coverPath,game.titleId);
+            if(!icon.empty())game.coverPath=icon;
+        }
+        game.backgroundPath.clear();
+    }
+    EnrichLibraryMedia(games,progress);
+    std::vector<GameEntry> packages;
+    for(const auto &game:games)if(!game.installPackages.empty()) {
+        packages.push_back(game);packages.back().libraryId="wiiu";
+    }
+    if(!packages.empty()) {
+        EnrichLibraryMedia(packages,progress);size_t index=0;
+        for(auto &game:games)if(!game.installPackages.empty())SetGameMedia(game,CaptureGameMedia(packages[index++]));
+    }
+}
+
 bool LoadLibraryCache(std::vector<GameEntry> &games) {
     CacheReader reader{SavedFile::Open(kLibraryCacheFile, std::ios::binary)};
     if (!reader.input) return false;
     std::uint32_t magic = 0, version = 0, count = 0;
     if (!ReadValue(reader.input, magic) || !ReadValue(reader.input, version) || !ReadValue(reader.input, count) ||
-        magic != kLibraryCacheMagic || version != kLibraryCacheVersion || count > kLibraryCacheMaxEntries) return false;
+        magic != kLibraryCacheMagic || (version < 7 || version > kLibraryCacheVersion) || count > kLibraryCacheMaxEntries) return false;
     std::vector<GameEntry> cached;
     try {
         cached.reserve(count);
         for (std::uint32_t index = 0; index < count; ++index) {
             GameEntry game;
-            if (!ReadCacheGame(reader, game)) return false;
+            if (!ReadCacheGame(reader, game,version)) return false;
             cached.push_back(std::move(game));
         }
     } catch (...) {
@@ -838,7 +979,14 @@ bool LoadLibraryCache(std::vector<GameEntry> &games) {
     }
     const auto favorites = LoadFavoriteKeys();
     for (auto &game : cached) game.favorite = favorites.contains(FavoriteKey(game));
+    reader.input.close(); // Release the old cache before committing a migrated file.
+    bool migrated=version!=kLibraryCacheVersion;
+    for(auto &game:cached)if(game.platform==Platform::WiiU&&game.installPackages.empty()&&game.vcSystem.empty()){
+        game.vcSystem=DetectVCSystem(game.absolutePath,ReadTextFile(game.absolutePath+"/meta/meta.xml"));
+        migrated=migrated||!game.vcSystem.empty();
+    }
     games = std::move(cached);
+    if(migrated)SaveLibraryCache(games);
     return true;
 }
 

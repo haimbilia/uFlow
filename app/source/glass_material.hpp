@@ -55,18 +55,21 @@ class GlassMaterial {
     }
 public:
     // Small lenses use the whole curved material, not a stretched flat centre.
-    void DrawButton(SDL_Renderer *renderer, SDL_Rect rect, bool focused) {
+    void DrawButton(SDL_Renderer *renderer, SDL_Rect rect, bool focused, SDL_Color accent) {
         if (!surface_) surface_ = Create(renderer, false);
         DrawShadow(renderer, rect);
         if (!surface_) return;
-        SDL_SetTextureColorMod(surface_, focused ? 167 : 255, focused ? 235 : 255, 255);
+        const auto tint=[focused](Uint8 channel){return focused?static_cast<Uint8>(165+channel*90/255):Uint8(255);};
+        SDL_SetTextureColorMod(surface_,tint(accent.r),tint(accent.g),tint(accent.b));
         if(rect.w>rect.h*2) NineSlice(renderer,surface_,rect,96,32);
         else SDL_RenderCopy(renderer, surface_, nullptr, &rect);
         SDL_SetTextureColorMod(surface_, 255, 255, 255);
     }
-    void DrawShadow(SDL_Renderer *renderer, SDL_Rect rect) {
+    void DrawShadow(SDL_Renderer *renderer, SDL_Rect rect, Uint8 strength=255) {
         if (!shadow_) shadow_ = Create(renderer, true);
+        if (shadow_) SDL_SetTextureAlphaMod(shadow_,strength);
         NineSlice(renderer, shadow_, {rect.x-16,rect.y-8,rect.w+32,rect.h+32},128,48);
+        if (shadow_) SDL_SetTextureAlphaMod(shadow_,255);
     }
     void Draw(SDL_Renderer *renderer, SDL_Rect rect, bool elevated, Uint8 strength=255) {
         if (!surface_) surface_ = Create(renderer, false);

@@ -62,6 +62,52 @@ int main(){
         assert(interrupted && Handles()==handles);
     }
     std::vector<GameEntry> cached;assert(LoadLibraryCache(cached) && cached.size()==8);
+    {
+        const auto catalog=root+"/wiiu/apps/uFlow/cache/library-v1.bin";
+        const auto bytes=[&]{std::ifstream in(catalog,std::ios::binary);return std::string(std::istreambuf_iterator<char>(in),{});};
+        CompleteMediaRefresh();const auto before=bytes();
+        media.video.volume=25;media.video.delayMs=2000;
+        assert(SaveMediaSources({media}) && !MediaRefreshNeeded() && bytes()==before);
+        // Saving a new media path must leave even offline games in the catalog.
+        fs::remove_all(root+"/Decrypted");
+        media.path=root+"/replacement-art";Write(media.path+"/Game-0.png","new-art");
+        assert(SaveMediaSources({media}) && MediaRefreshNeeded() && bytes()==before);
+        assert(LoadLibraryCache(cached) && cached.size()==8 && MediaRefreshNeeded());
+        const auto original=cached;
+        bool cancelled=false;
+        auto draft=cached;
+        try {RefreshLibraryMedia(draft,[](const auto &){throw 7;});}catch(int){cancelled=true;}
+        assert(cancelled && bytes()==before && MediaRefreshNeeded());
+        // A failed cache commit must retain the old catalog and pending retry.
+        ScanWorker failed(FakeScan,+[](const std::vector<GameEntry> &){return false;});
+        failed.StartMedia(cached,{},true);auto status=Wait(failed);
+        assert(status.error.empty() && !status.cacheSaved && bytes()==before && MediaRefreshNeeded());
+        mode=1; // FakeScan throws if a media refresh accidentally starts discovery.
+        ScanWorker worker(FakeScan,SaveLibraryCache);worker.StartMedia(cached,{},true);
+        status=Wait(worker);assert(status.error.empty() && status.cacheSaved && !MediaRefreshNeeded());
+        assert(LoadLibraryCache(cached) && cached.size()==original.size());
+        bool newArt=false;
+        for(size_t i=0;i<cached.size();++i) {
+            assert(cached[i].absolutePath==original[i].absolutePath && cached[i].name==original[i].name);
+            assert(cached[i].libraryId==original[i].libraryId && cached[i].titleId==original[i].titleId);
+            newArt|=cached[i].fullCoverPath==media.path+"/Game-0.png";
+        }
+        assert(newArt);
+        assert(SaveMediaSources({}) && MediaRefreshNeeded());
+        worker.StartMedia(cached,{},true);assert(Wait(worker).cacheSaved);
+        assert(LoadLibraryCache(cached) && cached.size()==8 && !MediaRefreshNeeded());
+        for(const auto &game:cached)assert(game.fullCoverPath.empty());
+    }
+    {
+        LibraryDefinition snes{"snes","SNES",Platform::Files};snes.mediaByContentType=true;
+        auto entry=cached[0];entry.navigationLibraryId="snes";entry.vcSystem="snes";entry.fullCoverPath="original-dvd.png";
+        ScanWorker worker;worker.StartMedia({entry},{snes});const auto state=Wait(worker);
+        assert(state.finished&&state.error.empty()&&state.cacheSaved);
+        auto result=worker.Take();assert(result.games.size()==1&&result.games[0].mediaLibraryId=="snes"&&result.games[0].fullCoverPath.empty());
+        assert(LoadLibraryCache(cached)&&cached.size()==8); // appearance refresh never replaces the catalog
+        InvalidateLibraryCache();worker.StartMedia({entry},{snes});assert(Wait(worker).error.empty());
+        assert(!LoadLibraryCache(cached)); // preserve a pending source/scanner rescan
+    }
     SDL_DestroySemaphore(entered);SDL_Quit();
     std::cout<<"PASS: live scan stages/counts, measured artwork progress, nonblocking polling, interruption/error preserve cache, descriptor cleanup, saving and cache-failure reporting\n";
 }

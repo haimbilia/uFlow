@@ -8,7 +8,7 @@ import socket
 
 SCREENS = ('capture', 'library', 'details', 'details25', 'details50', 'details75',
            'settings', 'sources', 'sourceedit', 'media', 'mediaedit', 'mediaguide', 'audio',
-           'directories', 'missing', 'live', 'stats')
+           'directories', 'missing', 'live', 'stats', 'threads', 'pageforward', 'pageback', 'videostats', 'videowakeon', 'videowakeoff', 'videoisolateon', 'videoisolateoff', 'next', 'previous')
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -17,7 +17,7 @@ def main():
     parser.add_argument('--screen', choices=SCREENS, default='capture')
     parser.add_argument('--output', type=pathlib.Path)
     args = parser.parse_args()
-    if args.screen != 'stats' and args.output is None:
+    if args.screen not in ('stats', 'threads', 'pageforward', 'pageback', 'videostats', 'videowakeon', 'videowakeoff', 'videoisolateon', 'videoisolateoff', 'next', 'previous') and args.output is None:
         parser.error('--output is required for screenshots')
     token = args.key.read_text().strip()
     if len(token) != 32 or any(c not in '0123456789abcdef' for c in token):
@@ -27,7 +27,7 @@ def main():
         connection.connect((args.host, 32180))
         connection.send(f'{token} {args.screen}'.encode())
         reply = connection.recv(1024)
-    if args.screen == 'stats':
+    if args.screen in ('stats', 'threads', 'pageforward', 'pageback', 'videostats', 'videowakeon', 'videowakeoff', 'videoisolateon', 'videoisolateoff', 'next', 'previous'):
         import json
         result = json.loads(reply)
         print(json.dumps(result, indent=2))

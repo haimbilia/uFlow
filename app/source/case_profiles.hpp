@@ -5,7 +5,16 @@
 // Display presets for common retail packaging. Regional/third-party boxes vary;
 // the library's explicit dimensions remain authoritative.
 namespace CaseProfiles {
-struct Size { int width=135, height=190, thickness=14; };
+struct Size {
+    int width=135, height=190, thickness=14;
+    // Some carton scans are authored as a portrait back/spine/front strip with
+    // all printing turned sideways.  The physical box is landscape, so render
+    // the conventional strip on its side while keeping standalone face art
+    // upright.
+    bool sidewaysSleeve=false;
+    // False also accepts the legacy wide landscape N64 default without turning it.
+    bool sidewaysDefaultSleeve=true;
+};
 inline Size For(std::string id, std::string launcher={}, std::string extensions={}) {
     for(auto *text:{&id,&launcher,&extensions})
         for(char &c:*text)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -18,8 +27,15 @@ inline Size For(std::string id, std::string launcher={}, std::string extensions=
     // User-supplied NES sleeve: 3366x2100, about 1538/290/1538 px.
     // Normalize its proportions to height 178; not a physical measurement.
     if(is("nes",".nes") || extensions.find(".unf")!=std::string::npos || extensions.find(".unif")!=std::string::npos)return {130,178,25};
-    if(is("snes",".sfc") || extensions.find(".smc")!=std::string::npos)return {178,125,30};
-    if(is("n64",".z64") || extensions.find(".v64")!=std::string::npos || extensions.find(".n64")!=std::string::npos)return {178,125,30};
+    // LaunchBox SNES "Full Sleeve" scans are 3366x2100: 1534px back,
+    // 298px spine, 1534px front.  Their face art is sideways inside a normal
+    // portrait sleeve strip.  178x125x25 is the same geometry normalized to
+    // uFlow's millimetre-sized profiles; sidewaysSleeve turns its full-sleeve
+    // front/back artwork while standalone landscape faces stay upright.
+    if(is("snes",".sfc") || extensions.find(".smc")!=std::string::npos)return {178,125,25,true};
+    // N64 retail scans share SNES's sideways faces. Keep compatibility with
+    // the older landscape generic sleeve as well as the new portrait strip.
+    if(is("n64",".z64") || extensions.find(".v64")!=std::string::npos || extensions.find(".n64")!=std::string::npos)return {178,125,30,true,false};
     if(is("gba",".gba"))return {127,127,25};
     if(is("pce",".pce"))return {142,125,10};
     if(is("msx",".mx1") || extensions.find(".mx2")!=std::string::npos)return {135,190,25};

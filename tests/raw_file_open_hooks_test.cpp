@@ -1,5 +1,6 @@
 // tools/test-raw-file-opens.ps1 inserts the ACTUAL four production hooks below.
 #include "RawNativePath.h"
+#include "RawNativePathStorage.h"
 #include <atomic>
 #include <cassert>
 #include <cstdint>
@@ -12,6 +13,7 @@ using FSMode = int;
 using FSOpenFileFlags = int;
 using FSErrorFlag = int;
 constexpr int FS_STATUS_OK = 0;
+constexpr int FS_STATUS_FATAL_ERROR = -1024;
 struct FSClient {};
 struct FSCmdBlock {};
 struct FSAsyncData { void *callback; void *ioMsgQueue; void *param; };
@@ -32,6 +34,14 @@ FSAsyncData async{&client, &block, &handle};
 std::string seenPath, seenMode;
 FSStatus result = 0;
 int calls = 0;
+bool failPathAllocation = false;
+bool nestedOpen = false;
+void *operator new[](std::size_t size, const std::nothrow_t &) noexcept {
+    if (failPathAllocation) return nullptr;
+    try { return ::operator new[](size); } catch (...) { return nullptr; }
+}
+FSStatus Raw_FSOpenFileAsync(FSClient *, FSCmdBlock *, const char *, const char *,
+                            FSFileHandle *, FSErrorFlag, FSAsyncData *);
 
 FSStatus Capture(FSClient *c, FSCmdBlock *b, const char *path, const char *mode,
                  FSFileHandle *h, FSErrorFlag mask, FSAsyncData *a) {
@@ -46,6 +56,12 @@ FSStatus Capture(FSClient *c, FSCmdBlock *b, const char *path, const char *mode,
 }
 FSStatus real_Raw_FSOpenFile(FSClient *c, FSCmdBlock *b, const char *p, const char *m,
                              FSFileHandle *h, FSErrorFlag e) {
+    if (nestedOpen) {
+        const std::string outerPath(p);
+        Raw_FSOpenFileAsync(c, b, "/vol/save/common/nested", m, h, e, &async);
+        assert(outerPath == p);
+        assert(seenPath.ends_with("/common/nested"));
+    }
     return Capture(c, b, p, m, h, e, nullptr);
 }
 FSStatus real_Raw_FSOpenFileAsync(FSClient *c, FSCmdBlock *b, const char *p, const char *m,
@@ -85,6 +101,29 @@ void Check(const char *path, const char *mode, const char *expected) {
     }
 }
 int main() {
+    static_assert(sizeof(RawNativePathStorage) <= 2 * sizeof(void *));
+    // Two simultaneously live buffers remain independent across nested calls.
+    RawNativePathStorage first(true), second(true);
+    assert(first.get() && second.get() && first.get() != second.get());
+    std::memset(first.get(), 'a', RawNativePathStorage::Capacity);
+    std::memset(second.get(), 'b', RawNativePathStorage::Capacity);
+    assert(first.get()[RawNativePathStorage::Capacity - 1] == 'a');
+    result = 0;
+    nestedOpen = true;
+    assert(Raw_FSOpenFile(&client, &block, "/vol/save/common/outer", "r", &handle, 0x52) == 0);
+    assert(seenPath.ends_with("/common/outer"));
+    nestedOpen = false;
+    failPathAllocation = true;
+    calls = 0;
+    assert(Raw_FSOpenFile(&client, &block, "/vol/save/x", "w", &handle, 0x52) == FS_STATUS_FATAL_ERROR);
+    assert(Raw_FSOpenFileAsync(&client, &block, "/vol/save/x", "w", &handle, 0x52, &async) == FS_STATUS_FATAL_ERROR);
+    assert(Raw_FSOpenFileEx(&client, &block, "/vol/save/x", "w", 0x660, 0x21, 24576, &handle, 0x52) == FS_STATUS_FATAL_ERROR);
+    assert(Raw_FSOpenFileExAsync(&client, &block, "/vol/save/x", "w", 0x660, 0x21, 24576, &handle, 0x52, &async) == FS_STATUS_FATAL_ERROR);
+    assert(calls == 0 && handle == 0x1234);
+    gLooseTitleInfo.active = false;
+    Check("/vol/save/x", "r", "/vol/save/x");
+    gLooseTitleInfo.active = true;
+    failPathAllocation = false;
     for (auto mode : {"r", "rb", "r+", "w", "wb", "w+", "a", "a+"}) {
         Check("/vol/save/common/savedata.dat", mode,
               "/vol/external01/wiiu/raw-saves/0005000010184d00/common/savedata.dat");

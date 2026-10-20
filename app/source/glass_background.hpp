@@ -7,14 +7,16 @@
 class GlassBackground {
 public:
     explicit GlassBackground(SDL_Renderer *renderer) : player_(renderer) {}
-    void Stop() { player_.Stop(); }
+    void Stop(bool retainFrame=false) { player_.Stop(retainFrame); }
     bool Released() { return player_.CanStart(); }
     bool Active() const { return player_.Active(); }
     bool Ready() const { return player_.Ready(); }
     bool Draw(int width,int height) const { return player_.Draw(width,height); }
     VideoPlayer::Stats Statistics() const { return player_.Statistics(); }
     void Update(bool enabled,bool paused,bool previewRequested,bool previewRetired) {
-        if(!enabled||previewRequested) { Stop(); Released(); return; }
+        if(!enabled) { Stop(); Released(); return; }
+        // Keep the stock menu frame while the game decoder opens and buffers.
+        if(previewRequested) { Stop(true); Released(); return; }
         if(!previewRetired) return;
         const bool available=player_.Active()||Released();
         if(!player_.Active()&&!failed_&&available) {

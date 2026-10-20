@@ -14,7 +14,14 @@ if ($LASTEXITCODE -ne 0) { throw 'Builder image failed.' }
 docker build --pull=false --provenance=false -f (Join-Path $project 'tools/video-ffmpeg.Dockerfile') -t uflow-builder:video $project
 if ($LASTEXITCODE -ne 0) { throw 'Video decoder builder image failed.' }
 
-docker run --rm --mount "type=bind,source=$project,target=/project" uflow-builder:video make -C /project/app clean all
+docker build --pull=false --provenance=false -f (Join-Path $project 'tools/cover-cache.Dockerfile') -t uflow-builder:covers $project
+if ($LASTEXITCODE -ne 0) { throw 'Cover texture builder image failed.' }
+
+docker build --pull=false --provenance=false -f (Join-Path $project 'tools/video-colour.Dockerfile') -t uflow-builder:video-colour $project
+if ($LASTEXITCODE -ne 0) { throw 'Video colour builder image failed.' }
+docker build --pull=false --provenance=false -f (Join-Path $project 'tools/video-nv12.Dockerfile') -t uflow-builder:video-nv12 $project
+if ($LASTEXITCODE -ne 0) { throw 'Native video planes builder image failed.' }
+docker run --rm --mount "type=bind,source=$project,target=/project" uflow-builder:video-nv12 make -C /project/app clean all
 if ($LASTEXITCODE -ne 0) { throw 'uFlow build failed.' }
 
 if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }

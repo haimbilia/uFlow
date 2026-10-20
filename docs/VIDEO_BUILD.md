@@ -1,3 +1,11 @@
+# Cover cache GPU safety (2026-10-02)
+
+The native BC3 importer is currently disabled after a console GPU hang. The app
+uses worker-side cached-mip expansion and public SDL texture uploads on every
+platform. The ordinary `uflow-builder:video` image builds this path; the old
+`covers` image/helper is experimental and is no longer linked into the app.
+Existing disk caches remain compatible. Console retest is required after build.
+
 # Video decoder build
 
 uFlow uses a decoding-only build of [GaryOderNichts/FFmpeg-wiiu](https://github.com/GaryOderNichts/FFmpeg-wiiu)
@@ -7,11 +15,45 @@ No GPL codecs, encoders, remote protocols or external codec packages are enabled
 padded framebuffer allocation, packet-size limits, error cleanup, callback-driven
 frame emission and timestamps. Hardware-specific behavior requires console tests.
 
+Intermittent decoder-open follow-up (2026-09-28): analysis of the console's
+H264DECInitParam maps status 0x01060000 to UVDCheckSegmentViolation. Its physical
+address check includes the one-past-end address and rejects a buffer crossing
+a 256 MiB segment. Workspace, frame and packet allocations now validate with
+H264DECCheckMemSegmentation. A rejected 1024-byte-aligned allocation is freed,
+then retried once with power-of-two alignment strictly larger than its size.
+The retry is validated too; virtual alignment alone is not assumed sufficient.
+Allocation sizes and retained-frame ownership remain unchanged. Fault-injection
+tests cover first-attempt rejection, bounded retry, allocation failure and
+retained frames under ASan/UBSan. Console validation is still required; this
+does not establish a fix for the separately observed mapped-heap lock stall.
+
+The September 28 playback candidate decodes directly into 1024-byte-aligned,
+reference-counted NV12 buffers, with 256-byte pitch and 16-line height padding.
+It removes the callback's full-image copy. A retained frame cannot return to the
+pool until its last reader releases it; pool teardown also permits outstanding
+frames to survive. Only the producer manipulates references, as before. Fresh
+allocations are flushed before hardware writes and outputs invalidated before
+CPU reads. Every allocated image passes the platform's memory-segmentation check.
+When packet timestamps fall behind the playback clock, only packets positively
+identified as non-reference pictures by h264.rpl may be skipped; references and
+presentation reordering remain intact. Skipped packets also advance the reorder
+watermark. No source videos are rewritten by the player.
+
+Run `tools/test-h264-adapter.ps1` for ASan/UBSan tests against real FFmpeg buffer
+ownership and stubbed console calls: padded layouts, retained frames, pool reuse,
+close/flush lifetime, allocation/init/decode errors and safe skipping. The normal
+video suite remains required. `native_ms` separates H264DECExecute wall time from
+the broader `decode_ms`; `skip_nonref` counts safe skips. These counters measure
+the candidate on the console; host success alone does not establish playback speed.
+
 From the project root, using the existing base builder:
 
 ```powershell
 docker build -f tools/video-ffmpeg.Dockerfile -t uflow-builder:video .
-docker run --rm --mount "type=bind,source=$($PWD.Path),target=/project" uflow-builder:video make -C /project/app
+docker build -f tools/cover-cache.Dockerfile -t uflow-builder:covers .
+docker build -f tools/video-colour.Dockerfile -t uflow-builder:video-colour .
+docker build -f tools/video-nv12.Dockerfile -t uflow-builder:video-nv12 .
+docker run --rm --mount "type=bind,source=$($PWD.Path),target=/project" uflow-builder:video-nv12 make -C /project/app
 ```
 
 `build.ps1` also builds this decoder image before the app. Keep app/build/*.o,
@@ -36,9 +78,30 @@ extended test's loop assertion. The LGPL notice is in `FFmpeg-LICENSE.txt` here.
 
 `tools/test-library.sh` covers old/new media settings, source association, AVI/MP4
 names, scope, depth and invalid values. The host renderer's `videochecks` command
-checks dynamic settings rows, touch scrolling, both playback layers and suppression
+checks dynamic settings rows, touch scrolling, all three preview modes and suppression
 by Settings, Details, input and navigation. Mount the sample at
 `/fixture/Disney-Bolt.mp4`; screenshots use the supplied output prefix.
+
+Glass Flow's Showcase metadata panel uses Settings' selected-category lens:
+clear glass material, soft shadow and a cyan wash, without an opaque underlay.
+Light lettering uses the existing subtle video shadow instead of the scan
+popup's multi-pass white halo. The existing 192x108 blur targets and lens scratch
+sample the live video; no additional texture or GPU readback is introduced.
+Surface, shadow and lettering follow the same reveal/reversal animation.
+Pixel Flow keeps its existing panel. Run videochecks, detailschecks and scanchecks
+to inspect both skins and intermediate transition frames.
+
+Showcase (mode 2) is the default for new preview sources. Modes 0/1 retain their
+saved Background/Foreground meanings. Showcase uses the same decoder and case
+geometry as the existing player/details screen: a complete turn into the lower
+left, then a compact theme-colored metadata panel. Entry and dismissal use the
+configured animation speed. Dismissal cancels audio/decoding immediately and
+retains only the last GPU texture for the short fade, releasing it at completion;
+menus, selection changes and system-background release discard it immediately.
+The host video test checks frame retention across asynchronous worker cleanup;
+`videochecks` captures both themes at quarter-transition poses and checks reversal,
+details entry and navigation interruption. The native installer generates mode 2
+for each selected system without replacing saved media settings on reinstall.
 
 The optional `UFLOW_PREVIEW_CHECKS` list chooses GPU regression checks in the
 visual-preview script. Its default remains `checks`; that older settings fixture
@@ -117,3 +180,15 @@ frame identities, DTS/missing-DTS release, capacity, EOF and loop reset. Set
 same reorder/lease path. `UFLOW_VIDEO_TEST_CXXFLAGS='-fsanitize=address,undefined
 -fno-omit-frame-pointer'` adds memory/UB checks. Injected slow conversion also
 compares leased image bytes before/after waiting while the producer runs ahead.
+# Preview audio read-ahead
+
+The packet reader overlaps local storage reads with video/audio decoding. It
+owns demux until joined; seek/close remain on the decoder worker after the join.
+The queue is capped at 96 packets and normally 512 KiB, with one oversized packet
+(up to the existing 8 MiB packet limit) allowed only into an empty queue; the
+reader may hold one pending packet. Decoded-image and PCM queues are unchanged.
+Playback waits for 200 ms of sound when possible, with a 400 ms startup fallback.
+`tools/test-video.sh` compares identical injected 10 ms packet reads and 22 ms
+video decodes in serial and parallel modes and checks audio underruns, bounds,
+looping, suspension, nonblocking cancellation and cleanup. Host success still
+needs a console retest using the original preview files.

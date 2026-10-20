@@ -3,7 +3,7 @@
   "schema": 1,
   "base_url": "https://karotech.io/updates/uFlow/",
   "channels": ["stable", "testing"],
-  "published_release": "2026.09.20-test5",
+  "published_release": "2026.10.20",
   "client_available": true,
-  "hardware_validation": "OTA install confirmed on test3; test5 browser navigation pending"
+  "hardware_validation": "Direct preview audio and startup confirmed smooth on Wii U. Release signature, HTTPS binary hash and installer tests passed; this version's OTA installation has not been retested on console."
 }

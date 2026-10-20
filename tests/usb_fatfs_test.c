@@ -34,6 +34,21 @@ int main(void){
     assert(f_read(&file,bytes,8,&got)==FR_OK&&got==5&&!strcmp(bytes,"hello"));
     assert(f_lseek(&file,1)==FR_OK);assert(f_read(&file,bytes,2,&got)==FR_OK&&got==2&&!memcmp(bytes,"el",2));assert(f_close(&file)==FR_OK);
     DIR dir;FILINFO info;assert(f_opendir(&dir,"0:/")==FR_OK);assert(f_readdir(&dir,&info)==FR_OK&&!strcmp(info.fname,"TEST.TXT"));assert(f_readdir(&dir,&info)==FR_OK&&!info.fname[0]);assert(f_closedir(&dir)==FR_OK);
+    /* DK Tropical Freeze opens /vol/content/. through the USB redirect. */
+    b=image+(START+32)*512;u32(b+16,0x0fffffff);
+    b=image+DATA*512+32;memcpy(b,"CONTENT    ",11);b[11]=0x10;u16(b+26,4);
+    b=image+(DATA+2)*512;memcpy(b,".          ",11);b[11]=0x10;u16(b+26,4);
+    memcpy(b+32,"..         ",11);b[43]=0x10;u16(b+58,0);
+    memcpy(b+64,"TEST    TXT",11);b[75]=0x20;u16(b+90,3);u32(b+92,5);
+    f_mount(NULL,"0:",0);assert(f_mount(&fs,"0:",1)==FR_OK);
+    assert(f_opendir(&dir,"0:/CONTENT/.")==FR_OK);assert(f_closedir(&dir)==FR_OK);
+    assert(f_opendir(&dir,"0:/CONTENT/./.")==FR_OK);assert(f_closedir(&dir)==FR_OK);
+    assert(f_opendir(&dir,"0:/.")==FR_OK);assert(f_closedir(&dir)==FR_OK);
+    assert(f_opendir(&dir,"0:/CONTENT/..")==FR_OK);assert(f_closedir(&dir)==FR_OK);
+    assert(f_open(&file,"0:/CONTENT/./TEST.TXT",FA_READ)==FR_OK);
+    memset(bytes,0,sizeof(bytes));assert(f_read(&file,bytes,8,&got)==FR_OK&&got==5&&!strcmp(bytes,"hello"));assert(f_close(&file)==FR_OK);
+    assert(f_open(&file,"0:/CONTENT/../TEST.TXT",FA_READ)==FR_OK);assert(f_close(&file)==FR_OK);
+    assert(f_opendir(&dir,"0:/MISSING/../CONTENT")==FR_NO_PATH);
     assert(f_stat("0:/missing.bin",&info)==FR_NO_FILE);assert(reads>0);f_mount(NULL,"0:",0);
     memset(image,0,(START+TOTAL)*512);assert(f_mount(&fs,"0:",1)==FR_NO_FILESYSTEM);f_mount(NULL,"0:",0);free(image);
     puts("PASS: read-only FAT32 MBR mount, file read/seek, directory enumeration, missing file and invalid disk");

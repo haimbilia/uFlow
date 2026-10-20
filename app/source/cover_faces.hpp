@@ -5,7 +5,7 @@
 
 namespace CoverFaces {
 enum class Face { Back, Spine, Front };
-struct Selection { std::string path; float u0=0, u1=1; };
+struct Selection { std::string path; float u0=0, u1=1; bool sleeve=false; };
 // A full sleeve wins. Otherwise each face independently falls back to the
 // corresponding section of the default sleeve. Front images are never guessed
 // to be sleeves from their aspect ratio (landscape boxes are valid fronts).
@@ -15,7 +15,7 @@ Selection Resolve(const GameEntry &game,Face face,float backEnd,float frontStart
         const bool authored=path==game.defaultSleevePath && game.defaultBackEnd>0 && game.defaultFrontStart>game.defaultBackEnd && game.defaultFrontStart<1;
         const float back=authored?game.defaultBackEnd:backEnd,front=authored?game.defaultFrontStart:frontStart;
         return Selection{path,face==Face::Back?0.f:face==Face::Spine?back:front,
-                              face==Face::Back?back:face==Face::Spine?front:1.f};
+                              face==Face::Back?back:face==Face::Spine?front:1.f,true};
     };
     if(!game.fullCoverPath.empty() && available(game.fullCoverPath))return sleeve(game.fullCoverPath);
     const auto &part=face==Face::Front?game.coverPath:face==Face::Back?game.backCoverPath:game.spinePath;
@@ -24,6 +24,18 @@ Selection Resolve(const GameEntry &game,Face face,float backEnd,float frontStart
     return {};
 }
 struct Fit { float x0=0,y0=0,x1=1,y1=1; };
+// Recognize only the known legacy N64 generic sleeve, which was authored
+// as a wide landscape strip. Never infer standalone face orientation.
+inline bool TurnSleeve(bool sideways,bool defaultSideways,bool sleeve,bool fallback,int width,int height) {
+    return sideways && sleeve && (!fallback || defaultSideways || (height>0 && width<height*2));
+}
+struct UV { float u,v; };
+// SNES retail scans print the front clockwise and back counterclockwise.
+// The bundled generic SNES sleeve uses the opposite authoring orientation.
+inline UV SidewaysUV(float u0,float u1,float x,float y,Face face,bool defaultSleeve) {
+    const bool clockwise=(face==Face::Back)!=defaultSleeve;
+    return clockwise ? UV{u0+y*(u1-u0),1.f-x} : UV{u1-y*(u1-u0),x};
+}
 inline Fit Contain(float sourceAspect,float faceAspect) {
     Fit fit;
     if(sourceAspect<=0 || faceAspect<=0)return fit;

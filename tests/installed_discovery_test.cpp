@@ -36,5 +36,16 @@ int main() {
     std::strcpy(testInstalledTitles[0].indexedDevice,"usb");
     assert(RefreshInstalledGames(games));
     assert(std::any_of(games.begin(),games.end(),[](const auto &g){return g.installed&&g.storage=="usb";}));
+    const std::string gc="fs:/vol/storage_mlc01/usr/title/00050002/474b4745";
+    std::filesystem::create_directories(gc+"/code");std::filesystem::create_directories(gc+"/meta");
+    std::ofstream(gc+"/code/app.xml")<<"<app/>";std::ofstream(gc+"/code/fw.img")<<"firmware";
+    std::ofstream(gc+"/meta/meta.xml")<<"<product_code>WUP-N-GKGE</product_code><longname_en>GC injection</longname_en>";
+    title.titleId=0x00050002474b4745ULL;title.appType=MCP_APP_TYPE_GAME_WII;
+    std::strcpy(title.path,"/vol/storage_mlc01/usr/title/00050002/474b4745");testInstalledTitles.push_back(title);
+    assert(RefreshInstalledGames(games));
+    auto found=std::find_if(games.begin(),games.end(),[](const auto &g){return g.vcSystem=="gamecube";});
+    assert(found!=games.end()&&found->installedTitleId==title.titleId&&found->platform==Platform::WiiU);
+    UserSettings prefs;prefs.autoSortInstalledVC=true;ApplyVCCategories(games,prefs,{});
+    assert(GameLibraryId(*found)=="gamecube"&&GameMatchesLibrary(*found,"gamecube"));
     std::cout<<"PASS: startup installed discovery, cached art, removal, SD preservation, failure and duplicate handling\n";
 }

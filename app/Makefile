@@ -41,7 +41,7 @@ export VPATH := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
 export DEPSDIR := $(CURDIR)/$(BUILD)
 CPPFILES := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
 CFILES := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
-BINFILES := glass.ttf
+BINFILES := glass.ttf switch.ttf
 export OFILES_BIN := $(addsuffix .o,$(BINFILES))
 export OFILES_SOURCES := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o)
 export OFILES := $(OFILES_BIN) $(OFILES_SOURCES)
@@ -66,9 +66,9 @@ else
 .PHONY: all
 DEPENDS := $(OFILES:.o=.d)
 all: $(OUTPUT).wuhb
-$(OUTPUT).wuhb: $(OUTPUT).rpx ../content/ui/logo.png ../content/ui/startup.mp4 $(wildcard ../content/skins/glass/background.mp4) ../content/updates/cacert.pem ../content/updates/install-helper.rpx
+$(OUTPUT).wuhb: $(OUTPUT).rpx ../content/ui/logo.png ../content/ui/startup.mp4 $(wildcard ../content/skins/glass/background.mp4) $(wildcard ../content/sounds/*) ../content/updates/cacert.pem ../content/updates/install-helper.rpx
 $(OUTPUT).rpx: $(OUTPUT).elf
-$(OUTPUT).elf: $(OFILES)
+$(OUTPUT).elf: $(OFILES) $(foreach dir,$(LIBDIRS),$(wildcard $(dir)/lib/libSDL2.a))
 $(OFILES_SOURCES): $(HFILES)
 %.ttf.o %_ttf.h: %.ttf
 	@echo $(notdir $<)

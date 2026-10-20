@@ -3,6 +3,21 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <cmath>
+
+// Authenticated live-check A/B control; no persisted setting or system-thread changes.
+void VideoDecoderWakePriority(bool enabled);
+
+// Fixed source-frame cadence keeps selection identical before and after
+// decoding. Reference frames outside it must still be decoded, but need not
+// be converted/uploaded. Invalid timestamps/rates never authorize skipping.
+inline bool VideoPreviewFrameWanted(double seconds, double fps) {
+    if (!std::isfinite(seconds) || !std::isfinite(fps) || fps<=30 || fps>240 || seconds<0)
+        return true;
+    const int step=static_cast<int>(std::ceil(fps/30.0));
+    const double frame=std::floor(seconds*fps+.5);
+    return std::fmod(frame,step)<.5;
+}
 
 inline bool WiiUVideoH264Supported(int profile, int level) {
     return (profile == 66 || profile == 77 || profile == 100) && level > 0 && level <= 42;
@@ -30,7 +45,7 @@ private:
     bool armed_ = false, fired_ = false, dismissed_ = false;
 };
 
-// Decode and color conversion use separate cancellable workers. Only the UI
+// Reading, decoding and color conversion use separate cancellable workers. Only the UI
 // creates/updates textures. Owned-frame queues are bounded; no whole-file loads.
 class VideoPlayer {
 public:
@@ -43,6 +58,10 @@ public:
         int videoLagMs;
         std::uint32_t handoffUs, decoderCores, converterCores;
         std::uint32_t reorderedFrames, timestampCorrections;
+        std::uint32_t nativeDecodeUs, skippedNonreference;
+        std::uint32_t packetQueuePeak;
+        bool gpuColour;
+        bool nativePlanes;
     };
     explicit VideoPlayer(SDL_Renderer *renderer);
     ~VideoPlayer();
@@ -50,12 +69,13 @@ public:
     VideoPlayer &operator=(const VideoPlayer &) = delete;
     bool Start(const std::string &path, int volume, bool loop = true);
     bool CanStart(); // Reap completed cancellation without blocking.
-    void Stop();
+    void Stop(bool retainFrame = false); // Optional last GPU frame for a UI fade; playback stops immediately.
     void Suspend(bool suspended); // atomics only; safe on foreground release
     bool Update();
-    bool Draw(int width, int height) const;
+    bool Draw(int width, int height, Uint8 opacity = 255) const;
     bool Active() const;
     bool Ready() const;
+    bool Finished() const; // Natural end, after the final picture and audio drain.
     std::string TakeError();
     Stats Statistics() const;
 private:

@@ -4,31 +4,44 @@ uFlow is a cover-first Wii U game library inspired by the fast console workflow
 of Aurora. One interface discovers Wii U, Wii, and GameCube games on FAT32 media;
 platform-specific launch adapters stay hidden behind a single **Launch** action.
 
+**[Downloads, setup guides and showcase videos](https://karotech.io/uflow/)**
+
+uFlow requires a Wii U running Aroma. Copy `uFlow-Setup.wuhb` to
+`SD:/wiiu/apps/`, launch Setup from Wii U Menu, review the selected components,
+install, then fully reboot the console. Setup does not install Aroma.
+
 ## Current status
 
 This is an active hardware-tested development project, not a finished universal
 emulator. It includes:
 
-- four animated 3D layouts (Classic Flow, Carousel, Flat Row, and Stacked) with
-  Wii U, Wii, GameCube, and Favorites tabs. Stacked is a bookshelf: side cases
-  turn their spines to the viewer and stand on one shelf line at their real
-  sizes. Cover Spacing Compact packs every layout tightly; Wide leaves gaps;
-- two switchable skins: the original `Pixel Deck` and Wii U-inspired
-  `GlassFlow`, with futuristic type, layered glass, and Aurora-style details;
+- Box, Logo, Media and Thumbnails cover types, each with compatible layouts.
+  Boxes include Classic Flow, Carousel, Flat Row, Stacked, Fan, Arc, Gallery,
+  Wall, Bookshelf and Curved Wall. Logos include four directional wheels;
+  walls support four-direction navigation and wraparound;
+- continuous cover-spacing and zoom settings, plus adjustable inspection zoom;
+- GlassFlow, Pixel Deck, Switch Light and Switch Dark skins, with external
+  manifests and assets for user-created skins. See [skin format](docs/SKINS.md);
 - a live case mesh with three-axis transitions, per-game artwork, optional
   projected reflections, soft shadows, media-rich title details, favorites,
-  analog navigation, and accelerated scrolling;
+  independent D-pad/stick navigation, touch swipes, multiple bindings and
+  button combinations;
 - an Aurora-style settings dashboard with a directory browser, multiple
   content and media paths, per-directory type/depth options, manual rescan,
   and persistent view options;
 - scanning for Loadiine-format Wii U games, Wii `.wbfs`, and GameCube `.iso`;
 - listing and launching installed Wii U games from internal storage and Wii U USB;
+- configurable gameplay-preview delay, and an idle demo mode that visits games
+  with videos and returns to the original game when interrupted;
+- current Wii U account profile, available play statistics and personal ratings;
+- optional Wii U title installation through the Install Content library;
 - the experimental Wii U loose-title adapter retained behind the new UI.
 
 Wii and GameCube launch through separate WiiFlow/Nintendont backends. DS, NES,
 SNES, GBA, N64, TurboGrafx-16/PC Engine and MSX have VC injection adapters;
 compatibility depends on the ROM and supplied VC base. NooDS is an additional
-DS backend. ROMs, Nintendo VC bases and console keys are not in this repository.
+DS backend. RetroArch offers NES, SNES, GBA and PlayStation backends. ROMs,
+Nintendo VC bases and console keys are not in this repository.
 
 GlassFlow is the default skin. Media directories are grouped by content type;
 system-specific case proportions and independent front/back/spine artwork fall
@@ -72,10 +85,14 @@ These are the default library bindings. Settings > Controls lets you remap them;
 the main-screen hints, empty Favorites prompt, and cover-inspection hints follow
 the active mappings immediately. Settings and Details keep their menu navigation
 controls: A selects/activates, B goes back, and Plus opens Settings from Details.
+Use Replace or Add to assign a button or combination, and Clear to remove an
+action's bindings. D-pad and both sticks can be assigned independently.
+Next Layout is available as an action without a default binding.
 
 | Input | Action |
 |---|---|
-| D-pad / left stick | Move through the coverflow; hold left/right to accelerate; hold up/down to inspect the cover |
+| D-pad / left stick | Navigate the library, including four directions in wall layouts |
+| Right stick up / down | Hold to inspect the front / back cover |
 | L / R | Change platform tab |
 | ZL / ZR | Jump ten games |
 | A | Launch |
@@ -83,7 +100,9 @@ controls: A selects/activates, B goes back, and Plus opens Settings from Details
 | X | Toggle favorite |
 | Minus | Launch options: start the selected title once with any compatible launcher (e.g. NooDS or VC injection for DS, RetroArch or VC injection for NES/SNES/GBA, WiiFlow or USB Loader GX for Wii). Scroll to reach additional launchers. Wii VC uses Nintendo VC on USB; its broken WBFS conversion option is disabled. In the list, + makes the highlighted launcher that title's default; choosing its content type's launcher clears the per-title choice |
 | Plus | Settings |
-| B | Back / close panels; never exits uFlow |
+| B | Sort while browsing; back / close panels elsewhere; never exits uFlow |
+| R3 | Hold the A–Z selector |
+| L3 | Focus system buttons in Switch skins |
 | HOME | System menu / exit uFlow |
 
 Inside Settings, use D-pad/left stick **left/right** to move focus between the
@@ -104,12 +123,14 @@ Source lists, editors, and directory browsing share the main Settings pane;
 `B` goes up a directory/back, and `X` cancels directory selection. A successful
 scan is saved as a catalog beside uFlow, so later starts show the last known
 library immediately. Use **Scan Now** after adding/removing content or changing
-media; changing a source or content type automatically invalidates that catalog.
+media. Source edits preserve the saved library; use Scan Now to refresh discovery.
 Settings and source paths are saved beside uFlow on the FAT32 device.
 
 **General → Audio** selects looping menu music, on/off, and volume. Put MP3, OGG Vorbis,
 or WAV tracks (up to 32 MiB each) in `/wiiu/apps/uFlow/music/`, choose **Reload
-Music List**, then select a track and enable music. No tracks are bundled.
+Music List**, then select a track and enable music. Setup includes optional menu
+music assets. Menu sound effects have a separate on/off setting and volume;
+see [menu sounds](docs/MENU_SOUNDS.md).
 Only the selected file is retained in memory; playback does not keep reading
 the drive. Music pauses in the background and stops before game launch/exit.
 If a track is missing or playback fails, the switch returns to OFF and Audio
@@ -135,7 +156,8 @@ The optional personal GlassFlow background video is not committed; without it
 the skin uses its built-in background. Native installation is built using
 `tools/build-native-installer.ps1` after preparing locally supplied dependencies;
 follow [the release workflow](docs/native-installer-release.md). The personal
-installer embeds Nintendo VC bases and must not be publicly redistributed.
+installer can embed locally supplied Nintendo VC bases. These bases and console
+keys are not tracked in this source repository.
 
 GlassFlow embeds the Oxanium typeface under the SIL Open Font License; its
 license is included at `app/data/OFL.txt`.

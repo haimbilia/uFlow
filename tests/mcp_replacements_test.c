@@ -21,6 +21,7 @@ static int FSA_Unmount(int fd, const char *p, unsigned flags) {
     (void)fd; (void)p; (void)flags; ++unmounts; return 0;
 }
 static void RawUsbClear(void) {}
+static void RawHaiClear(void) {}
 static int RawUsbRead(const char *p, void *out, unsigned n, unsigned pos) {
     (void)p; (void)out; (void)n; (void)pos; return -6;
 }

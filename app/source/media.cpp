@@ -1,6 +1,8 @@
 #include "library.hpp"
+#include "library_tabs.hpp"
 #include "browser_path.hpp"
 #include "directory_entry.hpp"
+#include "saved_file.hpp"
 #include <cerrno>
 #include "rom_art.hpp"
 #include <algorithm>
@@ -15,7 +17,8 @@
 namespace {
 constexpr const char *kRoot = "fs:/vol/external01/wiiu/apps/uFlow";
 constexpr const char *kConfig = "fs:/vol/external01/wiiu/apps/uFlow/media_sources.cfg";
-constexpr std::array<const char *,kMediaTypeCount> kKinds{"covers","fullcovers","backgrounds","logos","previews","metadata","back","spine"};
+constexpr const char *kRefresh = "fs:/vol/external01/wiiu/apps/uFlow/media-refresh.pending";
+constexpr std::array<const char *,kMediaTypeCount> kKinds{"covers","fullcovers","backgrounds","logos","previews","metadata","back","spine","media"};
 std::string Lower(std::string s) {
     for (auto &c:s) c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
@@ -148,7 +151,7 @@ std::vector<std::string> ListMediaFiles(const std::string &path,MediaType type,c
     return directories;
 }
 const char *MediaTypeName(MediaType type) {
-    constexpr const char *names[]={"FRONT COVERS","FULL SLEEVES","BACKGROUNDS","LOGOS","GAMEPLAY VIDEOS","METADATA","BACK COVERS","SPINES"};
+    constexpr const char *names[]={"FRONT COVERS","FULL SLEEVES","BACKGROUNDS","LOGOS","GAMEPLAY VIDEOS","METADATA","BACK COVERS","SPINES","DISCS / CARTRIDGES"};
     const int value=static_cast<int>(type);
     return value>=0 && value<kMediaTypeCount ? names[value] : "UNKNOWN";
 }
@@ -166,7 +169,7 @@ std::vector<MediaSource> LoadMediaSources() {
     std::vector<MediaSource> result;
     if (!input) {
         for (int i=0;i<kMediaTypeCount;++i) result.push_back({static_cast<MediaType>(i),-1,std::string(kRoot)+"/media/"+kKinds[i],true,0});
-        for(auto &source:result) if(IsCoverMedia(source.type))source.defaultFile=FindDefaultMediaFile(source);
+        for(auto &source:result) if(IsCoverMedia(source.type) || source.type==MediaType::PhysicalMedia)source.defaultFile=FindDefaultMediaFile(source);
         return result; // existing media keeps working without migration writes
     }
     std::string line;
@@ -202,11 +205,11 @@ std::vector<MediaSource> LoadMediaSources() {
             };
             auto &video = result.back().video;
             video.delayMs = integer(1000,0,10000);
-            video.foreground = integer(1,0,1) != 0;
+            video.mode = static_cast<VideoMode>(integer(2,0,2));
             video.volume = integer(70,0,100);
             std::string fallback;
             if(std::getline(row,fallback,'\t')) result.back().defaultFile=Trim(fallback);
-            if(IsCoverMedia(result.back().type) && result.back().defaultFile.empty())
+            if((IsCoverMedia(result.back().type) || result.back().type==MediaType::PhysicalMedia) && result.back().defaultFile.empty())
                 result.back().defaultFile=FindDefaultMediaFile(result.back());
             video.foregroundOpacity=integer(100,0,100);
         } catch (...) {}
@@ -218,8 +221,8 @@ std::vector<MediaSource> LoadMediaSources() {
     for(const auto &sleeve:configured) if(sleeve.type==MediaType::FullCover) {
         const auto slash=sleeve.path.find_last_of('/');
         if(slash==std::string::npos)continue;
-        for(const auto &[type,folder]:std::array<std::pair<MediaType,const char *>,3>{{
-                {MediaType::Cover,"front"},{MediaType::BackCover,"back"},{MediaType::Spine,"spine"}}}) {
+        for(const auto &[type,folder]:std::array<std::pair<MediaType,const char *>,4>{{
+                {MediaType::Cover,"front"},{MediaType::BackCover,"back"},{MediaType::Spine,"spine"},{MediaType::PhysicalMedia,"media"}}}) {
             const auto path=sleeve.path.substr(0,slash)+"/"+folder;
             struct stat info{};
             if(stat(path.c_str(),&info) || !S_ISDIR(info.st_mode))continue;
@@ -230,6 +233,16 @@ std::vector<MediaSource> LoadMediaSources() {
     }
     return result;
 }
+bool MediaRefreshNeeded() {
+    struct stat info{};
+    return stat(kRefresh,&info)==0;
+}
+bool RequestMediaRefresh() {
+    mkdir(kRoot,0777);
+    std::ofstream output(kRefresh);output<<"pending\n";output.close();
+    return !output.fail();
+}
+void CompleteMediaRefresh() { std::remove(kRefresh); }
 bool SaveMediaSources(const std::vector<MediaSource> &sources) {
     for (const auto &source:sources) {
         const int type=static_cast<int>(source.type);
@@ -238,14 +251,24 @@ bool SaveMediaSources(const std::vector<MediaSource> &sources) {
             source.defaultFile.find_first_of("\t\r\n")!=std::string::npos ||
             (!source.defaultFile.empty() && !MediaFileMatches(source.type,source.defaultFile))) return false;
     }
+    const auto previous=LoadMediaSources();
+    const bool matchingChanged=previous.size()!=sources.size() ||
+        !std::equal(previous.begin(),previous.end(),sources.begin(),sources.end(),[](const auto &a,const auto &b){
+            return a.type==b.type && a.library==b.library && a.libraryId==b.libraryId &&
+                a.enabled==b.enabled && a.depth==b.depth && a.path==b.path && a.defaultFile==b.defaultFile;
+        });
+    // Playback options are read live. Artwork edits only mark media matching
+    // pending, including across restart; they never invalidate the game catalog.
     mkdir(kRoot,0777);
-    std::ofstream output(kConfig,std::ios::trunc);
+    if(matchingChanged && !RequestMediaRefresh())return false;
+    const std::string temporary=std::string(kConfig)+".tmp";
+    std::ofstream output(temporary,std::ios::trunc);
     for (const auto &source:sources) {
         const int type=static_cast<int>(source.type);
         output<<kKinds[type]<<'\t'<<(source.libraryId.empty()?std::to_string(source.library):"id:"+source.libraryId)<<'\t'<<source.enabled<<'\t'
               <<std::clamp(source.depth,0,8)<<'\t'<<source.path;
         if (source.type == MediaType::Preview || !source.defaultFile.empty())
-            output<<'\t'<<std::clamp(source.video.delayMs,0,10000)<<'\t'<<source.video.foreground
+            output<<'\t'<<std::clamp(source.video.delayMs,0,10000)<<'\t'<<std::clamp(static_cast<int>(source.video.mode),0,2)
                   <<'\t'<<std::clamp(source.video.volume,0,100);
         if(source.type==MediaType::Preview)
             output<<'\t'<<source.defaultFile<<'\t'<<std::clamp(source.video.foregroundOpacity,0,100);
@@ -253,9 +276,11 @@ bool SaveMediaSources(const std::vector<MediaSource> &sources) {
         output<<'\n';
     }
     output.flush();
-    const bool saved = static_cast<bool>(output);
-    if (saved) InvalidateLibraryCache();
-    return saved;
+    output.close();
+    if(output.fail() || !SavedFile::Commit(temporary,kConfig)) {
+        std::remove(temporary.c_str());return false;
+    }
+    return true;
 }
 const MediaSource *VideoSourceFor(const std::vector<MediaSource> &sources, const GameEntry &game) {
     const MediaSource *best = nullptr;
@@ -270,8 +295,8 @@ const MediaSource *VideoSourceFor(const std::vector<MediaSource> &sources, const
         }
         int score;
         if (!source.libraryId.empty()) {
-            if (source.libraryId != game.libraryId) continue;
-            score = 2;
+            if (source.libraryId != game.libraryId && source.libraryId != game.mediaLibraryId) continue;
+            score = source.libraryId==game.mediaLibraryId?3:2;
         } else if (source.library == static_cast<int>(game.platform)) score = 1;
         else if (source.library == -1) score = 0;
         else continue;
@@ -279,11 +304,11 @@ const MediaSource *VideoSourceFor(const std::vector<MediaSource> &sources, const
     }
     return best;
 }
-void EnrichLibraryMedia(std::vector<GameEntry> &games,const ScanObserver &progress) {
+void EnrichLibraryMedia(std::vector<GameEntry> &games,const ScanObserver &progress,const std::vector<MediaSource> *scopedSources) {
     Index index;
     std::array<std::vector<Asset>,kMediaTypeCount> defaults;
     std::map<std::string,std::array<float,2>> layouts;
-    for (const auto &source:LoadMediaSources()) if (source.enabled) {
+    for (const auto &source:scopedSources?*scopedSources:LoadMediaSources()) if (source.enabled) {
         IndexDirectory(index,source,source.path,source.depth,progress,games.size());
         const auto path=DefaultPath(source);
         struct stat info{};
@@ -300,6 +325,7 @@ void EnrichLibraryMedia(std::vector<GameEntry> &games,const ScanObserver &progre
     }
     std::size_t completed=0;
     for (auto &game:games) {
+        RestoreSourceMedia(game);
         if(progress)progress({"MATCHING ARTWORK",game.absolutePath,games.size(),completed,games.size()});
         game.fullCoverPath=Find(index,MediaType::FullCover,game);
         game.backCoverPath=Find(index,MediaType::BackCover,game);
@@ -314,6 +340,8 @@ void EnrichLibraryMedia(std::vector<GameEntry> &games,const ScanObserver &progre
         const auto background=Find(index,MediaType::Background,game);
         if (!background.empty()) game.backgroundPath=background;
         game.logoPath=Find(index,MediaType::Logo,game);
+        game.physicalMediaPath=Find(index,MediaType::PhysicalMedia,game);
+        if(game.physicalMediaPath.empty())game.physicalMediaPath=FindAsset(defaults[static_cast<int>(MediaType::PhysicalMedia)],game);
         game.previewPath=Find(index,MediaType::Preview,game);
         const auto metadata=Find(index,MediaType::Metadata,game);
         Metadata(game,metadata.empty()?FindAsset(defaults[static_cast<int>(MediaType::Metadata)],game):metadata,metadata.empty());
@@ -336,3 +364,36 @@ void EnrichLibraryMedia(std::vector<GameEntry> &games,const ScanObserver &progre
     }
     if(progress)progress({"MATCHING ARTWORK","",games.size(),completed,games.size()});
 } // index freed after scan; no media directory work during rendering
+
+void ApplyContentTypeMedia(std::vector<GameEntry> &games,const std::vector<LibraryDefinition> &libraries,const ScanObserver &progress){
+    std::map<std::string,std::vector<size_t>> groups;
+    for(size_t i=0;i<games.size();++i){
+        RestoreSourceMedia(games[i]);
+        const auto id=DesiredMediaLibrary(games[i],libraries);
+        if(id!=games[i].libraryId)groups[id].push_back(i);
+    }
+    if(groups.empty())return;
+    const auto sources=LoadMediaSources();
+    for(const auto &[id,indices]:groups){
+        const auto definition=std::find_if(libraries.begin(),libraries.end(),[&](const auto &l){return l.id==id;});
+        if(definition==libraries.end())continue;
+        std::vector<MediaSource> scoped;
+        for(const auto &s:sources)if(s.enabled && (s.libraryId==id ||
+            (s.libraryId.empty()&&definition->parser!=Platform::Files&&s.library==static_cast<int>(definition->parser))))scoped.push_back(s);
+        std::vector<GameEntry> variants;
+        for(auto i:indices){auto variant=games[i];variant.libraryId=id;variant.platform=definition->parser;
+            SetGameMedia(variant,{});variants.push_back(std::move(variant));}
+        EnrichLibraryMedia(variants,progress,&scoped);
+        for(size_t n=0;n<indices.size();++n){auto &game=games[indices[n]];
+            game.sourceMedia=std::make_shared<GameMedia>(CaptureGameMedia(game));
+            auto appearance=CaptureGameMedia(variants[n]);
+            // Keep a working preview/backdrop when that system has no replacement.
+            // Covers never fall back to the source DVD sleeve in this mode.
+            if(appearance.background.empty())appearance.background=game.backgroundPath;
+            if(appearance.logo.empty())appearance.logo=game.logoPath;
+            if(appearance.physical.empty())appearance.physical=game.physicalMediaPath;
+            if(appearance.video.empty())appearance.video=game.previewPath;
+            SetGameMedia(game,appearance);game.mediaLibraryId=id;
+        }
+    }
+}

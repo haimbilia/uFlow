@@ -10,4 +10,10 @@ ffmpeg -v error -f lavfi -i testsrc2=size=320x240:rate=25 -f lavfi -i sine=frequ
     -t 0.9 -c:v mpeg4 -c:a pcm_s16le "$testdir/sample.avi"
 ffmpeg -v error -f lavfi -i testsrc2=size=320x180:rate=30 -t 0.9 -c:v mjpeg -threads 1 "$testdir/silent.avi"
 ffmpeg -v error -f lavfi -i testsrc2=size=320x180:rate=30 -frames:v 1 -c:v libx264 -pix_fmt yuv420p "$testdir/oneframe.mp4"
-UFLOW_VIDEO_TINY_SAMPLE="$testdir/oneframe.mp4" SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy "$testdir/check" "$testdir/sample with spaces.mp4" "$testdir/sample.avi" "$testdir/silent.avi" ${UFLOW_VIDEO_SAMPLE:+"$UFLOW_VIDEO_SAMPLE"}
+ffmpeg -v error -f lavfi -i testsrc2=size=320x180:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 \
+    -t 0.12 -c:v libx264 -pix_fmt yuv420p -c:a aac "$testdir/short-audio.mp4"
+ffmpeg -v error -f lavfi -i testsrc2=size=320x180:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 \
+    -t 7 -c:v libx264 -pix_fmt yuv420p -c:a aac -movflags +faststart "$testdir/audio-stress.mp4"
+ffmpeg -v error -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 \
+    -t 0.9 -c:v rawvideo -pix_fmt nv12 -threads 1 -c:a pcm_s16le "$testdir/native.nut"
+UFLOW_VIDEO_SHORT_AUDIO_SAMPLE="$testdir/short-audio.mp4" UFLOW_VIDEO_NATIVE_SAMPLE="$testdir/native.nut" UFLOW_VIDEO_AUDIO_STRESS="$testdir/audio-stress.mp4" UFLOW_VIDEO_TINY_SAMPLE="$testdir/oneframe.mp4" SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy "$testdir/check" "$testdir/sample with spaces.mp4" "$testdir/sample.avi" "$testdir/silent.avi" ${UFLOW_VIDEO_SAMPLE:+"$UFLOW_VIDEO_SAMPLE"}

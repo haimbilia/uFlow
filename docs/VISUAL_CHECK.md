@@ -1,5 +1,47 @@
 # Visual iteration
 
+`startviewchecks` verifies controller/touch selection in General > Start View,
+independent of the currently browsed library. Startup resolves the persisted
+library ID after applying VC categories, with first-available fallback when
+missing and legacy numeric-index support. Tests cover reordered tabs, Favorites,
+wrapping and more than five libraries. Settings/native installer tests cover
+round trips, default All and preservation on reinstall.
+
+`settingsactionchecks` exercises the fixed bottom action row in both skins:
+Down from the last field reaches buttons, Left/Right selects enabled actions,
+Up returns to the field, and A/touch activate the same handlers. It captures
+General, Library, Media, editors, browser, launchers, guide and keyboard pages.
+Save (+) and Delete (X) occupy the same slots across editors; their former
+scrolling rows and duplicate helper text are removed. Check the complete button
+bounds, flat item highlights over one frosted panel, and no library footer
+behind Settings. Console appearance/input remain a separate hardware check.
+
+`coverzoomchecks` covers the Display slider in both skins, controller steps,
+touch dragging/clamping, scrolled hit testing and 40/120/200% captures across
+all four layouts with flat/3D covers. `settings` checks persistence and legacy
+bounds; native installer tests check default selection and preserved zoom.
+
+
+`launchanimationchecks` captures spin/zoom/fade samples from library, Details,
+Showcase and flat covers in both skins. It checks cancellation, target reuse,
+restored blend/color/alpha state, unchanged selection, a 32/1349 header and empty
+0/0 state. Native launch dispatch is never invoked by this host-only check.
+Verify final frames are black and visually inspect the turn and intermediate
+opacity. Console timing and HOME cancellation still require hardware validation.
+
+`accentchecks` renders all 17 Display accent choices in both skins and checks
+the actual selected swatch, Platform following GameCube, controller/touch wrap,
+and different focused glass colors. It captures representative library, Details,
+scan and Showcase scenes. `settings` in `tools/test-library.sh` covers palette
+persistence, legacy IDs and bounds. Console appearance remains a hardware check.
+
+`backgroundchecks` checks selected artwork at screen resolution, transparency
+endpoints/midpoint, both skins, Details entry and cached reuse, front/back cover
+inspection, delayed asynchronous arrival after opening Details, and controller/
+touch adjustment of the Display transparency row. `asyncartworkchecks` additionally
+checks that the selected background survives detail-cache eviction. These are
+host rendering/cache checks, not console timing or freeze validation.
+
 Use the real SDL renderer, not a separate HTML mockup. Keep `dist/visual-before`
 as the baseline and `dist/visual-after` as the current review set.
 
@@ -41,6 +83,24 @@ The development service accepts authenticated, fixed commands over UDP 32180:
 `capture`, `library`, `details`, `details25`, `details50`, `details75`, `settings`,
 `sources`, `sourceedit`, `media`, `mediaedit`, `mediaguide`, `directories`, `audio`, `missing`,
 `live`. No arbitrary paths, shell, or launch commands.
+
+With the development key enabled, startup also emits a bounded thread inventory
+to the console system log. `threads` repeats that read-only snapshot and returns
+the logged count as JSON. It includes a guarded observation of the mapped-heap
+lock identified in the September 28 heartbeat dump; it never acquires or clears
+that lock. Thread state is a transient observation, not a consistent scheduler
+snapshot. Capture with `tools/capture-syslog.py` before reproducing the failure.
+Authenticated `pageforward` / `pageback` perform one ordinary ten-title page,
+stop at either end, and return performance stats. They do nothing in overlays
+and never launch titles or save preferences. These development commands permit
+repeatable cover-cache turnover tests without requiring repeated controller holds.
+
+`videostats` returns the selected title ID/index and cumulative playback timings,
+audio starvation, loop counts and safe non-reference skips without reading the
+SD. `next`/`previous` move one title through the ordinary library controls and
+return those same stats; they are ignored in overlays. All require the development
+key and never launch games or save settings. Verify the returned title ID before
+attributing a performance sample to a particular video.
 
 ### Idle slowdown measurements
 
@@ -130,3 +190,76 @@ Known hardware check issue: the first remote SDL readback PNG had repeated rows/
 garbled pixels although the user approved the on-screen UI. UDP/FTP works but
 pixel capture is not yet reliable on GX2. Use host previews and the existing
 controller-triggered Screenshot Plugin until readback is corrected.
+
+The development key also enables `uflow-heap-watch`: a static core-0 thread polls
+the observed mapped-heap lock every 100 ms and emits a single bounded OSReport
+saved-context/stack capture when the same owner persists across 250 ms of samples.
+It does not change the lock or inspected thread and does no filesystem work.
+It stops/joins before system background, exit or launch; normal keyless installs
+create no observer. This is diagnostic only: three cores stuck with interrupts
+disabled can prevent it from running, and the owner's saved context may be old.
+Capture OSReport with `tools/capture-syslog.py` before reproduction; look for
+`heap-owner-stall` and `heap-owner-frame`. The portable detection and bounded
+stack walker are covered by `tools/test-heap-owner.ps1` under ASan/UBSan.
+# Artwork memory pressure regression
+
+Run `artworkmemorychecks` in the host preview to exercise 17 distinct 1536x1024
+scans (102 MiB at original decoded size). Neighbor textures must settle at a
+512-pixel maximum edge, the focused cover must upgrade to its original detail,
+and its texture plus the selected background must remain resident. After each
+of 17 focus changes, 80 idle frames must add no source decodes. Verify the detail
+cache remains within 48 MiB plus its separately bounded resident thumbnails,
+and clearing releases all tracked textures. Also run asynchronous artwork,
+case rendering, video, backgrounds and Details regressions. This host check
+does not reproduce or establish a fix for the console's mapped-heap lock stall.
+
+
+`presentationchecks` verifies cover-type selection, per-type layout memory,
+spacing slider touch bounds, all 9 box / 7 logo / 4 media layouts in both skins,
+flat and logo geometry, non-box inspection/launch and ten system media shapes.
+Run alongside layoutchecks, coverzoomchecks, settingsactionchecks,
+wrapdisplaychecks and iconpreparationchecks. Hardware visual/input checks remain
+separate from these host checks.
+
+`bookshelfchecks` covers shared-camera spine/floor alignment, DVD and mixed-size
+cases in both skins, selection motion, spacing/zoom extremes, wrap endpoints and
+singleton libraries. Inspect the shelf against the Aurora reference separately
+from the generic presentation checks.
+
+Bookshelf performance checks also require 40 settled frames without rebuilding
+geometry, cache invalidation after artwork clearing, and fewer than 12,000
+projected vertices during selection motion. Inspect spin-out and return captures
+and near-camera overlap order. Remote stats expose shelf_builds, shelf_cache_hits,
+shelf_faces and shelf_vertices. Host success does not establish Wii U frame rate.
+
+Bookshelf roll/insertion regression: compare the supplied Aurora clip frame by
+frame. The cover rolls in the screen plane after clearing the shelf; the return
+path aligns it first, then slides along its original thickness slot.
+bookshelfchecks verifies all eight corners across seven case profiles, full
+visible turns at 15/30/60 fps in both directions and all speed settings, and
+captures forward/backward sequences. Inspect the returning case behind its
+neighbors during insertion, including the now-visible bottom face during roll.
+
+Held-scroll response: compile/run tests/browse_motion_test.cpp against app/source.
+Simulate hold/release and reversal at 10-120 fps, every animation speed, wrap and
+end stops. Fast must reach top repeat speed within 0.6 s and fully settle within
+1 s, including a 1347-cover synthetic backlog. A single step retains the full
+roll interval. Run bookshelfchecks and existing layout/presentation checks too.
+Reported timing is from host simulation; console input/frame timing is separate.
+
+Demo mode: General adds Demo Mode, with Idle Time directly below it only when
+enabled (5-600 seconds, default 30). Run demo_mode_test and settings_test, then
+GPU demochecks with /fixture/demo-1.mp4 and demo-2.mp4. Check both-skin conditional
+rows/footer, current-library video-only random selection, no immediate repeat,
+full clip completion, empty/missing videos and cancellation by input/menu. The
+first wake-up input must not also launch a game. System return resets inactivity.
+Run test-video.sh for natural EOF after frame/audio drain, cancellation and normal
+looping playback, plus native Core-only/Core+Wii U defaults/reinstall preservation.
+
+Switch skins (2026-10-05): `switchchecks` renders light/dark home, square
+thumbnail row/wall, General and Display settings. It checks flat square poses
+and cover-type cycling. `settingsactionchecks` now runs every page in all four
+skins, including touch/controller footer access. Preview tooling embeds both
+GlassFlow and DejaVu Sans; the console-only account badge uses nn::act, while
+host captures show the neutral Player fallback. Verify the real Mii/name on
+console separately. Screenshot output: dist/visual-switch/.

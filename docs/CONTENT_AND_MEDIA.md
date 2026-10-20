@@ -18,13 +18,52 @@ case to its back and zoom it; release it to return. **B** still cancels the
 preview immediately. Both actions can be reassigned under **Settings → Controls**.
 Manual scans are available only inside the Library/Media settings.
 
+## Game details
+
+**General → Auto Sort Installed VC**, directly below **Show Installed Wii U**,
+groups recognized installed Wii U VC/injected titles under their original
+console. For raw titles, enable **Auto Sort VC by System** in each Wii U content
+directory's Library settings. Both options default to Off and are independent.
+Changes apply to the cached list immediately; turning the option off restores
+the source category. The title keeps its Wii U launch method, media and favorites.
+Unknown/custom packages without recognizable metadata remain in their source
+library. Existing caches gain system metadata on load without a full scan.
+
+Under **Library → Manage Content Types → SNES** (or another system), enable
+**Media by Content Type**, then **Save Type**. Sorted VC titles use that type's
+box dimensions and matching covers, sleeves, backgrounds, logos and videos.
+Matching uses title ID or game name in that type's configured media directories.
+Missing covers use the type's default sleeve or a placeholder, not a stretched
+Wii U DVD cover. Existing backgrounds/logos/videos remain available when there
+is no type-specific replacement. Returning to the library refreshes artwork in
+a worker without rescanning game directories. Turning the option off restores
+source artwork; launch settings, saves and title identities are unchanged.
+Each type defaults to Off, including on fresh installation.
+
+Press **Y** (or the remapped Details control) to open or close details. The first
+star tab shows the synopsis; **A** toggles the favorite. The other icon tabs are
+Play, Game launcher, Source, Media and Information. Up/down changes tabs; touching
+a tab only selects it. Right enters selectable launcher/media controls, and Left
+or B returns to the tabs. Read-only tabs retain focus; left/right pages long text.
+
+**Game launcher** contains only launcher controls: select the title's launcher
+(or Use Default), Inject/Re-inject for supported ROMs, and Launcher Settings.
+The synopsis is confined to the first tab.
+
+On **Media**, use Previous/Next to browse video and artwork. **Play/Stop** previews
+the assigned video inside the page. Leaving video, closing details or opening
+settings stops it. The library and details players do not decode concurrently.
+PixelDeck uses its dark panel/controls; Glass Flow keeps its glass styling.
+
 ## Menu music
 
 Put your MP3, OGG Vorbis, or WAV files directly inside
 `/wiiu/apps/uFlow/music/`. In **General → Audio**, choose **Reload Music List**, select a
 **Track**, turn **Menu Music** on, and set **Volume** (5% steps). Press A to edit,
 then left/right to change; touch arrows also work. Settings persist across restarts.
-The selected track loops. Music is off by default, and no music files are bundled.
+The selected track loops. Native Setup includes GameCube Menu, Wii Menu, Wii Shop
+Channel, and Wii U Menu tracks. Music is off by default; existing audio settings
+and replacement music files are preserved on reinstall.
 The switch stays OFF when no track is available or playback fails; a persistent
 message in Audio explains the error. B returns to General without closing Settings.
 Files must be nonempty and at most 32 MiB; the selected compressed file stays in
@@ -184,7 +223,7 @@ Use up/down or touch swipes to reach the volume/save/remove rows. Save Path; run
 Now after adding a video directory or changing which games it matches. Changing
 only delay, layer or volume applies when returning to the library.
 
-Videos start only while the main library is idle. Ordinary controller/touch activity,
+Automatic previews start only while the main library is idle. Ordinary controller/touch activity,
 game selection changes, library transitions, Settings and Details stop/suppress
 the preview. Returning from Settings or Details requires a fresh idle delay.
 Cover inspection is an exception for Background mode: the video keeps playing
@@ -284,7 +323,8 @@ editable in the content-type settings.
 | Wii U / Wii / GameCube | 135 × 190 × 14 |
 | Nintendo DS | 135 × 122 × 15 |
 | NES | 130 × 178 × 25 (reference-derived proportions) |
-| SNES / Nintendo 64 | 178 × 125 × 30 |
+| SNES | 178 × 125 × 25; sideways retail sleeve strip |
+| Nintendo 64 | 178 × 125 × 30 |
 | GBA | 127 × 127 × 25 |
 | TurboGrafx-16 / PC Engine | 142 × 125 × 10 |
 | MSX | 135 × 190 × 25 |
@@ -299,3 +339,26 @@ The PC Engine preset follows a [standard jewel case](https://www.cdrom2go.com/je
 so its preset is a tall cartridge case. Images with a substantially different
 aspect ratio are fitted with margins instead of stretched. Old installer-written
 135 × 190 × 14 defaults migrate once on load; non-default custom values are kept.
+
+
+## Cover presentation
+
+Display starts with **Cover Type**: Box, Logo or Media. Each type remembers its
+own layout. Boxes offer Classic Flow, Carousel, Flat Row, Stacked, Fan, Arc,
+Gallery, Wall and Bookshelf. Logos offer a flat row, Left/Right/Top/Bottom wheels,
+an arc and a wall. Media offers a row, arc, fan and wall. Flat Row uses front
+artwork without case perspective; the selected cover is larger.
+
+Cover Spacing is a 50-200% slider (100% normal), controlled with Left/Right while
+editing or by touch/drag. Existing Compact/Balanced/Wide values migrate to
+75/100/125%; Cover Zoom remains independent at 40-200%.
+
+Logo mode uses transparent logo PNGs from configured Logos directories, with a
+title fallback when missing. Media uses system-shaped discs/cartridges, with the
+logo on the label. Optional transparent game-specific artwork goes into a
+**Discs / Cartridges** media source (`media` in media_sources.cfg). Fresh Setup
+creates `media/<system>/media/`; existing installs discover this sibling of a
+configured fullcovers folder when present. Run Scan Now after adding artwork.
+Match files by game ID or name. A `Default.png` can override the generic media
+shape and receives the title logo; a game-specific image is displayed intact.
+Existing configs and media remain untouched on reinstall.

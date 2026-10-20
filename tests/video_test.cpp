@@ -41,6 +41,27 @@ void CheckFrameOrder() {
 }
 
 void CheckColor() {
+    // GPU input packing preserves the existing half-size filter, chroma,
+    // plane strides, and destination padding without any CPU RGB conversion.
+    for(bool half:{false,true}) {
+        std::uint8_t y[32],u[8],v[8],uv[16],packed[112],planar[112];
+        for(int i=0;i<32;++i)y[i]=(i*37)%256;
+        for(int i=0;i<8;++i){u[i]=i*31;v[i]=255-i*29;uv[i*2]=u[i];uv[i*2+1]=v[i];}
+        std::fill_n(packed,112,123);std::fill_n(planar,112,123);
+        VideoColor420::Pack(y,8,uv,8,nullptr,0,true,6,4,half,packed,28);
+        VideoColor420::Pack(y,8,u,4,v,4,false,6,4,half,planar,28);
+        for(int i=0;i<112;++i) assert(packed[i]==planar[i]);
+        const int w=half?3:6,h=half?2:4;
+        for(int row=0;row<h;++row)for(int col=0;col<w;++col) {
+            const int sy=half?row*2:row,sx=half?col*2:col,at=sy*8+sx;
+            const int luma=half?(y[at]+y[at+1]+y[at+8]+y[at+9]+2)/4:y[at];
+            auto *p=packed+row*28+col*4;
+            assert(p[0]==luma && p[1]==u[(sy/2)*4+sx/2] && p[2]==v[(sy/2)*4+sx/2] && p[3]==255);
+        }
+        for(int row=0;row<4;++row)for(int col=0;col<28;++col)
+            if(row>=h || col>=w*4)assert(packed[row*28+col]==123);
+    }
+    std::cout<<"PASS: GPU YUV packing, planar/NV12, full/half size, box filtering and padded strides\n";
     VideoColor420 color;
     for(bool full:{false,true}) for(bool bt709:{false,true}) {
         color.Configure(full,bt709);
@@ -104,6 +125,14 @@ void CheckColor() {
 }
 
 void CheckTimer() {
+    for(double fps:{24.,25.,30.,50.,59.94,60.,120.}) {
+        const int step=static_cast<int>(std::ceil(fps/30.));
+        for(int frame=0;frame<600;++frame)
+            assert(VideoPreviewFrameWanted(frame/fps,fps)==(frame%step==0));
+    }
+    assert(VideoPreviewFrameWanted(-1.,60.));
+    assert(VideoPreviewFrameWanted(1.,0.));
+    assert(VideoPreviewFrameWanted(INFINITY,60.));
     assert(WiiUVideoH264Supported(77,31));
     assert(WiiUVideoH264Supported(100,42));
     assert(!WiiUVideoH264Supported(100,51));
@@ -150,6 +179,47 @@ int main(int argc, char **argv) {
             while (!player.CanStart() && SDL_GetTicks()-since<3000) SDL_Delay(2);
             assert(player.CanStart());
         };
+        // A slow first GPU allocation must not consume audio or make the
+        // opening frames late before the first picture can be displayed.
+        SDL_setenv("UFLOW_VIDEO_TEST_FIRST_UPLOAD_DELAY_MS","400",1);
+        assert(player.Start(argv[1],70,false));
+        const auto startup=SDL_GetTicks();
+        while(!player.Ready() && SDL_GetTicks()-startup<3000) {
+            player.Update();assert(player.TakeError().empty());SDL_Delay(1);
+        }
+        assert(player.Ready() && SDL_GetTicks()-startup>=400);
+        const auto first=player.Statistics();
+        assert(first.presented==1 && first.lateDropped==0);
+        assert(first.videoLagMs>=-50 && first.videoLagMs<60);
+        assert(first.audioFrames<=4096 && first.audioMissingFrames==0);
+        const auto warm=SDL_GetTicks();
+        while(SDL_GetTicks()-warm<250){player.Update();SDL_Delay(3);}
+        assert(player.Statistics().presented>=5 && player.Statistics().audioFrames>4000);
+        player.Stop();waitAvailable();
+        SDL_setenv("UFLOW_VIDEO_TEST_FIRST_UPLOAD_DELAY_MS","0",1);
+        std::cout<<"PASS: slow first texture upload does not advance audio, drop opening frames or start video late\n";
+        SDL_setenv("UFLOW_VIDEO_TEST_AUDIO_START_DELAY_MS","800",1);
+        waitAvailable();assert(player.Start(argv[1],70,false));
+        const auto delayedAudio=SDL_GetTicks();
+        while(!player.Ready() && SDL_GetTicks()-delayedAudio<3000) {
+            player.Update();assert(player.TakeError().empty());SDL_Delay(2);
+        }
+        assert(player.Ready() && SDL_GetTicks()-delayedAudio>=800);
+        const auto audioWarm=SDL_GetTicks();
+        while(SDL_GetTicks()-audioWarm<500){player.Update();SDL_Delay(2);}
+        assert(player.Statistics().audioFrames>16000 && player.Statistics().audioMissingFrames==0);
+        player.Stop();waitAvailable();
+        SDL_setenv("UFLOW_VIDEO_TEST_AUDIO_START_DELAY_MS","0",1);
+        std::cout<<"PASS: slow initial audio read cannot bypass startup buffering or produce an audible underrun\n";
+        if(const char *shortAudio=std::getenv("UFLOW_VIDEO_SHORT_AUDIO_SAMPLE")) {
+            waitAvailable();assert(player.Start(shortAudio,70));
+            const auto begin=SDL_GetTicks();
+            while(SDL_GetTicks()-begin<1500){player.Update();assert(player.TakeError().empty());SDL_Delay(2);}
+            const auto stats=player.Statistics();
+            assert(player.Ready() && stats.loops>=2 && stats.audioFrames>4000);
+            player.Stop();waitAvailable();
+            std::cout<<"PASS: 120 ms audio clips start and loop without reaching the half-second reserve\n";
+        }
         for (int argument=1; argument<argc; ++argument) {
             waitAvailable();
             assert(player.Start(argv[argument],70));
@@ -176,9 +246,17 @@ int main(int argc, char **argv) {
                 assert(stats.outputWidth==std::atoi(std::getenv("UFLOW_VIDEO_EXPECT_WIDTH")));
                 assert(stats.outputHeight==std::atoi(std::getenv("UFLOW_VIDEO_EXPECT_HEIGHT")));
             }
+            if(argument>3 && std::getenv("UFLOW_VIDEO_EXPECT_NV12")) assert(stats.nativePlanes);
+            if(argument>3 && std::getenv("UFLOW_VIDEO_TEST_REFERENCE_CADENCE"))
+                assert(stats.presented*100 >= stats.decoded*80); // No second 30fps discard pass.
             if(argument<=3 || duration>=42000) assert(stats.loops>=1);
             if(argument!=3 && !(argument>3&&std::getenv("UFLOW_VIDEO_EXPECT_SILENT"))) assert(stats.audioFrames>1000);
             if(argument>3&&std::getenv("UFLOW_VIDEO_EXPECT_SILENT")) assert(stats.audioFrames==0);
+            // A fade holds one presented GPU image, never the decoder/audio.
+            player.Stop(true);
+            assert(!player.Active() && player.Ready() && player.Draw(640,360,128));
+            waitAvailable(); // Reaping workers must not discard the held frame.
+            assert(player.Ready() && player.Draw(640,360,0));
             const auto stop = SDL_GetTicks(); player.Stop();
             assert(SDL_GetTicks()-stop < 1000 && !player.Active() && !player.Ready());
             std::cout<<"PASS: "<<argv[argument]<<" ("<<frames<<" presented frames, "<<stats.loops<<" loops, audio and cleanup checked)\n";
@@ -196,6 +274,15 @@ int main(int argc, char **argv) {
         assert(player.Statistics().presented>pausedFrames);
         assert(player.Statistics().lateDropped<=beforePause+2);
         player.Stop();
+        waitAvailable();assert(player.Start(argv[1],0,false));assert(!player.Finished());
+        const auto oneShotStart=SDL_GetTicks();
+        while(!player.Finished() && SDL_GetTicks()-oneShotStart<4000) {
+            player.Update();assert(player.TakeError().empty());SDL_Delay(3);
+        }
+        assert(player.Finished() && player.Ready() && player.Statistics().presented>0 && player.Statistics().loops==0);
+        assert(SDL_GetTicks()-oneShotStart>=850);
+        player.Stop();assert(!player.Finished());
+        std::cout<<"PASS: non-looping completion waits for final picture/audio, and cancellation clears completion\n";
         if(const char *tiny=std::getenv("UFLOW_VIDEO_TINY_SAMPLE")) {
             waitAvailable(); assert(player.Start(tiny,0));
             const auto tinyStart=SDL_GetTicks();
@@ -239,6 +326,76 @@ int main(int argc, char **argv) {
         player.Stop(); waitAvailable();
         SDL_setenv("UFLOW_VIDEO_TEST_CONVERT_DELAY_MS","0",1);
         SDL_setenv("UFLOW_VIDEO_TEST_DECODE_DELAY_MS","0",1);
+        if(const char *sample=std::getenv("UFLOW_VIDEO_AUDIO_STRESS")) {
+            std::uint32_t missing[2]{};
+            for(int parallel=0;parallel<2;++parallel) {
+                SDL_setenv("UFLOW_VIDEO_TEST_SERIAL_READ",parallel?"0":"1",1);
+                SDL_setenv("UFLOW_VIDEO_TEST_READ_DELAY_MS","10",1);
+                SDL_setenv("UFLOW_VIDEO_TEST_DECODE_DELAY_MS","22",1);
+                waitAvailable();assert(player.Start(sample,70,false));
+                const auto begin=SDL_GetTicks();
+                while(SDL_GetTicks()-begin<5000) {
+                    player.Update();assert(player.TakeError().empty());SDL_Delay(3);
+                }
+                const auto stats=player.Statistics();missing[parallel]=stats.audioMissingFrames;
+                assert(stats.audioFrames>100000 && stats.packetQueuePeak<=512*1024);
+                player.Stop();waitAvailable();
+            }
+            std::cout<<"Audio starvation comparison: serial="<<missing[0]<<" parallel="<<missing[1]<<" missing frames\n";
+            assert(missing[0]>24000 && missing[1]<2400 && missing[1]*5<missing[0]);
+            SDL_setenv("UFLOW_VIDEO_TEST_SERIAL_READ","0",1);
+            SDL_setenv("UFLOW_VIDEO_TEST_READ_DELAY_MS","0",1);
+            SDL_setenv("UFLOW_VIDEO_TEST_DECODE_DELAY_MS","0",1);
+            std::cout<<"PASS: overlapping slow reads and decoding prevents audio starvation with bounded compressed buffering\n";
+            for(int parallel=0;parallel<2;++parallel) {
+                SDL_setenv("UFLOW_VIDEO_TEST_SERIAL_READ",parallel?"0":"1",1);
+                SDL_setenv("UFLOW_VIDEO_TEST_DECODE_STALL_MS","400",1);
+                waitAvailable();assert(player.Start(sample,70,false));
+                const auto begin=SDL_GetTicks();
+                while(SDL_GetTicks()-begin<5000) {
+                    player.Update();assert(player.TakeError().empty());SDL_Delay(3);
+                }
+                const auto stats=player.Statistics();missing[parallel]=stats.audioMissingFrames;
+                assert(stats.audioFrames>100000 && stats.packetQueuePeak<=512*1024);
+                player.Stop();waitAvailable();
+            }
+            std::cout<<"Decoder-wait audio comparison: serial="<<missing[0]<<" parallel="<<missing[1]<<" missing frames\n";
+            assert(missing[0]>4000 && missing[1]<2400);
+            SDL_setenv("UFLOW_VIDEO_TEST_SERIAL_READ","0",1);
+            SDL_setenv("UFLOW_VIDEO_TEST_DECODE_STALL_MS","0",1);
+            std::cout<<"PASS: audio decoding continues during video decoder waits; stop joins both owners\n";
+            // Sustained decoder backpressure fills the 96-packet video queue.
+            // Audio must keep its own file cursor even after that queue fills.
+            SDL_setenv("UFLOW_VIDEO_TEST_DECODE_DELAY_MS","100",1);
+            waitAvailable();assert(player.Start(sample,70,false));
+            const auto sustainedBegin=SDL_GetTicks();
+            while(SDL_GetTicks()-sustainedBegin<6500) {
+                player.Update();assert(player.TakeError().empty());SDL_Delay(3);
+            }
+            const auto sustained=player.Statistics();
+            std::cout<<"Sustained decoder backlog: audio="<<sustained.audioFrames
+                     <<" missing="<<sustained.audioMissingFrames<<" decoded="<<sustained.decoded<<"\n";
+            assert(sustained.audioFrames>240000 && sustained.audioMissingFrames<2400);
+            assert(sustained.packetQueuePeak<=512*1024);
+            player.Suspend(true);player.Stop();waitAvailable();
+            SDL_setenv("UFLOW_VIDEO_TEST_DECODE_DELAY_MS","0",1);
+            std::cout<<"PASS: bounded video backlog cannot block audio reading; suspended cancellation joins both readers\n";
+        }
+        if(const char *sample=std::getenv("UFLOW_VIDEO_NATIVE_SAMPLE")) {
+            SDL_setenv("UFLOW_VIDEO_TEST_NV12","1",1);
+            waitAvailable();assert(player.Start(sample,70));
+            const auto begin=SDL_GetTicks();
+            while(SDL_GetTicks()-begin<2800) {
+                player.Update();assert(player.TakeError().empty());SDL_Delay(3);
+            }
+            const auto stats=player.Statistics();
+            assert(stats.nativePlanes && stats.presented>25 && stats.loops>=1);
+            assert(stats.outputWidth==1280 && stats.outputHeight==720 && stats.audioFrames>1000);
+            player.Stop(true);waitAvailable();assert(player.Ready() && player.Draw(640,360,128));
+            player.Stop();waitAvailable();
+            for(int i=0;i<6;++i){assert(player.Start(sample,0));SDL_Delay(5);player.Stop();waitAvailable();}
+            std::cout<<"PASS: native NV12 frame leases, source resolution, loops, audio, retained fade and rapid cancellation\n";
+        }
         std::cout<<"PASS: parallel decode/conversion continues displaying when stages exceed frame budget; leased pixels remain unchanged\n";
         std::cout<<"PASS: unsupported H264 level/profile guard, non-blocking delayed cleanup, safe restart\n";
     }

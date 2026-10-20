@@ -20,6 +20,13 @@ class PayloadSyncTest(unittest.TestCase):
         self.sources = Path(self.temp.name) / "sources"
         self.payload = self.project / "native-installer/content/payload"
         self.manifest = self.project / "native-installer/source/generated_files.hpp"
+        adapter = self.project / sync.H264_ADAPTER
+        adapter.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(Path(__file__).resolve().parents[1] / sync.H264_ADAPTER, adapter)
+        for name in sync.COVER_CACHE_INPUTS | sync.VIDEO_COLOUR_INPUTS | sync.VIDEO_NV12_INPUTS:
+            dependency = self.project / name
+            dependency.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(Path(__file__).resolve().parents[1] / name, dependency)
         rows = []
         for name, source in sync.inputs(self.project, self.sources).items():
             source.parent.mkdir(parents=True, exist_ok=True)
@@ -40,12 +47,21 @@ class PayloadSyncTest(unittest.TestCase):
         font.parent.mkdir(parents=True)
         font.write_bytes(b"font")
         shutil.copyfile(font, self.project / "native-installer/content/font.ttf")
+        original_music = dict(sync.MUSIC_INPUTS)
+        self.addCleanup(setattr, sync, "MUSIC_INPUTS", original_music)
+        sync.MUSIC_INPUTS = {name: sync.digest(self.project / "native-installer/assets/music" / name) for name in original_music}
+        original_sig = sync.SIGPATCHES_HASH
+        self.addCleanup(setattr, sync, "SIGPATCHES_HASH", original_sig)
+        sync.SIGPATCHES_HASH = sync.digest(self.sources / "SigpatchesModuleWiiU/01_sigpatches.rpx")
         original = sync.REGION_PATCH_HASH
         self.addCleanup(setattr, sync, "REGION_PATCH_HASH", original)
         sync.REGION_PATCH_HASH = sync.digest(self.sources / "region_free_plugin/regionfree.wps")
         original_backend = sync.PLUGIN_BACKEND_HASH
         self.addCleanup(setattr, sync, "PLUGIN_BACKEND_HASH", original_backend)
         sync.PLUGIN_BACKEND_HASH = sync.digest(self.sources / "WiiUPluginLoaderBackend/PluginBackend.wms")
+        original_mapping = sync.MEMORY_MAPPING_HASH
+        self.addCleanup(setattr, sync, "MEMORY_MAPPING_HASH", original_mapping)
+        sync.MEMORY_MAPPING_HASH = sync.digest(self.sources / "MemoryMappingModule/MemoryMappingModule.wms")
         original_content = sync.CONTENT_REDIRECTION_HASH
         self.addCleanup(setattr, sync, "CONTENT_REDIRECTION_HASH", original_content)
         sync.CONTENT_REDIRECTION_HASH = sync.digest(self.sources / "ContentRedirectionModule/ContentRedirectionModule.wms")
@@ -58,6 +74,75 @@ class PayloadSyncTest(unittest.TestCase):
         self.addCleanup(setattr, sync, "FTPIIU_PATCH_HASH", original_ftp)
         sync.FTPIIU_PATCH_HASH = sync.digest(self.sources / "ftpiiu_plugin/ftpiiu.wps")
 
+    def test_skin_manifests_and_icons_are_core_preserved(self):
+        prefix = "wiiu/apps/uFlow/skins/"
+        self.manifest.write_text(sync.ENTRY.sub(lambda m: "" if m[1].startswith(prefix) else m[0], self.manifest.read_text()))
+        self.run_sync(True)
+        self.run_sync()
+        entries = [m for m in sync.ENTRY.finditer(self.manifest.read_text()) if m[1].startswith(prefix)]
+        self.assertEqual(len(entries), 16)
+        for entry in entries:
+            self.assertEqual((entry[4], entry[5]), (str(1 << 31), "k"))
+
+    def test_heap_gate_is_core_replacement_and_pinned(self):
+        self.run_sync(True)
+        entry = next(m for m in sync.ENTRY.finditer(self.manifest.read_text()) if m[1] == sync.MEMORY_MAPPING)
+        self.assertEqual((entry[4], entry[5]), (str(1 << 31), "r"))
+        (self.sources / "MemoryMappingModule/MemoryMappingModule.wms").write_bytes(b"unexpected")
+        with self.assertRaisesRegex(ValueError, "heap-gate"):
+            self.run_sync(True)
+
+    def test_title_installer_is_optional(self):
+        self.run_sync(True)
+        entry = next(m for m in sync.ENTRY.finditer(self.manifest.read_text()) if m[1] == sync.TITLE_INSTALLER)
+        self.assertEqual((entry[4], entry[5]), (str(1 << 17), "r"))
+
+    def test_optional_signature_module_pinned_and_kept(self):
+        self.manifest.write_text(sync.ENTRY.sub(lambda m: "" if m[1] == sync.SIGPATCHES else m[0], self.manifest.read_text()))
+        self.run_sync(True)
+        self.run_sync()
+        entry = next(m for m in sync.ENTRY.finditer(self.manifest.read_text()) if m[1] == sync.SIGPATCHES)
+        self.assertEqual((entry[4], entry[5]), (str(1 << 17), "k"))
+        before = self.manifest.read_bytes()
+        (self.sources / "SigpatchesModuleWiiU/01_sigpatches.rpx").write_bytes(b"unexpected build")
+        with self.assertRaisesRegex(ValueError, "pinned upstream release"):
+            self.run_sync(True)
+        self.assertEqual(before, self.manifest.read_bytes())
+
+    def test_all_menu_music_is_core_keep_and_pinned(self):
+        prefix = "wiiu/apps/uFlow/music/"
+        self.manifest.write_text(sync.ENTRY.sub(lambda m: "" if m[1].startswith(prefix) else m[0], self.manifest.read_text()))
+        self.run_sync(True)
+        self.run_sync()
+        tracks = [m for m in sync.ENTRY.finditer(self.manifest.read_text()) if m[1].startswith(prefix)]
+        self.assertEqual(len(tracks), 4)
+        for entry in tracks:
+            self.assertEqual((entry[4], entry[5]), (str(1 << 31), "k"))
+        (self.project / "native-installer/assets/music/Wii Menu.ogg").write_bytes(b"bad audio")
+        with self.assertRaisesRegex(ValueError, "verified SD track"):
+            self.run_sync(True)
+
+    def test_renderer_dependencies_pinned(self):
+        for name in sync.COVER_CACHE_INPUTS | sync.VIDEO_COLOUR_INPUTS | sync.VIDEO_NV12_INPUTS:
+            with self.subTest(name=name):
+                dependency = self.project / name
+                original = dependency.read_bytes()
+                dependency.write_bytes(b"untested cover dependency")
+                with self.assertRaisesRegex(ValueError, "Renderer dependency differs"):
+                    self.run_sync(True)
+                dependency.write_bytes(original)
+        self.run_sync(True)
+
+    def test_changed_h264_adapter_refused(self):
+        (self.project / sync.H264_ADAPTER).write_bytes(b"untested decoder")
+        with self.assertRaisesRegex(ValueError, "H264 adapter differs"):
+            self.run_sync(True)
+
+    def test_h264_source_pin_accepts_windows_line_endings(self):
+        adapter = self.project / sync.H264_ADAPTER
+        adapter.write_bytes(adapter.read_text(encoding="utf-8").replace("\n", "\r\n").encode("utf-8"))
+        self.run_sync(True)
+
     def test_ftp_added_and_unapproved_build_refused(self):
         self.manifest.write_text(sync.ENTRY.sub(lambda m: "" if m[1] == sync.FTPIIU else m[0], self.manifest.read_text()))
         self.run_sync(True)
@@ -66,7 +151,7 @@ class PayloadSyncTest(unittest.TestCase):
         self.assertEqual((entry[4], entry[5]), (str(1 << 31), "r"))
         before = self.manifest.read_bytes()
         (self.sources / "ftpiiu_plugin/ftpiiu.wps").write_bytes(b"unexpected build")
-        with self.assertRaisesRegex(ValueError, "tested early-exit build"):
+        with self.assertRaisesRegex(ValueError, "tested early-exit and idle-poll build"):
             self.run_sync(True)
         self.assertEqual(before, self.manifest.read_bytes())
 
@@ -234,7 +319,7 @@ class DefaultCoverGeometryTest(unittest.TestCase):
         profiles = {
             "wiiu": (135, 190, 14), "wii": (135, 190, 14),
             "gamecube": (135, 190, 14), "ds": (135, 122, 15),
-            "nes": (130, 178, 25), "snes": (178, 125, 30),
+            "nes": (130, 178, 25), "snes": (178, 125, 25),
             "n64": (178, 125, 30), "gba": (127, 127, 25),
             "pce": (142, 125, 10), "msx": (135, 190, 25),
         }
@@ -252,7 +337,12 @@ class DefaultCoverGeometryTest(unittest.TestCase):
                 self.assertTrue(0 < back < front < 1)
                 for part, fraction, physical in (("back", back, face_width),
                         ("spine", front-back, spine_width), ("front", 1-front, face_width)):
-                    ratio = width * fraction / height / (physical / face_height)
+                    # SNES retail scans are a conventional portrait strip whose
+                    # complete case is turned sideways by the renderer. The
+                    # source panel width therefore maps to visual face height.
+                    target = ((face_height if part != "spine" else spine_width) / face_width
+                              if system in ("snes", "n64") else physical / face_height)
+                    ratio = width * fraction / height / target
                     self.assertLess(abs(ratio-1), 0.08, f"{system} {part} would be letterboxed: {ratio:.3f}")
 
 

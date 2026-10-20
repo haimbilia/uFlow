@@ -1,0 +1,26 @@
+[
+  {
+    "file": "GameCube Menu.ogg",
+    "bytes": 2103177,
+    "sha256": "4648ca65fad2285c88828f1ca94d1984fdaef4ee6ada9aaad4de50e2f5aa2993",
+    "source": "User-provided SD /wiiu/apps/uFlow/music/GameCube Menu.ogg"
+  },
+  {
+    "file": "Wii Menu.ogg",
+    "bytes": 483742,
+    "sha256": "d35cae2250f40ec95deddc3745d0b7cb3fbe3ab3b1136dbf472ea7465f660536",
+    "source": "User-provided SD /wiiu/apps/uFlow/music/Wii Menu.ogg"
+  },
+  {
+    "file": "Wii Shop Channel.ogg",
+    "bytes": 1010945,
+    "sha256": "6411fd422c301c1958d4c77cb99eb50a4bfaca1e94f734778f1adb25dbc3c083",
+    "source": "User-provided SD /wiiu/apps/uFlow/music/Wii Shop Channel.ogg"
+  },
+  {
+    "file": "Wii U Menu.ogg",
+    "bytes": 2882774,
+    "sha256": "3f833c34f3f0066b1aa69472471ae96be418035565d41439c332dee6072bd0c5",
+    "source": "User-provided SD /wiiu/apps/uFlow/music/Wii U Menu.ogg"
+  }
+]

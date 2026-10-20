@@ -24,7 +24,7 @@
 #include <wuhb_utils/utils.h>
 #include <wums.h>
 
-#define VERSION "v0.3.6-raw-port14-ordered-shutdown"
+#define VERSION "v0.3.6-raw-port18-dot-paths"
 
 static void RawLauncherTrace(const char *message) {
     FILE *file = fopen("fs:/vol/external01/wiiu/raw-launcher.log", "a");

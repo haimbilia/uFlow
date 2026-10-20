@@ -16,9 +16,9 @@
 #include <vector>
 
 namespace Setup {
-constexpr uint32_t Core=1u<<31, All=(1u<<17)-1;
+constexpr uint32_t Core=1u<<31, All=(1u<<18)-1;
 // Optional RetroArch systems: one-press through retroarch-sysargs-v1 modules.
-constexpr int PlayStation=13,SnesRetroArch=14,NesRetroArch=15,GbaRetroArch=16;
+constexpr int PlayStation=13,SnesRetroArch=14,NesRetroArch=15,GbaRetroArch=16,TitleInstaller=17;
 struct Component {const char *id,*name;};
 inline constexpr Component components[]={
     {"wiiu","Wii U - installed and raw games"},{"wii","Wii - WiiFlow / USB Loader GX"},
@@ -27,7 +27,7 @@ inline constexpr Component components[]={
     {"n64","Nintendo 64 - Virtual Console"},{"pce","TurboGrafx-16 / PC Engine - Virtual Console"},{"msx","MSX - Virtual Console"},{"noods","NooDS - alternative DS emulator"},
     {"startup","Start-on-boot support (initially OFF)"},{"vwii-tools","vWii console setup (automatic for Wii / GC)"},
     {"ps1","PlayStation - RetroArch (PCSX ReARMed)"},{"snes-retroarch","SNES - RetroArch (Snes9x)"},
-    {"nes-retroarch","NES - RetroArch (Nestopia UE)"},{"gba-retroarch","Game Boy Advance - RetroArch (mGBA)"}};
+    {"nes-retroarch","NES - RetroArch (Nestopia UE)"},{"gba-retroarch","Game Boy Advance - RetroArch (mGBA)"},{"title-installer","Wii U title installer - optional"}};
 inline constexpr int ComponentCount=static_cast<int>(sizeof(components)/sizeof(components[0]));
 inline bool On(uint32_t bits,int i){return (bits&(1u<<i))!=0;}
 struct FileDef {std::string path,hash;uint64_t size;uint32_t mask;char mode;}; // r=replace, k=keep, b=base
@@ -67,8 +67,8 @@ inline bool Allowed(const std::string &p){
     for(const char *core:{"pcsx_rearmed","snes9x","nestopia","mgba"})
         if(p==std::string("retroarch/cores/")+core+"_libretro.rpx"||p==std::string("retroarch/cores/info/")+core+"_libretro.info")return true;
     for(const char *prefix:{"wiiu/apps/uFlow/","wiiu/apps/noods/","wiiu/vc-bases/","apps/wiiflow/","apps/usbloader_gx/","apps/nintendont/","apps/d2x-cios-installer-vwii/","apps/wiiflow_channel_installer/","wiiflow/"})if(p.rfind(prefix,0)==0)return true;
-    return p=="wiiu/apps/compat_installer.wuhb"||p=="wiiu/environments/aroma/modules/RPXLoadingModule.wms"||p=="wiiu/environments/aroma/modules/PluginBackend.wms"||p=="wiiu/environments/aroma/modules/ContentRedirectionModule.wms"||
-        p=="wiiu/environments/aroma/modules/uFlowRawKernel.wms"||p=="wiiu/environments/aroma/modules/setup/00_mocha.rpx"||p=="wiiu/environments/aroma/modules/setup/99_autoboot.rpx"||
+    return p=="wiiu/apps/compat_installer.wuhb"||p=="wiiu/environments/aroma/modules/RPXLoadingModule.wms"||p=="wiiu/environments/aroma/modules/PluginBackend.wms"||p=="wiiu/environments/aroma/modules/ContentRedirectionModule.wms"||p=="wiiu/environments/aroma/modules/MemoryMappingModule.wms"||
+        p=="wiiu/environments/aroma/modules/uFlowRawKernel.wms"||p=="wiiu/environments/aroma/modules/setup/00_mocha.rpx"||p=="wiiu/environments/aroma/modules/setup/99_autoboot.rpx"||p=="wiiu/environments/aroma/modules/setup/01_sigpatches.rpx"||
         p=="wiiu/environments/aroma/plugins/regionfree.wps"||p=="wiiu/environments/aroma/plugins/ftpiiu.wps";
 }
 inline std::string Path(const std::string &root,const std::string &rel){
@@ -97,12 +97,12 @@ inline std::vector<std::pair<std::string,std::string>> Configs(uint32_t bits,std
         std::string id=components[i].id;
         const char *names[]={"Wii U","Wii","GameCube","Nintendo DS","NES","SNES","GBA","N64","PC Engine","MSX"};
         const auto size=CaseProfiles::For(id,launcher,ext);
-        libraries+=id+"\t"+names[i]+"\t"+parser+"\twiiflow\t"+ext+"\t1\t"+std::to_string(i)+"\t"+launcher+"\t"+std::to_string(size.width)+"\t"+std::to_string(size.height)+"\t"+std::to_string(size.thickness)+"\t1\n";
-        content+=parser+"\t1\t3\tfs:/vol/external01/"+folder+"\twiiflow\t"+id+"\t"+launcher+"\n";dirs.push_back(folder);
-        for(const char *kind:{"front","back","spine","fullcovers","backgrounds","logos","previews","metadata"}){
+        libraries+=id+"\t"+names[i]+"\t"+parser+"\twiiflow\t"+ext+"\t1\t"+std::to_string(i)+"\t"+launcher+"\t"+std::to_string(size.width)+"\t"+std::to_string(size.height)+"\t"+std::to_string(size.thickness)+"\t1\t0\n";
+        content+=parser+"\t1\t3\tfs:/vol/external01/"+folder+"\twiiflow\t"+id+"\t"+launcher+(parser=="wiiu"?"\t0":"")+"\n";dirs.push_back(folder);
+        for(const char *kind:{"front","back","spine","fullcovers","backgrounds","logos","previews","metadata","media"}){
             std::string path="wiiu/apps/uFlow/media/"+id+"/"+kind;dirs.push_back(path);
             const bool hasDefault=std::any_of(files.begin(),files.end(),[&](const auto &f){return f.path==path+"/Default.png" && (f.mask&(bits|Core));});
-            media+=std::string(kind)+"\tid:"+id+"\t1\t1\tfs:/vol/external01/"+path+"\t1000\t1\t70\t"+(hasDefault?"Default.png":"")+"\t100\n";
+            media+=std::string(kind)+"\tid:"+id+"\t1\t1\tfs:/vol/external01/"+path+"\t1000\t"+(std::string(kind)=="previews"?"2":"1")+"\t70\t"+(hasDefault?"Default.png":"")+"\t100\n";
         }
     };
     if(On(bits,0))add(0,"wiiu",".rpx","wiiu/raw-games","native");
@@ -121,14 +121,22 @@ inline std::vector<std::pair<std::string,std::string>> Configs(uint32_t bits,std
     if(On(bits,PlayStation)) {
         // CD jewel case, launched one-press through the retroarch-ps1 module.
         const std::string id=components[PlayStation].id,folder="wiiu/roms/ps1";
-        libraries+=id+"\tPlayStation\tfiles\twiiflow\t.cue,.chd,.pbp\t1\t"+std::to_string(PlayStation)+"\tps1\t142\t125\t10\t1\n";
+        libraries+=id+"\tPlayStation\tfiles\twiiflow\t.cue,.chd,.pbp\t1\t"+std::to_string(PlayStation)+"\tps1\t142\t125\t10\t1\t0\n";
         content+="files\t1\t3\tfs:/vol/external01/"+folder+"\twiiflow\t"+id+"\tps1\n";dirs.push_back(folder);
-        for(const char *kind:{"front","back","spine","fullcovers","backgrounds","logos","previews","metadata"}){
+        for(const char *kind:{"front","back","spine","fullcovers","backgrounds","logos","previews","metadata","media"}){
             std::string path="wiiu/apps/uFlow/media/"+id+"/"+kind;dirs.push_back(path);
-            media+=std::string(kind)+"\tid:"+id+"\t1\t1\tfs:/vol/external01/"+path+"\t1000\t1\t70\t\t100\n";
+            media+=std::string(kind)+"\tid:"+id+"\t1\t1\tfs:/vol/external01/"+path+"\t1000\t"+(std::string(kind)=="previews"?"2":"1")+"\t70\t\t100\n";
         }
     }
-    std::string settings="sort_mode=0\nstartup_video=1\npreload_builtin_covers=1\nshow_installed="+std::to_string(On(bits,0))+"\nshow_raw_wiiu="+std::to_string(On(bits,0))+"\nshow_wii="+std::to_string(On(bits,1))+"\nshow_gamecube="+std::to_string(On(bits,2))+"\n";
+    if(On(bits,TitleInstaller)){
+        libraries+="install\tInstall Content\twiiu\twiiflow\t.tmd\t1\t100\ttitle-installer\t135\t190\t14\t1\t0\n";
+        content+="wiiu\t1\t3\tfs:/vol/external01/install\twiiflow\tinstall\ttitle-installer\n";
+        dirs.push_back("install");
+    }
+    // The legacy key now controls all cover preloading; retain it so existing
+    // ON/OFF choices survive upgrades and keep-mode reinstalls.
+    std::string settings="bind_18=0\ndemo_mode=0\ndemo_idle_seconds=30\nstart_library=__all\ncover_type=0\nlogo_layout=0\nmedia_layout=0\nthumbnail_layout=0\ncover_spacing_percent=100\nsort_mode=0\ntheme=0\nstartup_video=1\npreload_builtin_covers=1\nbackground_transparency=50\ncover_zoom=120\ninspection_zoom=4\nauto_sort_installed_vc=0\nshow_installed="+std::to_string(On(bits,0))+"\nshow_raw_wiiu="+std::to_string(On(bits,0))+"\nshow_wii="+std::to_string(On(bits,1))+"\nshow_gamecube="+std::to_string(On(bits,2))+"\n";
+    settings+="title_installer_enabled="+std::to_string(On(bits,TitleInstaller))+"\n";
     return {{"libraries.cfg",libraries},{"content_sources.cfg",content},{"media_sources.cfg",media},{"uflow.cfg",settings}};
 }
 inline Plan Prepare(const std::string &sd,const std::string &bundle,const std::vector<FileDef> &files,uint32_t selected,const Progress &progress){

@@ -10,6 +10,7 @@ uint32_t KPADReadEx(KPADChan channel, KPADStatus *out, uint32_t count, KPADError
     return *error==KPAD_ERROR_OK ? 1 : 0;
 }
 int main() {
+    assert(ProControllerButtons(WPAD_PRO_BUTTON_STICK_L|WPAD_PRO_BUTTON_STICK_R)==(VPAD_BUTTON_STICK_L|VPAD_BUTTON_STICK_R));
     WiiRemoteInput remote;
     VPADStatus input{};
     errors.fill(KPAD_ERROR_NO_SAMPLES);
@@ -36,6 +37,11 @@ int main() {
     samples[2].pro.trigger=WPAD_PRO_BUTTON_A|WPAD_PRO_TRIGGER_R;
     input={}; remote.Merge(input,1300); assert(input.hold==(VPAD_BUTTON_RIGHT|VPAD_BUTTON_L));
     assert(input.trigger==(VPAD_BUTTON_A|VPAD_BUTTON_R));
+    samples[2].pro.leftStick={-1,1};samples[2].pro.rightStick={1,-1};
+    input={};remote.Merge(input,1310);
+    assert((input.hold&(StickButton::Left|StickButton::Up|StickButton::RRight|StickButton::RDown))==(StickButton::Left|StickButton::Up|StickButton::RRight|StickButton::RDown));
+    assert((input.trigger&StickButton::RDown)!=0);
+    input={};remote.Merge(input,1320);assert((input.trigger&StickButton::RDown)==0);
     samples[2].extensionType=WPAD_EXT_MPLUS;
     input={}; remote.Merge(input,1400); assert(input.hold==VPAD_BUTTON_RIGHT);
     remote.Reset(); errors.fill(KPAD_ERROR_NO_SAMPLES);

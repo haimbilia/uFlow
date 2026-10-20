@@ -1,5 +1,6 @@
 #include "library.hpp"
 #include <cassert>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -53,19 +54,24 @@ int main() {
     // Unavailable paths don't prevent healthy sources from loading.
     assert(SaveMediaSources({{MediaType::Cover,-1,root+"/absent",true,8},{MediaType::Cover,-1,shared,true,0}}));
     games={wiiu}; EnrichLibraryMedia(games); assert(games[0].coverPath==shared+"/140.jpg");
-    // Old rows keep the 1-second foreground default; optional video fields round-trip.
+    // Rows without a saved mode use the 1-second Showcase default; optional video fields round-trip.
     Write(root+"/wiiu/apps/uFlow/media_sources.cfg","previews\t-1\t1\t0\t"+videos+"\n");
     auto videoSources=LoadMediaSources();
-    assert(videoSources.size()==1 && videoSources[0].video.delayMs==1000 && videoSources[0].video.foreground && videoSources[0].video.volume==70);
-    videoSources[0].video={2250,false,30}; assert(SaveMediaSources(videoSources));
+    assert(videoSources.size()==1 && videoSources[0].video.delayMs==1000 && videoSources[0].video.mode==VideoMode::Showcase && videoSources[0].video.volume==70);
+    CompleteMediaRefresh();
+    auto cachedTitle=wiiu;cachedTitle.absolutePath=root+"/games/140";
+    assert(SaveLibraryCache({cachedTitle}));
+    videoSources[0].video={2250,VideoMode::Background,30}; assert(SaveMediaSources(videoSources));
+    assert(!MediaRefreshNeeded());
+    std::vector<GameEntry> retained;assert(LoadLibraryCache(retained) && retained.size()==1);
     videoSources=LoadMediaSources();
-    assert(videoSources[0].video.delayMs==2250 && !videoSources[0].video.foreground && videoSources[0].video.volume==30);
+    assert(videoSources[0].video.delayMs==2250 && videoSources[0].video.mode==VideoMode::Background && videoSources[0].video.volume==30);
     games={wiiu}; EnrichLibraryMedia(games);
     const auto *videoSource=VideoSourceFor(videoSources,games[0]);
     assert(videoSource && videoSource->video.delayMs==2250);
     Write(videos+"/Disney Bolt (USA).AVI");
     GameEntry bolt; bolt.name="Disney Bolt"; bolt.platform=Platform::Wii; bolt.libraryId="wii";
-    videoSources.push_back({MediaType::Preview,-1,videos,true,0,"wii",{1000,true,0}});
+    videoSources.push_back({MediaType::Preview,-1,videos,true,0,"wii",{1000,VideoMode::Foreground,0}});
     assert(SaveMediaSources(videoSources)); games={bolt}; EnrichLibraryMedia(games);
     assert(games[0].previewPath==videos+"/Disney Bolt (USA).AVI");
     assert(VideoSourceFor(videoSources,games[0])==&videoSources[1]);
@@ -79,8 +85,8 @@ int main() {
     assert(!VideoSourceFor(videoSources,games[0]));
     Write(root+"/wiiu/apps/uFlow/media_sources.cfg","previews\t-1\t1\t0\t"+videos+"\tbogus\t0\t50\r\n");
     videoSources=LoadMediaSources();
-    assert(videoSources.size()==1 && videoSources[0].video.delayMs==1000 && !videoSources[0].video.foreground && videoSources[0].video.volume==50);
-    videoSources[0].video={99999,true,-50}; assert(SaveMediaSources(videoSources));
+    assert(videoSources.size()==1 && videoSources[0].video.delayMs==1000 && videoSources[0].video.mode==VideoMode::Background && videoSources[0].video.volume==50);
+    videoSources[0].video={99999,VideoMode::Foreground,-50}; assert(SaveMediaSources(videoSources));
     videoSources=LoadMediaSources(); assert(videoSources[0].video.delayMs==10000 && videoSources[0].video.volume==0);
     assert(videoSources[0].video.foregroundOpacity==100);
     videoSources[0].video.foregroundOpacity=45;
@@ -92,6 +98,17 @@ int main() {
     assert(LoadMediaSources()[0].video.foregroundOpacity==100);
     Write(root+"/wiiu/apps/uFlow/media_sources.cfg","previews\t-1\t1\t0\t"+videos+"\t1000\t0\t70\t\tbad\n");
     assert(LoadMediaSources()[0].video.foregroundOpacity==100);
+    // All choices round-trip, including old explicit foreground/background rows.
+    for(auto mode:{VideoMode::Background,VideoMode::Foreground,VideoMode::Showcase}) {
+        videoSources[0].video.mode=mode;assert(SaveMediaSources(videoSources));
+        assert(LoadMediaSources()[0].video.mode==mode);
+    }
+    for(int mode:{0,1}) {
+        Write(root+"/wiiu/apps/uFlow/media_sources.cfg","previews\t-1\t1\t0\t"+videos+"\t1000\t"+std::to_string(mode)+"\t70\n");
+        assert(static_cast<int>(LoadMediaSources()[0].video.mode)==mode);
+    }
+    Write(root+"/wiiu/apps/uFlow/media_sources.cfg","previews\t-1\t1\t0\t"+videos+"\t1000\tinvalid\t70\n");
+    assert(LoadMediaSources()[0].video.mode==VideoMode::Showcase);
     // Optional defaults: explicit selection, independent media types and scoped precedence.
     const auto fallback=root+"/defaults", custom=root+"/defaults/custom";
     Write(fallback+"/Default.PNG"); Write(custom+"/Default.jpg");
@@ -102,7 +119,7 @@ int main() {
         {MediaType::FullCover,-1,fallback,true,0},
         {MediaType::FullCover,-1,custom,true,0,"ds"},
         {MediaType::Logo,-1,fallback,true,0},
-        {MediaType::Preview,-1,videos,true,0,"ds",{3000,false,20}},
+        {MediaType::Preview,-1,videos,true,0,"ds",{3000,VideoMode::Background,20}},
         {MediaType::Metadata,-1,metadata,true,0}};
     assert(SaveMediaSources(fallbacks)); games={missing}; EnrichLibraryMedia(games);
     assert(games[0].fullCoverPath==fallback+"/Default.PNG"); // Copy-only automatic sleeve fallback.
@@ -116,7 +133,7 @@ int main() {
     assert(SaveMediaSources(fallbacks));
     auto reloaded=LoadMediaSources();
     for(std::size_t i=0;i<fallbacks.size();++i) assert(reloaded[i].defaultFile==fallbacks[i].defaultFile);
-    assert(reloaded[3].video.delayMs==3000 && !reloaded[3].video.foreground && reloaded[3].video.volume==20);
+    assert(reloaded[3].video.delayMs==3000 && reloaded[3].video.mode==VideoMode::Background && reloaded[3].video.volume==20);
     assert(reloaded[3].video.foregroundOpacity==35);
     missing.publisher="Actual publisher";
     games={missing}; EnrichLibraryMedia(games);
@@ -174,11 +191,19 @@ int main() {
     MediaSource dsSource{MediaType::FullCover,-1,dsPath,true,0,"custom_1"};
     dsSource.defaultFile=FindDefaultMediaFile(dsSource);
     assert(SaveMediaSources({dsSource}));
-    GameEntry dsGame; dsGame.platform=Platform::Files; dsGame.libraryId="custom_1"; dsGame.name="New Super Mario Bros. (USA)";
+    GameEntry dsGame;dsGame.absolutePath=root+"/roms/game.nds"; dsGame.platform=Platform::Files; dsGame.libraryId="custom_1"; dsGame.name="New Super Mario Bros. (USA)";
     games={dsGame}; EnrichLibraryMedia(games);
     assert(games[0].fullCoverPath==dsPath+"/New Super Mario Bros.jpg");
     dsGame.name="Missing DS title"; games={dsGame}; EnrichLibraryMedia(games);
     assert(games[0].fullCoverPath==dsPath+"/Default.png");
+    const auto mediaPath=root+"/ds/media";
+    Write(mediaPath+"/Default.png");Write(mediaPath+"/Actual.png");
+    assert(SaveMediaSources({dsSource}));const auto discovered=LoadMediaSources();
+    assert(std::any_of(discovered.begin(),discovered.end(),[&](const auto &source){return source.type==MediaType::PhysicalMedia && source.path==mediaPath;}));
+    games={dsGame};EnrichLibraryMedia(games);assert(games[0].physicalMediaPath==mediaPath+"/Default.png");
+    dsGame.name="Actual";games={dsGame};EnrichLibraryMedia(games);assert(games[0].physicalMediaPath==mediaPath+"/Actual.png");
+    assert(SaveLibraryCache(games));assert(LoadLibraryCache(cached));assert(cached[0].physicalMediaPath==games[0].physicalMediaPath);
+    dsGame.libraryId="other";games={dsGame};EnrichLibraryMedia(games);assert(games[0].physicalMediaPath.empty());
     std::cout<<"PASS: optional default files, persistence/cache, relative/absolute paths, real/native media priority, scope/order, disabled/missing defaults, video settings, metadata and filtered file browser\n";
     std::cout<<"PASS: default media, persistence, PNG/TGA/JPEG, numeric names, case, ID/name priority, platform scope, depth, disabled/empty/unavailable paths, INI and video indexing\n";
     std::cout<<"PASS: video options migration, persistence, limits, MP4/AVI names, source scope/depth/disabled resolution\n";
