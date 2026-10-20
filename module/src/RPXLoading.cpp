@@ -1,4 +1,5 @@
 #include "RPXLoading.h"
+#include "LocalizedHomeMetadata.h"
 #include "RetroArchLaunch.h"
 #include "RawSourcePath.h"
 #include "RawExitTrace.h"
@@ -55,9 +56,10 @@ DECL_FUNCTION(int32_t, HBM_NN_ACP_ACPGetTitleMetaXmlByDevice, uint32_t titleid_u
     if (gReplacementInfo.rpxReplacementInfo.isRPXReplaced) {
         memset(&metaxml->longname_ja, 0, 0x338C - 0x38C); // clear all names
 
-        snprintf(metaxml->longname_en, sizeof(metaxml->longname_en), "%s", gReplacementInfo.rpxReplacementInfo.metaInformation.longname);
-        snprintf(metaxml->shortname_en, sizeof(metaxml->shortname_en), "%s", gReplacementInfo.rpxReplacementInfo.metaInformation.shortname);
-        snprintf(metaxml->publisher_en, sizeof(metaxml->publisher_en), "%s", gReplacementInfo.rpxReplacementInfo.metaInformation.author);
+        SetLocalizedHomeMetadata(*metaxml,
+            gReplacementInfo.rpxReplacementInfo.metaInformation.longname,
+            gReplacementInfo.rpxReplacementInfo.metaInformation.shortname,
+            gReplacementInfo.rpxReplacementInfo.metaInformation.author);
 
         // Disable the emanual
         metaxml->e_manual    = 0;

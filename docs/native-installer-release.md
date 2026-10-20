@@ -1,5 +1,10 @@
 # Native installer release workflow
 
+Region audit 2026.10.20.2: rebuild app and RPXLoadingModule, sync payload,
+rebuild Setup and test fresh/reinstall paths. OTA is app-only; Setup and a
+restart are required for the HOME-menu module fix. See REGION_COMPATIBILITY.md.
+
+
 Independent preview audio reading (2026-10-20): the compressed video queue
 could block the shared demux reader, starving audio during sustained native
 decoder waits. Give audio its own local-file demux cursor and worker, retaining

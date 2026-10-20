@@ -20,13 +20,13 @@ int main() {
     controls.preloadBuiltInCovers=true;
     SaveSettings(controls);
     assert(LoadSettings().preloadBuiltInCovers);
-    assert(controls.bindings[static_cast<int>(ControlAction::ZoomFront)]==0x0200);
-    assert(controls.bindings[static_cast<int>(ControlAction::ZoomBack)]==0x0100);
+    assert(controls.bindings[static_cast<int>(ControlAction::ZoomFront)]==StickButton::RUp);
+    assert(controls.bindings[static_cast<int>(ControlAction::ZoomBack)]==StickButton::RDown);
     controls.bindings[static_cast<int>(ControlAction::ZoomFront)]=0x2000;
     SaveSettings(controls);
     assert(LoadSettings().bindings[static_cast<int>(ControlAction::ZoomFront)]==0x2000);
     ResetControlBindings(controls);
-    assert(controls.bindings[static_cast<int>(ControlAction::ZoomFront)]==0x0200);
+    assert(controls.bindings[static_cast<int>(ControlAction::ZoomFront)]==StickButton::RUp);
     assert(std::string(ControlActionName(ControlAction::ZoomBack))=="ZOOM BACK COVER");
     assert(controls.bindings[static_cast<int>(ControlAction::LaunchOptions)]==0x0004);
     assert(std::string(ControlActionName(ControlAction::LaunchOptions))=="LAUNCH OPTIONS");

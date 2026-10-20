@@ -2,8 +2,11 @@
   "service": "uFlow updates",
   "schema": 1,
   "base_url": "https://karotech.io/updates/uFlow/",
-  "channels": ["stable", "testing"],
-  "published_release": "2026.10.20",
+  "channels": [
+    "stable",
+    "testing"
+  ],
+  "published_release": "2026.10.20.2",
   "client_available": true,
-  "hardware_validation": "Direct preview audio and startup confirmed smooth on Wii U. Release signature, HTTPS binary hash and installer tests passed; this version's OTA installation has not been retested on console."
+  "hardware_validation": "Region/locale host regressions and installer tests. EUR/JPN hardware validation pending. OTA updates app only; run Setup and reboot for the HOME metadata module fix."
 }

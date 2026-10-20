@@ -1,4 +1,5 @@
 #include "library.hpp"
+#include "console_language.hpp"
 #include "browser_path.hpp"
 #include "directory_entry.hpp"
 #include "case_profiles.hpp"
@@ -38,7 +39,7 @@ constexpr const char *kSourcesFile = "fs:/vol/external01/wiiu/apps/uFlow/content
 constexpr const char *kLibrariesFile = "fs:/vol/external01/wiiu/apps/uFlow/libraries.cfg";
 constexpr const char *kLibraryCacheFile = "fs:/vol/external01/wiiu/apps/uFlow/cache/library-v1.bin";
 constexpr std::uint32_t kLibraryCacheMagic = 0x55464C43; // UFLC
-constexpr std::uint32_t kLibraryCacheVersion = 9; // Physical artwork; versions 7/8 migrate without rescanning.
+constexpr std::uint32_t kLibraryCacheVersion = 10; // Locale header; versions 7-9 migrate without dropping games.
 constexpr std::uint32_t kLibraryCacheMaxEntries = 8192;
 constexpr std::uint32_t kLibraryCacheMaxString = 256 * 1024;
 constexpr std::size_t kLibraryCacheMaxBytes = 32 * 1024 * 1024;
@@ -128,15 +129,11 @@ std::string XmlValue(const std::string &xml, const std::string &tag) {
     return Trim(value);
 }
 
-// Japan-only titles often leave the English fields empty; try English first,
-// then Japanese and the other meta.xml languages. Line breaks become spaces.
+// Prefer the console language, then use a deterministic nonempty fallback.
 std::string MetaText(const std::string &meta, const std::string &field) {
-    static const char *const languages[] = {"en", "ja", "fr", "de", "it", "es", "zhs", "ko", "nl", "pt", "ru", "zht"};
-    for (const char *language : languages) {
-        const auto value = Utf8::OneLine(XmlValue(meta, field + "_" + language));
-        if (!value.empty()) return value;
-    }
-    return {};
+    return ConsoleLanguage::Select([&](const char *language) {
+        return Utf8::OneLine(XmlValue(meta,field+"_"+language));
+    });
 }
 
 std::string MetaName(const std::string &meta) {
@@ -966,6 +963,8 @@ bool LoadLibraryCache(std::vector<GameEntry> &games) {
     std::uint32_t magic = 0, version = 0, count = 0;
     if (!ReadValue(reader.input, magic) || !ReadValue(reader.input, version) || !ReadValue(reader.input, count) ||
         magic != kLibraryCacheMagic || (version < 7 || version > kLibraryCacheVersion) || count > kLibraryCacheMaxEntries) return false;
+    std::uint32_t language=1;
+    if(version>=10&&(!ReadValue(reader.input,language)||language>=12))return false;
     std::vector<GameEntry> cached;
     try {
         cached.reserve(count);
@@ -981,6 +980,15 @@ bool LoadLibraryCache(std::vector<GameEntry> &games) {
     for (auto &game : cached) game.favorite = favorites.contains(FavoriteKey(game));
     reader.input.close(); // Release the old cache before committing a migrated file.
     bool migrated=version!=kLibraryCacheVersion;
+    if(language!=ConsoleLanguage::Current()) {
+        for(auto &game:cached)if(game.platform==Platform::WiiU&&game.installPackages.empty()) {
+            const auto meta=ReadTextFile(game.absolutePath+"/meta/meta.xml");
+            const auto name=MetaName(meta),publisher=MetaText(meta,"publisher");
+            if(!name.empty())game.name=name;
+            if(!publisher.empty())game.publisher=publisher;
+        }
+        migrated=true; // Preserve offline entries instead of dropping the cache.
+    }
     for(auto &game:cached)if(game.platform==Platform::WiiU&&game.installPackages.empty()&&game.vcSystem.empty()){
         game.vcSystem=DetectVCSystem(game.absolutePath,ReadTextFile(game.absolutePath+"/meta/meta.xml"));
         migrated=migrated||!game.vcSystem.empty();
@@ -996,7 +1004,8 @@ bool SaveLibraryCache(const std::vector<GameEntry> &games) {
     std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
     if (!output) return false;
     const auto count = static_cast<std::uint32_t>(games.size());
-    bool ok = WriteValue(output, kLibraryCacheMagic) && WriteValue(output, kLibraryCacheVersion) && WriteValue(output, count);
+    bool ok = WriteValue(output, kLibraryCacheMagic) && WriteValue(output, kLibraryCacheVersion) && WriteValue(output, count)
+        && WriteValue(output,ConsoleLanguage::Current());
     for (const auto &game : games) if (ok) ok = WriteCacheGame(output, game);
     output.flush();
     ok = ok && static_cast<bool>(output);

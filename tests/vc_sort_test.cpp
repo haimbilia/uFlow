@@ -49,6 +49,7 @@ int main(){
     // Migrate an actual v7 record without scanning; metadata is read once.
     const std::string cache=root+"/wiiu/apps/uFlow/cache/library-v1.bin";
     std::ifstream input(cache,std::ios::binary);std::string bytes((std::istreambuf_iterator<char>(input)),{});input.close();
+    bytes.erase(12,4); // v7-v9 did not contain the v10 locale header.
     auto v8=bytes;v8.resize(v8.size()-4-g.physicalMediaPath.size());uint32_t version8=8;std::memcpy(v8.data()+4,&version8,4);Put(cache,v8);
     assert(LoadLibraryCache(cached) && cached[0].vcSystem=="gamecube" && cached[0].physicalMediaPath.empty());
     bytes.resize(bytes.size()-8-g.vcSystem.size()-g.physicalMediaPath.size());uint32_t version=7;std::memcpy(bytes.data()+4,&version,4);Put(cache,bytes);
