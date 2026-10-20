@@ -1,5 +1,56 @@
 # Native installer release workflow
 
+Release 2026.10.21.1 (sequence 2026102101): app includes additive scans and Wii
+USB identification/dispatch; Setup includes the tested WiiFlow probe/retry and
+USB Loader GX adapters. Publish installer plus app to Karotech and GitHub, and
+advance signed stable app-only OTA. Backend updates require Setup. See
+docs/releases/2026.10.21.1.md for observed rear/front USB results and limits.
+User explicitly requested public publication; prior supplied-installer approval
+remains in force. Freeze completed artifacts before uploading.
+
+
+USB mount diagnostics/retry (2026-10-21): rebuild only the WiiFlow bridge after
+running prepare-wiiflow-backend.py, which copies usb_launch_probe.hpp. The
+existing Wii component mapping ships its boot.dol; sync payload and rebuild
+Setup, then test Core+Wii fresh install/reinstall. Deploy only the new WiiFlow
+DOL to the console and keep Setup local. No app, cIOS, port, settings, game or
+save changes. Host tests cover one retry after mount failure, partition remapping,
+missing/invalid/wrong-ID/ambiguous files, and no USB probe for SD launches.
+Hardware result (2026-10-21): user confirmed Wii Sports launched from USB with
+the changed build. Whether the remount retry ran has not been checked in the log.
+Validation passed: Wii/GC/GX/probe host tests, WiiFlow and Setup builds, payload
+sync and actual Core+Wii fresh install/reinstall. WiiFlow DOL deployed to .116
+with staged SHA256 verification; Setup remains local. Evidence:
+artifacts/usb-probe-deployment.json.
+
+Wii FAT32 USB launch and WBFS identification (2026-10-21): rebuild the app,
+WiiFlow exact-path bridge and USB Loader GX adapter. Both backends advertise
+UFLOW_WII_USB_STORAGE_V1; the app refuses old SD-only backends for USB requests.
+Existing sync-native-payload.py mappings ship all three binaries. Rebuild Setup
+and test Core+Wii fresh install/reinstall. Keep Setup local; the console needs
+app plus apps/wiiflow/boot.dol and apps/usbloader_gx/boot.dol. No settings,
+catalog, ROMs, saves, channel or cIOS changes. Add new games repairs unidentified
+Wii entries. Evidence: artifacts/usb-wii* and artifacts/usb-gx*.
+Console USB launch and simultaneous WFS/FAT32 behavior remain unverified until
+Wii Sports is retested; GameCube USB is outside this change.
+Validation: Wii launch/GX dispatch, WBFS scanner/additive repair and library tests,
+21 payload tests, Core+Wii actual fresh install/reinstall, app/backends/Setup builds
+passed. App and both DOLs deployed to .116 with staged SHA256 verification;
+configuration/catalog hashes unchanged. Installer kept local.
+
+
+Additive library scans (2026-10-20): Core provides Add new games and explicitly
+labeled Complete scan, with replacement/large-library notices. Media scans are
+labeled Refresh media. Source saves preserve the catalog; startup keeps missing
+installed titles. Rebuild app, sync Core payload, rebuild Setup, and run scan
+worker/offline catalog regressions plus actual Core fresh install/reinstall.
+Deploy app only; keep Setup local. Evidence: artifacts/additive-scan*.
+Validation: additive worker ASan/UBSan and installed discovery passed; 21
+payload-sync tests and actual Core fresh install/reinstall passed. App deployed
+to .116 with SHA256 verification; configuration and catalog hashes unchanged.
+Console scan behavior remains a hardware retest.
+
+
 Region audit 2026.10.20.2: rebuild app and RPXLoadingModule, sync payload,
 rebuild Setup and test fresh/reinstall paths. OTA is app-only; Setup and a
 restart are required for the HOME-menu module fix. See REGION_COMPATIBILITY.md.

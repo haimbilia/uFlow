@@ -3,8 +3,10 @@
 #ifndef UFLOW_HOST_TEST
 #include "usbloader/GameBooter.hpp"
 #include "usbloader/MountGamePartition.h"
+#include "usbloader/wbfs.h"
 #include "settings/CSettings.h"
 #include "settings/SettingsEnums.h"
+#include "Controls/DeviceHandler.hpp"
 #include "gecko.h"
 #endif
 WiiRequest::Request gUFlowRequest;
@@ -12,8 +14,12 @@ bool gUFlowActive=false;
 
 int UFlowUsbLaunch() {
     gprintf("%s\n",WiiRequest::UsbMarker);
+    gprintf("%s\n",WiiRequest::UsbStorageMarker);
     if(!WiiRequest::Consume(WiiRequest::UsbRequestPath,gUFlowRequest) ||
         gUFlowRequest.launcher!=WiiRequest::Launcher::USBLoaderGX) return -1;
+    if(!WiiRequest::ResolveUsbPath(gUFlowRequest,[](int partition) {
+        return DeviceHandler::Instance()->IsMounted(partition) && DeviceHandler::GetFilesystemType(partition)==PART_FS_FAT;
+    })) return -1;
     const bool gc=gUFlowRequest.kind==WiiRequest::Kind::GameCube;
     const auto error=gc?WiiRequest::CheckGameCube(gUFlowRequest.path,gUFlowRequest.id):
                         WiiRequest::CheckGame(gUFlowRequest.path,gUFlowRequest.id);
@@ -38,7 +44,8 @@ int UFlowUsbLaunch() {
     if(gc) header.magic=header.gc_magic;
     header.type=gc?TYPE_GAME_GC_IMG:TYPE_GAME_WII_IMG;
     snprintf(header.path,sizeof(header.path),"%s",gUFlowRequest.path.c_str());
-    Settings.SDMode=1;
+    Settings.SDMode=!WiiRequest::IsUsbPath(gUFlowRequest.path);
+    if(!Settings.SDMode)Settings.partition=gUFlowRequest.path[3]-'1';
     gUFlowActive=true;
     if(!gc && MountGamePartition(false)<0) { gUFlowActive=false; return -1; }
     const int result=GameBooter::BootGame(&header);

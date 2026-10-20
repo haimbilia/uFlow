@@ -6,7 +6,7 @@
     "stable",
     "testing"
   ],
-  "published_release": "2026.10.20.2",
+  "published_release": "2026.10.21.1",
   "client_available": true,
-  "hardware_validation": "Region/locale host regressions and installer tests. EUR/JPN hardware validation pending. OTA updates app only; run Setup and reboot for the HOME metadata module fix."
+  "hardware_validation": "Wii Sports launched from rear FAT32 USB with WiiFlow and USB Loader GX on the tested console. Front-port attempts failed in the shared bridge. OTA updates app only; run Setup for the updated Wii backends."
 }

@@ -376,6 +376,22 @@ void AddDiscGame(ScanResult &result, Platform platform, const std::string &path,
     game.folder = displaySource;
     game.titleId = ExtractId(displaySource);
     game.name = CleanDiscName(displaySource);
+    if (platform == Platform::Wii) {
+        std::string discTitle, discId;
+        if (WiiRequest::CheckGame(path, {}, &discTitle, &discId, false).empty()) {
+            game.titleId = discId;
+            const auto parent = FileName(path.substr(0,path.find_last_of('/')));
+            if (ExtractId(parent)==discId) game.name=CleanDiscName(parent);
+            else if (game.name.empty() || game.name==discId) game.name=discTitle;
+            switch(discId[3]) {
+                case 'E': game.region="USA"; break;
+                case 'P': game.region="Europe"; break;
+                case 'J': game.region="Japan"; break;
+                case 'K': game.region="Korea"; break;
+            }
+        }
+    }
+    game.storage = path.rfind("usb1:/",0)==0 ? "FAT32 USB" : "SD";
     if (platform == Platform::GameCube) {
         std::string discTitle, discId;
         if (WiiRequest::CheckGameCube(path, {}, &discTitle, &discId).empty()) {
@@ -897,7 +913,47 @@ bool MergeInstalledPackages(std::vector<GameEntry> &games) {
     return true;
 }
 
-bool RefreshInstalledGames(std::vector<GameEntry> &games) {
+std::size_t AddDiscoveredGames(std::vector<GameEntry> &games, std::vector<GameEntry> discovered) {
+    // Paths identify separate launchable copies; title identity also prevents a
+    // swapped USB device's different game at the same path from being discarded.
+    const auto key=[](const GameEntry &g) {
+        return Lower(g.absolutePath)+"\t"+Lower(g.titleId)+"\t"+std::to_string(g.installedTitleId);
+    };
+    std::set<std::string> known;
+    for(const auto &game:games)known.insert(key(game));
+    const auto before=games.size();
+    bool repaired=false;
+    for(auto &game:discovered) {
+        // Repair old Wii scans that stored only the filename, without duplicating
+        // the same file or discarding offline entries and user metadata.
+        auto old=games.end();
+        if(game.platform==Platform::Wii && !game.titleId.empty())
+            old=std::find_if(games.begin(),games.end(),[&](const auto &g) {
+                return g.platform==Platform::Wii && !g.installed && g.titleId.empty() &&
+                    Lower(g.absolutePath)==Lower(game.absolutePath);
+            });
+        if(old!=games.end()) {
+            known.erase(key(*old));
+            old->titleId=game.titleId;
+            if(old->name.empty() || old->name==CleanDiscName(FileName(old->absolutePath)))old->name=game.name;
+            if(old->region.empty())old->region=game.region;
+            if(old->storage.empty())old->storage=game.storage;
+            known.insert(key(*old));
+            SetGameMedia(*old,CaptureGameMedia(game));
+            for(auto field:{&GameEntry::publisher,&GameEntry::developer,&GameEntry::description,
+                            &GameEntry::genre,&GameEntry::rating,&GameEntry::releaseYear,&GameEntry::players})
+                if(((*old).*field).empty())(*old).*field=game.*field;
+            repaired=true;
+        } else if(known.insert(key(game)).second)games.push_back(std::move(game));
+    }
+    if(repaired || games.size()!=before)std::stable_sort(games.begin(),games.end(),[](const auto &a,const auto &b) {
+        const auto left=Lower(a.name),right=Lower(b.name);
+        return left==right?a.absolutePath<b.absolutePath:left<right;
+    });
+    return games.size()-before;
+}
+
+bool RefreshInstalledGames(std::vector<GameEntry> &games, bool keepMissing) {
     ScanResult installed;
     // A failed system query must not discard the last known installed catalog.
     if (!ScanInstalledGames(installed, &games)) return false;
@@ -906,6 +962,11 @@ bool RefreshInstalledGames(std::vector<GameEntry> &games) {
         if (std::none_of(games.begin(), games.end(), [&](const auto &old) {
             return old.installed && old.installedTitleId == game.installedTitleId && old.absolutePath == game.absolutePath;
         })) added.push_back(game);
+    }
+    if(keepMissing) {
+        if(added.empty())return false;
+        EnrichLibraryMedia(added);
+        return AddDiscoveredGames(games,std::move(added))!=0;
     }
     const auto oldCount = std::count_if(games.begin(), games.end(), [](const auto &g) { return g.installed; });
     if (added.empty() && static_cast<std::size_t>(oldCount) == installed.games.size()) return false;

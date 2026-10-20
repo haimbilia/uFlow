@@ -1,4 +1,4 @@
-"""Pinned, exact SD-path uFlow entry for USB Loader GX; no saved path changes."""
+"""Pinned, exact SD/FAT32 USB path uFlow entry for USB Loader GX; no saved path changes."""
 import argparse
 import shutil
 import subprocess
@@ -17,10 +17,10 @@ def main():
             ('int StartUpProcess::QuickGameBoot(const char *gameID)\n{', 'int StartUpProcess::QuickGameBoot(const char *gameID)\n{\n\tif(strcmp(gameID,"--uflow")==0) return UFlowUsbLaunch();'),
         ],
         'source/usbloader/MountGamePartition.cpp':[
-            ('int MountGamePartition(bool ShowGUI)\n{','int MountGamePartition(bool ShowGUI)\n{\n\tif(gUFlowActive) return gUFlowRequest.kind==WiiRequest::Kind::GameCube ? 0 : WBFS_OpenPartSD();'),
+            ('int MountGamePartition(bool ShowGUI)\n{','int MountGamePartition(bool ShowGUI)\n{\n\tif(gUFlowActive) return gUFlowRequest.kind==WiiRequest::Kind::GameCube ? 0 : (Settings.SDMode ? WBFS_OpenPartSD() : WBFS_OpenPart(Settings.partition));'),
         ],
         'source/usbloader/GameList.cpp':[
-            ('int GameList::GetPartitionNumber(const u8 *gameID) const\n{','int GameList::GetPartitionNumber(const u8 *gameID) const\n{\n\tif(UFlowMatches(gameID)) return DeviceHandler::GetSDPartition();'),
+            ('int GameList::GetPartitionNumber(const u8 *gameID) const\n{','int GameList::GetPartitionNumber(const u8 *gameID) const\n{\n\tif(UFlowMatches(gameID)) return Settings.SDMode ? DeviceHandler::GetSDPartition() : Settings.partition;'),
         ],
         'source/usbloader/wbfs/wbfs_fat.cpp':[
             ('std::string Wbfs_Fat::FindFilename(u8 *id)\n{','std::string Wbfs_Fat::FindFilename(u8 *id)\n{\n\tif(UFlowMatches(id)) return gUFlowRequest.path;'),
@@ -48,12 +48,13 @@ def main():
             if patched.count(before)!=count: raise RuntimeError('Upstream anchor mismatch: '+before)
             patched=patched.replace(before,after)
         patched='#include "usbloader_entry.hpp"\n'+patched
-        if (source/relative).read_text() not in (original,patched): raise RuntimeError('Unrelated edits: '+relative)
+        legacy=patched.replace('(Settings.SDMode ? WBFS_OpenPartSD() : WBFS_OpenPart(Settings.partition))','WBFS_OpenPartSD()').replace('Settings.SDMode ? DeviceHandler::GetSDPartition() : Settings.partition','DeviceHandler::GetSDPartition()')
+        if (source/relative).read_text() not in (original,legacy,patched): raise RuntimeError('Unrelated edits: '+relative)
         staged[relative]=patched
     for relative,text in staged.items(): (source/relative).write_text(text,newline='\n')
     project=Path(__file__).resolve().parents[1]
     for name in ('usbloader_entry.cpp','usbloader_entry.hpp'):
         shutil.copyfile(project/'wii'/name,source/'source'/name)
     shutil.copyfile(project/'app/source/wii_request.hpp',source/'source/wii_request.hpp')
-    print('Prepared USB Loader GX exact-path adapter (SD Wii/GC).')
+    print('Prepared USB Loader GX exact-path adapter (Wii SD/USB, GC SD).')
 if __name__=='__main__': main()

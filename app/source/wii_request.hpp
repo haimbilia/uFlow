@@ -18,6 +18,7 @@ enum class Kind { Wii, GameCube };
 enum class Launcher { WiiFlow, USBLoaderGX };
 constexpr const char *SelectorMarker = "UFLOW_LAUNCHER_SELECT_V1";
 constexpr const char *UsbMarker = "UFLOW_USBLOADER_PATH_V1";
+constexpr const char *UsbStorageMarker = "UFLOW_WII_USB_STORAGE_V1";
 constexpr const char *UsbRequestPath = "sd:/wiiu/apps/uFlow/usb-launch.req";
 struct Request { std::string id, path; Kind kind = Kind::Wii; Launcher launcher = Launcher::WiiFlow; };
 
@@ -27,16 +28,21 @@ inline bool ValidId(const std::string &id) {
     return true;
 }
 
+inline bool IsUsbPath(const std::string &path) {
+    return path.size() > 6 && path.compare(0,3,"usb")==0 &&
+        path[3]>='1' && path[3]<='8' && path.compare(4,2,":/")==0;
+}
 inline bool ValidPath(const std::string &path, Kind kind = Kind::Wii) {
-    if (path.rfind("sd:/", 0) != 0 || path.size() >= 256 || path.size() < 10) return false;
+    const size_t root = path.rfind("sd:/",0)==0 ? 4 : (kind==Kind::Wii && IsUsbPath(path) ? 6 : 0);
+    if (!root || path.size() >= 256 || path.size() < 10) return false;
     if (kind != Kind::Wii && kind != Kind::GameCube) return false;
     const size_t suffixSize = kind == Kind::GameCube ? 4 : 5;
     std::string suffix = path.substr(path.size() - suffixSize);
     for (char &c : suffix) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
     if (suffix != (kind == Kind::GameCube ? ".iso" : ".wbfs")) return false;
     for (unsigned char c : path) if (c < 32 || c == 127 || c == '\\') return false;
-    if (path.find(':', 3) != std::string::npos) return false;
-    for (size_t start = 4; start < path.size();) {
+    if (path.find(':', root) != std::string::npos) return false;
+    for (size_t start = root; start < path.size();) {
         size_t end = path.find('/', start);
         if (end == std::string::npos) end = path.size();
         const auto part = path.substr(start, end - start);
@@ -74,13 +80,14 @@ inline bool Decode(const std::string &text, Request &out) {
 // Verify metadata only, never read/write the entire game. Opening rb+ mirrors
 // WiiFlow's O_RDWR requirement but this function never writes game bytes.
 inline std::string CheckGame(const std::string &path, const std::string &id,
-                             std::string *title = nullptr) {
-    if (!ValidId(id)) return "INVALID WII GAME ID";
+                             std::string *title = nullptr, std::string *actualId = nullptr,
+                             bool requireWritable = true) {
+    if (!id.empty() && !ValidId(id)) return "INVALID WII GAME ID";
     struct stat info{};
     if (stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) return "WII GAME FILE IS MISSING";
-    if (!(info.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH))) return "WII GAME IS READ-ONLY - CLEAR ITS READ-ONLY FLAG";
-    FILE *file = std::fopen(path.c_str(), "rb+");
-    if (!file) return "CANNOT OPEN WII GAME READ/WRITE - CHECK READ-ONLY FLAG";
+    if (requireWritable && !(info.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH))) return "WII GAME IS READ-ONLY - CLEAR ITS READ-ONLY FLAG";
+    FILE *file = std::fopen(path.c_str(), requireWritable ? "rb+" : "rb");
+    if (!file) return requireWritable ? "CANNOT OPEN WII GAME READ/WRITE - CHECK READ-ONLY FLAG" : "CANNOT READ WII GAME";
     unsigned char header[32]{};
     bool valid = std::fread(header, 1, sizeof(header), file) == sizeof(header) &&
         std::memcmp(header, "WBFS", 4) == 0 && header[8] >= 9 && header[8] <= 12 &&
@@ -88,16 +95,37 @@ inline std::string CheckGame(const std::string &path, const std::string &id,
     unsigned char disc[96]{};
     if (valid) valid = std::fseek(file, 1L << header[8], SEEK_SET) == 0 &&
         std::fread(disc, 1, sizeof(disc), file) == sizeof(disc) &&
-        std::memcmp(disc, id.data(), 6) == 0 &&
+        (id.empty() || std::memcmp(disc, id.data(), 6) == 0) &&
         disc[0x18] == 0x5d && disc[0x19] == 0x1c && disc[0x1a] == 0x9e && disc[0x1b] == 0xa3;
     std::fclose(file);
-    if (!valid) return "WBFS HEADER OR GAME ID DOES NOT MATCH - RESCAN LIBRARY";
+    const std::string foundId(reinterpret_cast<char *>(disc),6);
+    if (!valid || !ValidId(foundId)) return "WBFS HEADER OR GAME ID DOES NOT MATCH - RESCAN LIBRARY";
+    if (actualId) *actualId = foundId;
     if (title) {
         size_t length = 0;
         while (length < 64 && disc[32 + length]) ++length;
         title->assign(reinterpret_cast<char *>(disc + 32), length);
     }
     return {};
+}
+
+// CafeOS raw USB and vWii can enumerate partitions differently. Resolve only
+// the requested relative path and verify its disc ID; never search by ID alone.
+template<class MountedFat> inline bool ResolveUsbPath(Request &request, MountedFat mountedFat) {
+    if (!IsUsbPath(request.path)) return true;
+    if (!ValidPath(request.path,request.kind) || !ValidId(request.id)) return false;
+    const auto relative=request.path.substr(6);
+    std::string match;
+    for (int partition=1;partition<=8;++partition) {
+        if (!mountedFat(partition)) continue;
+        const auto path="usb"+std::to_string(partition)+":/"+relative;
+        if (!CheckGame(path,request.id,nullptr,nullptr,false).empty()) continue;
+        if (!match.empty()) return false; // ambiguous copies must not boot the wrong device
+        match=path;
+    }
+    if (match.empty()) return false;
+    request.path=match;
+    return true;
 }
 
 // Plain GameCube ISO only. Read-only access is sufficient (unlike Wii WBFS).

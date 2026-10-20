@@ -4677,7 +4677,7 @@ public:
 #ifndef UFLOW_HOST_PREVIEW
         USBStorage::LogReadStats("scan-start");
 #endif
-        scanWorker_.Start();
+        scanWorker_.Start(games_,scanAddOnly_);
     }
     void StopScan(){scanWorker_.Stop();}
     void CancelScan(){
@@ -6058,10 +6058,7 @@ public:
             const int position=std::clamp(typeDraft_.order,0,static_cast<int>(next.size()));
             next.insert(next.begin()+position,typeDraft_);
             for(std::size_t i=0;i<next.size();++i) next[i].order=static_cast<int>(i);
-            bool appearanceOnly=false;
-            if(typeIndex_>=0){const auto &old=libraries_[typeIndex_];
-                appearanceOnly=old.id==typeDraft_.id&&old.name==typeDraft_.name&&old.parser==typeDraft_.parser&&old.launcher==typeDraft_.launcher&&old.extensions==typeDraft_.extensions&&old.enabled==typeDraft_.enabled&&old.order==typeDraft_.order&&old.launcherId==typeDraft_.launcherId&&old.caseWidthMm==typeDraft_.caseWidthMm&&old.caseHeightMm==typeDraft_.caseHeightMm&&old.caseThicknessMm==typeDraft_.caseThicknessMm;}
-            if(!SaveLibraries(next,!appearanceOnly)){SetStatus("COULD NOT SAVE CONTENT TYPES");return;}
+            if(!SaveLibraries(next,false)){SetStatus("COULD NOT SAVE CONTENT TYPES");return;}
             libraries_=std::move(next);typeEditor_=false;settingsEditing_=false;typeRow_=position+1;tab_=0;visualTab_=0;RebuildVisible();
             SetStatus("CONTENT TYPE SAVED",4000);return;
         }
@@ -6071,7 +6068,7 @@ public:
                std::any_of(mediaSources_.begin(),mediaSources_.end(),[&](const auto&s){return s.libraryId==typeDraft_.id;})) {SetStatus("REASSIGN THIS TYPE'S CONTENT AND MEDIA DIRECTORIES FIRST",6000);return;}
             if(typeDraft_.id=="wiiu"){SetStatus("DISABLE THE BUILT-IN WII U TYPE INSTEAD");return;}
             auto next=libraries_;next.erase(next.begin()+typeIndex_);
-            if(!SaveLibraries(next)){SetStatus("COULD NOT SAVE CONTENT TYPES");return;}
+            if(!SaveLibraries(next,false)){SetStatus("COULD NOT SAVE CONTENT TYPES");return;}
             libraries_=std::move(next);typeEditor_=false;typeRow_=0;tab_=0;visualTab_=0;RebuildVisible();return;
         }
         settingsEditing_=!settingsEditing_;
@@ -6126,7 +6123,7 @@ public:
         DrawSettingsActions(x,accent);
     }
     std::vector<MediaDirectoryRow> MediaRows() const { return MediaDirectoryRows(mediaSources_,libraries_,expandedMediaGroups_); }
-    int SourceListCount() const { return mediaMode_?static_cast<int>(MediaRows().size()):SourceCount()+3; }
+    int SourceListCount() const { return mediaMode_?static_cast<int>(MediaRows().size()):SourceCount()+4; }
     void FocusMediaSource(int index) {
         if(index<0 || index>=static_cast<int>(mediaSources_.size())) return;
         expandedMediaGroups_.insert(MediaGroupKey(mediaSources_[index]));
@@ -6155,6 +6152,7 @@ public:
             actual=row.kind==MediaDirectoryRow::Directory?row.source:SourceCount();
         }
         if (actual==SourceCount()+1) { SourceScan(); return; }
+        if (!mediaMode_ && actual==SourceCount()+2) { SourceScan(false); return; }
         editingSourceIndex_=actual<SourceCount() ? actual : -1;
         if (mediaMode_) draftMediaSource_=editingSourceIndex_>=0 ? mediaSources_[editingSourceIndex_] :
             MediaSource{MediaType::Cover,-1,"fs:/vol/external01",true,0};
@@ -6187,15 +6185,15 @@ public:
             if(saved) { StopVideo(); videoSelection_=nullptr; videoTrigger_.Reset();sourceMediaRefreshPending_=MediaRefreshNeeded(); }
         } else {
             auto next=sources_; next.erase(next.begin()+editingSourceIndex_);
-            saved=SaveContentSources(next); if(saved) sources_=std::move(next);
+            saved=SaveContentSources(next,false); if(saved) sources_=std::move(next);
         }
         if (!saved) { SetStatus("COULD NOT SAVE PATHS",5000); return; }
         sourceEditor_=false; sourceRow_=std::min(sourceRow_,SourceListCount()-1);
         SetStatus("PATH REMOVED - FILES UNCHANGED");
     }
 
-    void SourceScan() {
-        if(!mediaMode_){scanRequested_=true;return;}
+    void SourceScan(bool addOnly=true) {
+        if(!mediaMode_){scanAddOnly_=addOnly;scanRequested_=true;return;}
         if(!RequestMediaRefresh()){SetStatus("COULD NOT START MEDIA UPDATE",5000);return;}
         sourceMediaRefreshPending_=true;
         settings_=sourceManager_=sourceEditor_=false;
@@ -6300,14 +6298,14 @@ public:
             if(editingSourceIndex_>=0){const auto &old=sources_[editingSourceIndex_];
                 categoryOnly=old.path==draftSource_.path&&old.platform==draftSource_.platform&&old.enabled==draftSource_.enabled&&old.depth==draftSource_.depth&&old.libraryId==draftSource_.libraryId&&old.launcherId==draftSource_.launcherId&&old.launcher==draftSource_.launcher;}
             if(editingSourceIndex_>=0) next[editingSourceIndex_]=draftSource_; else next.push_back(draftSource_);
-            saved=SaveContentSources(next,!categoryOnly); if(saved) sources_=std::move(next);
+            saved=SaveContentSources(next,false); if(saved) sources_=std::move(next);
             if(saved){RebuildVisible();if(categoryOnly){sourceEditor_=false;sourceRow_=0;SetStatus("VC SORT SETTING SAVED");return;}}
         }
         if(!saved) { SetStatus("COULD NOT SAVE PATHS",5000); return; }
         sourceEditor_ = false;
         sourceRow_ = 0;
         if(mediaMode_) FocusMediaSource(editingSourceIndex_>=0?editingSourceIndex_:static_cast<int>(mediaSources_.size())-1);
-        SetStatus(mediaMode_?(sourceMediaRefreshPending_?"SAVED - MEDIA UPDATES WHEN SETTINGS CLOSE":"MEDIA SETTINGS SAVED"):"PATH SAVED - USE SCAN NOW TO APPLY");
+        SetStatus(mediaMode_?(sourceMediaRefreshPending_?"SAVED - MEDIA UPDATES WHEN SETTINGS CLOSE":"MEDIA SETTINGS SAVED"):"PATH SAVED - USE ADD NEW GAMES OR COMPLETE SCAN");
     }
 
     void BrowserMove(int amount) {
@@ -8925,8 +8923,11 @@ private:
                     SourceCount()+static_cast<int>(entry.kind)-static_cast<int>(MediaDirectoryRow::Add);
             }
             if (sourceIndex>=SourceCount()) {
-                constexpr const char *actions[]={"+  ADD DIRECTORY","SCAN NOW","MEDIA SETUP GUIDE"};
-                DrawText(renderer_,actions[sourceIndex-SourceCount()],x+10,y+8,2,selected?text:muted);
+                constexpr const char *mediaActions[]={"+  ADD DIRECTORY","REFRESH MEDIA","MEDIA SETUP GUIDE"};
+                constexpr const char *libraryActions[]={"+  ADD DIRECTORY","ADD NEW GAMES","COMPLETE SCAN"};
+                const int action=sourceIndex-SourceCount();
+                DrawText(renderer_,(mediaMode_?mediaActions:libraryActions)[action],x+10,y+(action&& !mediaMode_?0:8),2,selected?text:muted);
+                if(!mediaMode_ && action)DrawFittedText(renderer_,action==1?"Keeps existing games, including disconnected drives.":"Replaces catalog. Large libraries may take a long time.",x+10,y+26,715,1,muted);
                 continue;
             }
             const auto &path=mediaMode_?mediaSources_[sourceIndex].path:sources_[sourceIndex].path;
@@ -9035,7 +9036,7 @@ private:
                 case A::Delete:return "X  DELETE";
                 case A::Back:return "B  BACK";
                 case A::Add:return "+  ADD";
-                case A::Scan:return "Y  SCAN";
+                case A::Scan:return mediaMode_?"Y  REFRESH MEDIA":"Y  ADD NEW GAMES";
                 case A::Guide:return "GUIDE";
                 case A::Open:return "A  OPEN";
                 case A::Use:return defaultFileBrowser_?"Y  SELECT":"Y  USE FOLDER";
@@ -9113,7 +9114,7 @@ private:
         FillRoundedRect(renderer_,{270,160,740,410},24,glass?Color{239,246,248,245}:Color{20,31,49,250});
         if(glass)DrawGlassSurface(renderer_,{270,160,740,410},24,accent,100,true);
         const auto &p=scanState_.progress;
-        DrawText(renderer_,!scanState_.error.empty()?"UPDATE STOPPED":mediaRefresh_?"UPDATING MEDIA":scanState_.finished?"SCAN COMPLETE":"SCANNING LIBRARY",640,190,3,ink,true);
+        DrawText(renderer_,!scanState_.error.empty()?"UPDATE STOPPED":mediaRefresh_?"UPDATING MEDIA":scanState_.finished?"SCAN COMPLETE":scanAddOnly_?"ADDING NEW GAMES":"COMPLETE SCAN",640,190,3,ink,true);
         DrawFittedText(renderer_,!scanState_.error.empty()?scanState_.error:scanCancelling_&&!scanState_.finished?"CANCELLING SCAN...":p.stage,310,240,660,2,ink);
         // Keep the end of long paths visible so the changing file/folder is clear.
         std::string path=p.path;
@@ -9132,6 +9133,7 @@ private:
         if(!scanState_.finished){
             const std::string detail=p.total?std::to_string(p.completed)+" / "+std::to_string(p.total)+" GAMES PROCESSED":mediaRefresh_?"MATCHING CONTENT TYPE ARTWORK":"DISCOVERING FILES - TOTAL NOT YET KNOWN";
             DrawText(renderer_,detail,640,417,1,ink,true);
+            if(!mediaRefresh_)DrawText(renderer_,scanAddOnly_?"EXISTING GAMES WILL BE KEPT":"LARGE LIBRARIES MAY TAKE A LONG TIME",640,451,1,ink,true);
             DrawText(renderer_,p.stage=="SAVING LIBRARY"?"SAVING - PLEASE KEEP THE CONSOLE ON":scanCancelling_?"WAITING FOR CURRENT READ TO FINISH":"B  CANCEL SCAN",640,507,1,ink,true);
         }else{
             const std::string detail=!scanState_.error.empty()?"Your previous library has been kept.":
@@ -9206,7 +9208,7 @@ private:
         DrawText(renderer_,"WELCOME TO UFLOW",640,252,3,ink,true);
         const auto settingsButton=ActionButton(ControlAction::Settings);
         DrawText(renderer_,std::string("Press ")+settingsButton+" for Settings > Library > Add Directory.",640,323,1,ink,true);
-        DrawText(renderer_,"Choose a folder, save, then Scan Now.",640,361,1,ink,true);
+        DrawText(renderer_,"Save a folder, then choose Add New Games.",640,361,1,ink,true);
         FillRoundedRect(renderer_,{500,420,280,50},14,{accent.r,accent.g,accent.b,90});
         DrawText(renderer_,"A  GOT IT",640,437,2,ink,true);
     }
@@ -9392,6 +9394,7 @@ private:
     bool defaultFileBrowser_ = false;
     bool defaultFileChosen_ = false;
     bool scanRequested_ = false;
+    bool scanAddOnly_ = true;
     ScanWorker scanWorker_;
     ScanWorker::Status scanState_;
     bool scanOpen_=false,scanApplied_=false,scanCancelling_=false;
@@ -9541,7 +9544,7 @@ int main(int, char **) {
     USBStorage::Mount();
     std::vector<GameEntry> games;
     const bool loadedLibraryCache = mounted && LoadLibraryCache(games);
-    if (loadedLibraryCache && RefreshInstalledGames(games)) SaveLibraryCache(games);
+    if (loadedLibraryCache && RefreshInstalledGames(games,true)) SaveLibraryCache(games);
     const bool initialScanNeeded=!loadedLibraryCache && mounted;
     Trace(loadedLibraryCache ? "library-cache-loaded" : "library-scan-pending");
     bool launchRequested=false;

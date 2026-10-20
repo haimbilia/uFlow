@@ -12,7 +12,7 @@ static ScanResult FakeScan(const ScanObserver &observer){
     assert(SDL_ThreadID()!=ui);SDL_SemPost(entered);
     if(mode==0)for(;;){observer({"SCANNING SOURCE 1 OF 1","usb1:/Decrypted",3,0,0});SDL_Delay(1);}
     if(mode==1)throw std::runtime_error("read failed");
-    observer({"MATCHING ARTWORK","test",2,1,2});ScanResult result;result.games.resize(2);return result;
+    observer({"MATCHING ARTWORK","test",2,1,2});ScanResult result;result.games.resize(2);result.games[0].absolutePath="usb1:/wbfs/existing.wbfs";result.games[0].titleId="RSPE01";result.games[1].absolutePath="usb1:/wbfs/new.wbfs";return result;
 }
 static bool FakeSave(const std::vector<GameEntry> &games){assert(SDL_ThreadID()!=ui && games.size()==2);++saves;return mode!=3;}
 static ScanWorker::Status Wait(ScanWorker &worker){
@@ -33,6 +33,25 @@ int main(){
         mode=2;worker.Start();s=Wait(worker);assert(s.error.empty() && s.cacheSaved && saves==1);
         assert(s.progress.games==2 && worker.Take().games.size()==2);
         mode=3;worker.Start();s=Wait(worker);assert(s.error.empty() && !s.cacheSaved && worker.Take().games.size()==2);
+    }
+    {
+        GameEntry offline;offline.absolutePath="usb1:/offline/game.nds";offline.name="Offline";offline.coverPath="kept.png";
+        GameEntry existing;existing.absolutePath="usb1:/wbfs/existing.wbfs";existing.titleId="RSPE01";existing.name="Custom title";existing.favorite=true;existing.description="Keep metadata";
+        std::vector<GameEntry> old{offline,existing};assert(SaveLibraryCache(old));
+        ScanWorker worker(FakeScan,SaveLibraryCache);
+        mode=0;worker.Start(old,true);SDL_Delay(10);worker.RequestCancel();assert(!Wait(worker).error.empty());
+        std::vector<GameEntry> saved;assert(LoadLibraryCache(saved)&&saved.size()==2);
+        mode=1;worker.Start(old,true);assert(!Wait(worker).error.empty());assert(LoadLibraryCache(saved)&&saved.size()==2);
+        mode=2;worker.Start(old,true);assert(Wait(worker).cacheSaved);auto merged=worker.Take().games;assert(merged.size()==3);
+        auto known=std::find_if(merged.begin(),merged.end(),[](const auto &g){return g.titleId=="RSPE01";});
+        assert(known!=merged.end()&&known->name=="Custom title"&&known->favorite&&known->description=="Keep metadata");
+        assert(LoadLibraryCache(saved)&&saved.size()==3);
+        worker.Start(saved,true);assert(Wait(worker).cacheSaved&&worker.Take().games.size()==3); // idempotent
+        auto different=existing;different.titleId="OTHER1";assert(AddDiscoveredGames(saved,{different})==1); // swapped drive, same path
+        assert(SaveContentSources({{Platform::Wii,"usb1:/wbfs",true,3}},false));
+        assert(LoadLibraryCache(saved)&&saved.size()==3); // saving a path must preserve the merge baseline
+        worker.Start(saved,false);assert(Wait(worker).cacheSaved&&worker.Take().games.size()==2); // explicit complete scan replaces
+        std::cout<<"PASS: add-only scan keeps offline entries, metadata and favorites, skips repeats, preserves cache on cancel/error; complete scan replaces\n";
     }
     const std::string root="fs:/vol/external01";
     for(int i=0;i<8;++i){

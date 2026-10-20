@@ -23,3 +23,7 @@ g++ -std=c++20 -Wall -Wextra -Werror -O2 -I/project/app/source \
 g++ -std=c++20 -Wall -Wextra -Werror -O2 -DUFLOW_HOST_TEST -I/project/app/source -I/project/wii -I/project/tests \
     /project/tests/usbloader_entry_test.cpp /project/wii/usbloader_entry.cpp -o "$testdir/usb-check"
 (cd "$testdir" && ./usb-check)
+
+g++ -std=c++20 -Wall -Wextra -Werror -O2 -I/project/app/source -I/project/wii \
+    /project/tests/usb_launch_probe_test.cpp -o "$testdir/usb-probe-check"
+(cd "$testdir" && ./usb-probe-check)

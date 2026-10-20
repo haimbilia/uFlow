@@ -1,4 +1,4 @@
-"""Apply the small uFlow SD-path entry patch to an exact WiiFlow v5.6.2 checkout."""
+"""Apply the uFlow SD/FAT32 USB path entry patch to an exact WiiFlow v5.6.2 checkout."""
 import argparse
 import hashlib
 import shutil
@@ -37,6 +37,8 @@ def main():
              'mainMenu.launchUFlowGame(uflowRequest.id.c_str(), uflowRequest.path.c_str(), uflowRequest.kind == WiiRequest::Kind::GameCube);'),
             ('mainMenu.launchUFlowGame(uflowRequest.id.c_str(), uflowRequest.path.c_str(), uflowRequest.kind == WiiRequest::Kind::GameCube);',
              'mainMenu.launchUFlowGame(uflowRequest.id.c_str(), uflowRequest.path.c_str(), uflowRequest.kind == WiiRequest::Kind::GameCube, uflowRequest.launcher == WiiRequest::Launcher::USBLoaderGX);'),
+            ('DeviceHandle.SetMountUSB(!sdOnly && !isWiiVC);',
+             'DeviceHandle.SetMountUSB(!isWiiVC && (!sdOnly || (uflowLaunch && WiiRequest::IsUsbPath(uflowRequest.path))));'),
         ],
         'source/menu/menu.hpp': [
             ('void directlaunch(const char *GameID);',
@@ -89,7 +91,8 @@ def main():
     shutil.copyfile(project / 'wii/wii_return.hpp', source / 'source/wii_return.hpp')
     shutil.copyfile(project / 'wii/wii_return.cpp', source / 'source/wii_return.cpp')
     shutil.copyfile(project / 'wii/gc_return_stub.hpp', source / 'source/gc_return_stub.hpp')
-    print('Prepared WiiFlow v5.6.2 exact-path entry point (SD only).')
+    shutil.copyfile(project / 'wii/usb_launch_probe.hpp', source / 'source/usb_launch_probe.hpp')
+    print('Prepared WiiFlow v5.6.2 exact-path entry point (Wii SD/USB, GC SD).')
 
 if __name__ == '__main__':
     main()

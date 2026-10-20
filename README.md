@@ -6,6 +6,11 @@ platform-specific launch adapters stay hidden behind a single **Launch** action.
 
 **[Downloads, setup guides and showcase videos](https://karotech.io/uflow/)**
 
+Latest release: **2026.10.21.1** — additive library scans and Wii FAT32 USB
+launching. See the [release notes](docs/releases/2026.10.21.1.md).
+Run the latest Setup for the updated Wii backends; the automatic update replaces
+only the uFlow app.
+
 uFlow requires a Wii U running Aroma. Copy `uFlow-Setup.wuhb` to
 `SD:/wiiu/apps/`, launch Setup from Wii U Menu, review the selected components,
 install, then fully reboot the console. Setup does not install Aroma.
@@ -27,7 +32,7 @@ emulator. It includes:
   independent D-pad/stick navigation, touch swipes, multiple bindings and
   button combinations;
 - an Aurora-style settings dashboard with a directory browser, multiple
-  content and media paths, per-directory type/depth options, manual rescan,
+  content and media paths, per-directory type/depth options, add-only discovery and explicit complete scans,
   and persistent view options;
 - scanning for Loadiine-format Wii U games, Wii `.wbfs`, and GameCube `.iso`;
 - listing and launching installed Wii U games from internal storage and Wii U USB;
@@ -116,14 +121,15 @@ swipes through directory lists. Bumpers no longer change settings sections.
 **Library** lists all content directories together;
 open a path to set its platform, depth, and enabled state, or remove it.
 **Media** works the same way, with media type and library scope (All, Wii U,
-Wii, or GameCube) inside each path. Use **Scan Now** from these settings lists
-to apply changes; startup scanning remains automatic. In the
+Wii, or GameCube) inside each path. Use **Add new games** or **Complete scan**
+in Library settings, or **Refresh media** in Media settings. The first run scans
+automatically when no saved catalog exists. In the
 directory browser, `A` opens a folder and `Y` selects the current folder.
 Source lists, editors, and directory browsing share the main Settings pane;
 `B` goes up a directory/back, and `X` cancels directory selection. A successful
 scan is saved as a catalog beside uFlow, so later starts show the last known
-library immediately. Use **Scan Now** after adding/removing content or changing
-media. Source edits preserve the saved library; use Scan Now to refresh discovery.
+library immediately. Source edits preserve the saved library until you choose
+a scan. Add new games retains existing entries; Complete scan rebuilds the list.
 Settings and source paths are saved beside uFlow on the FAT32 device.
 
 **General → Audio** selects looping menu music, on/off, and volume. Put MP3, OGG Vorbis,
@@ -171,3 +177,9 @@ license is included at `app/data/OFL.txt`.
 
 The UI and scanners are intentionally independent from launch adapters so work
 on one platform cannot destabilize the whole library.
+
+Library settings offer **Add new games** to keep existing/offline entries, and
+**Complete scan** to rebuild the list from currently connected sources. Large
+complete scans can take a long time. The Media tab's **Refresh media** updates
+artwork/video/metadata for existing games only. Saving a source preserves the
+catalog; no game files or saves are deleted by either scan mode.

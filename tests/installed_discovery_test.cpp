@@ -23,7 +23,8 @@ int main() {
     assert(!RefreshInstalledGames(games));assert(games[0].coverPath=="cached-art.png");
     GameEntry sd;sd.libraryId="wii";sd.platform=Platform::Wii;sd.absolutePath="sd-game.wbfs";games.push_back(sd);
     testMcpFailure=true;assert(!RefreshInstalledGames(games));assert(games.size()==2);
-    testMcpFailure=false;testInstalledTitles.clear();assert(RefreshInstalledGames(games));
+    testMcpFailure=false;testInstalledTitles.clear();assert(!RefreshInstalledGames(games,true));assert(games.size()==2);
+    assert(RefreshInstalledGames(games));
     assert(games.size()==1&&games[0].absolutePath==sd.absolutePath);
     // Installed titles supersede duplicate raw entries, but never redirected SD titles.
     GameEntry raw;raw.titleId="0005000010123400";raw.absolutePath="raw-game";games.push_back(raw);

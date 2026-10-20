@@ -3,7 +3,7 @@
 #include <string>
 namespace UFlowUpdate {
 #ifndef UFLOW_UPDATE_SEQUENCE
-#define UFLOW_UPDATE_SEQUENCE 2026102002ULL
+#define UFLOW_UPDATE_SEQUENCE 2026102101ULL
 #endif
 inline constexpr uint64_t BuildSequence=UFLOW_UPDATE_SEQUENCE;
 inline constexpr const char *BaseURL="https://karotech.io/updates/uFlow/";

@@ -13,8 +13,8 @@ public:
     ~ScanWorker(){Stop();if(mutex_)SDL_DestroyMutex(mutex_);}
     ScanWorker(const ScanWorker &)=delete;
     ScanWorker &operator=(const ScanWorker &)=delete;
-    void Start(){
-        Stop();mediaOnly_=false;Begin();
+    void Start(std::vector<GameEntry> existing = {}, bool addOnly = false){
+        Stop();mediaOnly_=false;addOnly_=addOnly;existing_=std::move(existing);Begin();
     }
     void StartMedia(std::vector<GameEntry> games,std::vector<LibraryDefinition> libraries,bool refreshSources=false){
         Stop();mediaOnly_=true;refreshSources_=refreshSources;mediaGames_=std::move(games);mediaLibraries_=std::move(libraries);Begin();
@@ -60,7 +60,14 @@ private:
                 }
                 ApplyContentTypeMedia(result.games,mediaLibraries_,report);
             }
-            else result=scan_(report);
+            else {
+                result=scan_(report);
+                if(addOnly_) {
+                    report({"ADDING NEW GAMES","",result.games.size(),0,0});
+                    AddDiscoveredGames(existing_,std::move(result.games));
+                    result.games=std::move(existing_);
+                }
+            }
             if(stop_)throw Interrupted{};
             SDL_LockMutex(mutex_);status_.progress={"SAVING LIBRARY","",result.games.size(),0,0};SDL_UnlockMutex(mutex_);
             // Commit is not interrupted halfway; SaveLibraryCache publishes a complete temporary file.
@@ -78,6 +85,8 @@ private:
     }
     Scan scan_;Save save_;
     bool mediaOnly_=false;
+    bool addOnly_=false;
+    std::vector<GameEntry> existing_;
     bool refreshSources_=false;
     std::vector<GameEntry> mediaGames_;
     std::vector<LibraryDefinition> mediaLibraries_;

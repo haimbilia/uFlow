@@ -158,7 +158,9 @@ const char *DefaultLibraryId(Platform platform);
 ScanResult ScanLibrary(const ScanObserver &progress = {});
 // Refresh only system-installed games, preserving cached SD entries/media.
 // Returns true when the catalog changed. Failed system queries preserve it.
-bool RefreshInstalledGames(std::vector<GameEntry> &games);
+bool RefreshInstalledGames(std::vector<GameEntry> &games, bool keepMissing = false);
+// Add discoveries without replacing existing entries or removing offline games.
+std::size_t AddDiscoveredGames(std::vector<GameEntry> &games, std::vector<GameEntry> discovered);
 // Merge base games from freshly MCP-verified package status; no directory scan.
 bool MergeInstalledPackages(std::vector<GameEntry> &games);
 // The catalog stores scan results (including resolved media paths) so regular

@@ -1,18 +1,19 @@
 # Wii / GameCube launching (development)
 
 uFlow writes a one-use request, launches the installed DWFA vWii channel with
-CafeOS CMPT, and a small WiiFlow v5.6.2 entry patch starts the exact SD WBFS path.
+CafeOS CMPT, and a small WiiFlow v5.6.2 entry patch starts the exact SD or FAT32 USB WBFS path.
 It uses the existing WiiFlow game-loading code, cIOS and per-game options.
 Without a request, WiiFlow opens normally. No per-game channels are installed.
 
 Each Wii/GameCube library directory can select **WiiFlow** (default) or
-**USB Loader GX**. Save the path and scan to apply. Both currently support SD only.
+**USB Loader GX**. Save the path and scan to apply. Wii WBFS supports SD and FAT32
+USB; the GameCube adapter remains SD-only.
 USB Loader GX uses the same installed DWFA bridge, then runs the patched
 `SD:/apps/usbloader_gx/boot.dol` with a consumed-once exact-path request. It does not
 require an additional installed channel or change saved content-directory settings.
 USB Loader GX integration is pinned to `e25c4f3501ed957b7db73f79c51fdf00715ab2e2`;
 prepare with `tools/prepare-usbloader-backend.py` and build with upstream's
-`devkitpro/devkitppc:20250527` image (`make release`). New route needs console tests.
+`devkitpro/devkitppc:20250527` image (`make release`). Console results are below.
 GameCube still uses Nintendont under either launcher. Wii U launching is unchanged.
 
 Requirements:
@@ -20,13 +21,50 @@ Requirements:
 - Aroma, working vWii/cIOS setup, and FIX94's vWii-compatible WiiFlow forwarder.
 - d2x cIOS and the built-in HCVA Wii U Menu return channel.
 - WiiFlow v5.6.2 with this entry patch at `SD:/apps/wiiflow/boot.dol`.
-- Writable `.wbfs` files on SD, with a valid six-character game ID matching the
-  disc header. uFlow reports read-only files before switching modes.
+- Valid `.wbfs` files on SD or FAT32 USB. uFlow reads the six-character ID from
+  the disc header. SD writable checks run before transition; USB is read-only in
+  CafeOS and the vWii backend checks write access after mounting the FAT32 drive.
 - A Wii-compatible controller; GamePad video does not provide Wii controls.
 
-This first adapter supports SD only, including custom content directories.
-USB Wii/GameCube games and automatic return to uFlow are not part
-of this adapter. Returning to WiiFlow cannot repeat the consumed launch request.
+Both patched backends must include `UFLOW_WII_USB_STORAGE_V1` for USB launch.
+The bridge resolves the same relative path plus disc ID on mounted FAT partitions,
+since CafeOS `usb1:` need not be vWii's first partition. Missing or ambiguous
+matches stop launch. The requested partition is used without changing saved
+library settings. No WFS writes or formatting are performed by this adapter.
+USB access still depends on the existing vWii USB port/cIOS setup. The tested
+arrangement used rear FAT32 and front WFS storage; see the console results below.
+Returning to WiiFlow cannot repeat the consumed launch request.
+
+The WiiFlow bridge logs `UFLOW_USB_PROBE_V2`, the active IOS/USB port,
+mounted partitions, and exact-path stat/header results in `wii-launch.log`.
+If no FAT partition is mounted, it stops the USB keep-alive thread and
+reinitializes USB once using the existing IOS and port. Missing files, invalid
+headers, wrong disc IDs and ambiguous copies produce separate errors without
+retrying or falling back to SD. Console recovery still needs hardware validation.
+
+For older cached entries named only by ID (such as `RSPE01`), use **Add new games**.
+It repairs an unidentified Wii entry at the same path without dropping offline
+games or favorites. WBFS supplies ID/internal name; a tagged parent folder
+supplies the friendlier title, and the ID supplies region. Artwork, descriptions,
+publisher and player counts still come from separately configured media files.
+
+## Console validation (2026-10-21)
+
+The user confirmed Wii Sports (RSPE01) launched from FAT32 USB through both
+WiiFlow and USB Loader GX. WiiFlow used the UFLOW_USB_PROBE_V2 bridge;
+USB Loader GX required no additional deployment for its test. These results
+confirm this title/setup, not universal USB device or title compatibility.
+The successful runs have not been inspected to determine whether the USB
+remount retry ran. Evidence: artifacts/usb-probe-deployment.json and
+artifacts/usb-loader-gx-console-test.json.
+
+Front-port follow-up: front-left failed for both launcher selections, and
+front-right failed for WiiFlow. Saved logs show all three attempts stopped
+in the shared WiiFlow bridge under IOS249/USB port 0: no FAT32 partition
+mounted, including after the single retry. GX was not reached for its front
+attempt; its saved passing log belongs to the earlier rear-port success.
+These are current-setup results, not universal front-port compatibility claims.
+Evidence: artifacts/front-usb-logs-20261021-014256/findings.json.
 
 ## GameCube
 

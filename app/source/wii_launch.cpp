@@ -24,10 +24,14 @@ bool BackendReady(const char *marker = WiiRequest::BackendMarker, const char *pa
     return false;
 }
 std::string SelectBackend(const GameEntry &game, WiiRequest::Request &request) {
+    if(WiiRequest::IsUsbPath(request.path) && !BackendReady(WiiRequest::UsbStorageMarker))
+        return "UPDATE UFLOW WIIFLOW BACKEND FOR USB GAMES";
     if(game.launcher != GameLauncher::USBLoaderGX) return {};
     if(!BackendReady(WiiRequest::SelectorMarker)) return "UPDATE UFLOW WIIFLOW BRIDGE FOR LAUNCHER SELECTION";
     if(!BackendReady(WiiRequest::UsbMarker,"fs:/vol/external01/apps/usbloader_gx/boot.dol"))
         return "INSTALL UFLOW USB LOADER GX BACKEND ON THIS SD";
+    if(WiiRequest::IsUsbPath(request.path) && !BackendReady(WiiRequest::UsbStorageMarker,"fs:/vol/external01/apps/usbloader_gx/boot.dol"))
+        return "UPDATE UFLOW USB LOADER GX BACKEND FOR USB GAMES";
     request.launcher=WiiRequest::Launcher::USBLoaderGX;
     return {};
 }
@@ -37,11 +41,13 @@ std::string PrepareWiiLaunch(const GameEntry &game, WiiRequest::Request &request
     request = {};
     if (game.platform != Platform::Wii || game.installed) return "SELECT A WII WBFS GAME";
     const std::string root = "fs:/vol/external01/";
-    if (game.absolutePath.rfind(root, 0) != 0) return "WII LAUNCH CURRENTLY SUPPORTS SD GAMES ONLY";
-    WiiRequest::Request candidate{game.titleId, "sd:/" + game.absolutePath.substr(root.size())};
-    if (!WiiRequest::ValidId(candidate.id)) return "WII GAME NEEDS A SIX-CHARACTER ID - RESCAN LIBRARY";
+    const bool usb = game.absolutePath.rfind("usb1:/",0)==0;
+    if (!usb && game.absolutePath.rfind(root, 0) != 0) return "SELECT A WII GAME ON SD OR FAT32 USB";
+    WiiRequest::Request candidate{game.titleId, usb ? game.absolutePath : "sd:/" + game.absolutePath.substr(root.size())};
     if (!WiiRequest::ValidPath(candidate.path)) return "WII PATH INVALID OR TOO LONG (MAX 255 BYTES)";
-    const auto error = WiiRequest::CheckGame(game.absolutePath, candidate.id);
+    // The CafeOS FAT32 mount is deliberately read-only. The vWii backend does
+    // its own writable preflight after the transition.
+    const auto error = WiiRequest::CheckGame(game.absolutePath, candidate.id,nullptr,&candidate.id,!usb);
     if (!error.empty()) return error;
     if (!BackendReady()) return "INSTALL THE UFLOW WIIFLOW BACKEND ON THIS SD";
     const auto selectionError=SelectBackend(game,candidate);

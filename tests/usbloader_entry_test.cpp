@@ -5,7 +5,11 @@
 MockSettings Settings;
 int boots=0,mounts=0,mountResult=0;
 void gprintf(const char *,...) {}
-int MountGamePartition(bool) { assert(gUFlowActive && Settings.SDMode==1); ++mounts; return mountResult; }
+int MountGamePartition(bool) {
+    assert(gUFlowActive && Settings.SDMode==!WiiRequest::IsUsbPath(gUFlowRequest.path));
+    if(!Settings.SDMode)assert(Settings.partition==1);
+    ++mounts; return mountResult;
+}
 int GameBooter::BootGame(discHdr *header) {
     assert(gUFlowActive && UFlowMatches(header->id));
     assert(header->path==gUFlowRequest.path);
@@ -39,5 +43,10 @@ int main() {
     assert(UFlowUsbLaunch()==-1 && boots==2 && !gUFlowActive);
     Write(WiiRequest::UsbRequestPath,"bad request");
     assert(UFlowUsbLaunch()==-1 && !std::filesystem::exists(WiiRequest::UsbRequestPath));
+    mountResult=0;
+    request={"RZTE01","usb1:/wbfs/Sports.wbfs",WiiRequest::Kind::Wii,WiiRequest::Launcher::USBLoaderGX};
+    Write("usb2:/wbfs/Sports.wbfs",wbfs);Write(WiiRequest::UsbRequestPath,WiiRequest::Encode(request));
+    assert(UFlowUsbLaunch()==42 && boots==3 && mounts==3 && Settings.SDMode==0);
+    assert(gUFlowRequest.path=="usb2:/wbfs/Sports.wbfs");
     puts("PASS: USB Loader GX exact custom paths, one-shot consumption, preflight/mount failures, Wii/GC dispatch");
 }

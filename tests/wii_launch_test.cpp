@@ -57,7 +57,25 @@ int main() {
     Write(game.absolutePath, "WBFS");
     assert(!PrepareWiiLaunch(game, parsed).empty());
     game.absolutePath = "fs:/vol/usb01/wbfs/game.wbfs";
-    assert(PrepareWiiLaunch(game, parsed).find("SD GAMES ONLY") != std::string::npos);
+    assert(PrepareWiiLaunch(game, parsed).find("SD OR FAT32 USB") != std::string::npos);
+    game.absolutePath="usb1:/wbfs/Wii Sports [RLUE4Q]/RLUE4Q.wbfs";
+    wbfs[8]=9;Write(game.absolutePath,wbfs);
+    fs::permissions(game.absolutePath,fs::perms::owner_read);
+    game.titleId.clear(); // cached pre-header scan
+    assert(PrepareWiiLaunch(game,parsed).find("UPDATE UFLOW WIIFLOW")!=std::string::npos);
+    Write(root+"/apps/wiiflow/boot.dol",std::string(WiiRequest::BackendMarker)+WiiRequest::UsbStorageMarker);
+    assert(PrepareWiiLaunch(game,parsed).empty());
+    assert(parsed.id==request.id && parsed.path==game.absolutePath);
+    assert(WiiRequest::Decode(WiiRequest::Encode(parsed),parsed));
+    for(const auto *path:{"usb0:/x.wbfs","usb9:/x.wbfs","usb1:/../x.wbfs","usb1:/a//x.wbfs","usb1:/a:x.wbfs"})
+        assert(!WiiRequest::ValidPath(path));
+    auto resolved=parsed;
+    Write("usb2:/"+parsed.path.substr(6),wbfs);
+    assert(WiiRequest::ResolveUsbPath(resolved,[](int p){return p==2;}));
+    assert(resolved.path.rfind("usb2:/",0)==0);
+    assert(!WiiRequest::ResolveUsbPath(resolved,[](int p){return p<=2;})); // ambiguous
+    resolved.id="RZTE01";
+    assert(!WiiRequest::ResolveUsbPath(resolved,[](int p){return p==2;}));
 
     Write(WiiRequest::CafeRequest, text);
     assert(WiiRequest::Consume(WiiRequest::CafeRequest, parsed));

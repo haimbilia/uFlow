@@ -18,6 +18,22 @@ case to its back and zoom it; release it to return. **B** still cancels the
 preview immediately. Both actions can be reassigned under **Settings → Controls**.
 Manual scans are available only inside the Library/Media settings.
 
+- **Library > Add new games** (also **Y** in the Library directory list) scans
+  enabled content paths and adds discoveries without removing existing games.
+  Repeated scans skip already cataloged entries. Existing artwork, metadata and
+  favorites are kept, including games on disconnected drives. Separate copies
+  at different paths remain separate launchable entries.
+- **Library > Complete scan** replaces the catalog with the games currently
+  found. Missing or disconnected games are removed from the list, not from disk.
+  Large libraries may take a long time; the notice appears beside the action and
+  during scanning. Use this to apply removals or rebuild existing game metadata.
+- **Media > Refresh media** updates artwork, video and metadata associations for
+  the existing catalog only. It does not discover or remove games.
+
+Saving content paths/types preserves the catalog until you choose a scan.
+Startup adds newly installed titles without removing disconnected installed
+entries. Cancelled or failed scans keep the previous saved catalog.
+
 ## Game details
 
 **General → Auto Sort Installed VC**, directly below **Show Installed Wii U**,
@@ -93,8 +109,11 @@ into another layer of folders. Raw Wii U games need `code/*.rpx` and `content/`;
 normally they also have `code/app.xml`, `code/cos.xml`, and `meta/`.
 Encrypted WUP packages (`title.tmd`, `.app`, `.h3`) are not raw games.
 Wii discovery currently supports `.wbfs`; GameCube supports `.iso` and skips
-`disc2.iso` as a separate title. SD WBFS and plain GameCube ISO can be launched
-with the installed uFlow WiiFlow adapter (GameCube also requires Nintendont).
+`disc2.iso` as a separate title. Wii WBFS launches from SD or FAT32 USB with the
+updated WiiFlow/USB Loader GX adapters. GameCube ISO currently launches from SD
+and also requires Nintendont. WBFS scanning reads the disc ID and region, uses a
+tagged parent folder for the display name, and matches configured media by ID.
+Add new games repairs older unidentified Wii entries without removing the library.
 RVZ must be converted to ISO, not renamed. See [launch setup](WII-LAUNCH.md).
 
 Installed Wii U titles are discovered separately; **General → Show Installed Wii U**
