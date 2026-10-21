@@ -20,6 +20,7 @@ enum class GameLauncher { WiiFlow, USBLoaderGX };
 // A library is a user-owned category.  Sources reference its stable id, so it
 // can be renamed/reordered without rescanning or losing media associations.
 struct LibraryDefinition {
+    bool operator==(const LibraryDefinition &) const = default;
     std::string id;
     std::string name;
     Platform parser = Platform::WiiU;
@@ -95,6 +96,7 @@ struct ScanResult {
 };
 
 struct ContentSource {
+    bool operator==(const ContentSource &) const = default;
     Platform platform = Platform::WiiU;
     std::string path;
     bool enabled = true;
@@ -119,12 +121,14 @@ inline const char *VideoModeName(VideoMode mode) {
     return mode==VideoMode::Background?"BACKGROUND":mode==VideoMode::Foreground?"FOREGROUND":"SHOWCASE";
 }
 struct VideoOptions {
+    bool operator==(const VideoOptions &) const = default;
     int delayMs = 1000;
     VideoMode mode = VideoMode::Showcase;
     int volume = 70;
     int foregroundOpacity = 100; // UI over background video only, percent.
 };
 struct MediaSource {
+    bool operator==(const MediaSource &) const = default;
     MediaType type = MediaType::Cover;
     int library = -1; // -1 all libraries; otherwise Platform
     std::string path;

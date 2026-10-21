@@ -1744,6 +1744,7 @@ private:
 };
 
 class Dashboard {
+    enum class DraftExit { None, Editor, Text, Category, Settings };
 public:
     Dashboard(SDL_Renderer *renderer, std::vector<GameEntry> &games)
         : renderer_(renderer), games_(games), textures_(renderer), preferences_(LoadSettings()),
@@ -4635,6 +4636,7 @@ public:
         }
     }
     void ToggleSettings() {
+        if(settings_ && ConfirmDraftExit(DraftExit::Settings))return;
         settingsAction_=-1;
         detailsBackdropReady_ = false;
         settings_=!settings_; details_=false;
@@ -4940,30 +4942,32 @@ public:
     bool DirectoryBrowserOpen() const { return directoryBrowser_; }
     bool ConsumeScanRequest() { const bool result = scanRequested_; scanRequested_ = false; return result; }
     void CloseOverlay() {
+        if(draftExit_!=DraftExit::None){draftExit_=DraftExit::None;return;}
         settingsAction_=-1;
         if(alphabetOpen_){alphabetOpen_=false;return;}
         if(searchOpen_){searchOpen_=false;return;}
         if(sortOpen_){sortOpen_=false;return;}
         if(CoverInspectOpen()) { CloseCoverInspect(); return; }
-        if(typeText_) { typeText_=false; return; }
+        if(typeText_) { TypeTextInput(0,0,false,true,false,false); return; }
         if(settingsEditing_) { settingsEditing_=false; return; }
         if(vcMapMode_) { vcMapMode_=0;launcherRow_=7;return; }
         if(launcherBrowse_) { launcherBrowse_=false; return; }
         if(launcherEditor_) { launcherEditor_=false; launcherRow_=0; settingsEditing_=false; return; }
         if(settings_&&settingsCategory_==5) { if(settingsEditing_)settingsEditing_=false;else settings_=false; return; }
-        if(typeEditor_) { typeEditor_=false; return; }
+        if(typeEditor_) { if(!ConfirmDraftExit(DraftExit::Editor))typeEditor_=false; return; }
         if(typeManager_) { typeManager_=false; return; }
         if(settingsEditing_) { settingsEditing_=false; return; }
         if(audioSettings_) { audioSettings_=false; settingsRow_=5; return; }
         if (mediaHelp_) { mediaHelp_=false; return; }
         if (directoryBrowser_) { BrowserBack(); return; }
-        if (sourceEditor_) { sourceEditor_ = false; return; }
+        if (sourceEditor_) { if(!ConfirmDraftExit(DraftExit::Editor))sourceEditor_=false; return; }
         if (sourceManager_) { sourceManager_ = false; settings_=false; return; }
         if (settings_ && settingsCategory_==2) { sourceManager_=true; return; }
         details_ = settings_ = false;
     }
 
     void SettingsChangeCategory(int amount) {
+        if(amount && ConfirmDraftExit(DraftExit::Category)){draftExitCategory_=amount;return;}
         settingsAction_=-1;
         typeManager_=typeEditor_=typeText_=false;
         launcherEditor_=launcherBrowse_=false;launcherRow_=vcMapMode_=0;
@@ -5411,6 +5415,11 @@ public:
     void SettingsInput(int horizontal,int vertical,bool accept=false,bool back=false,
                        bool previous=false,bool useFolder=false,bool plus=false) {
         if (!settings_) return;
+        if(draftExit_!=DraftExit::None){
+            if(back)ResolveDraftExit(false);
+            else {if(horizontal || vertical)draftExitYes_=!draftExitYes_;if(accept)ResolveDraftExit(draftExitYes_);}
+            return;
+        }
         if(back)MenuSound(MenuSounds::Back);
         else if(accept)MenuSound(MenuSounds::Confirm);
         else if(horizontal || vertical)MenuSound(MenuSounds::Move);
@@ -5519,6 +5528,13 @@ public:
     }
     void SettingsTouch(int x,int y,int dragY=0) {
         if(!settings_ || settingsProgress_<.95f) return;
+        if(draftExit_!=DraftExit::None){
+            if(std::abs(dragY)<30 && y>=414 && y<470){
+                if(x>=350 && x<630)ResolveDraftExit(false);
+                else if(x>=650 && x<930)ResolveDraftExit(true);
+            }
+            return;
+        }
         if(std::abs(dragY)<30 && x>=390 && x<1121 && y>=574 && y<614) {
             const int action=(x-390)/185;
             if((x-390)%185<176){settingsSidebar_=false;ActivateSettingsAction(action);}
@@ -6047,7 +6063,7 @@ public:
                 do { typeDraft_.id="custom_"+std::to_string(serial++); }
                 while(std::any_of(libraries_.begin(),libraries_.end(),[&](const auto&l){return l.id==typeDraft_.id;}));
             } else typeDraft_=libraries_[typeIndex_];
-            typeEditor_=true;typeRow_=0;return;
+            initialTypeDraft_=typeDraft_;typeEditor_=true;typeRow_=0;return;
         }
         if(typeRow_==0||typeRow_==2) { typeName_=typeRow_==0;typeBuffer_=typeName_?typeDraft_.name:typeDraft_.extensions;typeText_=true;typeKey_=0;return; }
         if(typeRow_==10) {
@@ -6075,7 +6091,7 @@ public:
     }
     static constexpr const char *TypeKeys="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,_-/:";
     void TypeTextInput(int horizontal,int vertical,bool accept,bool back,bool erase,bool done) {
-        if(back){typeText_=false;return;}
+        if(back){if(!ConfirmDraftExit(DraftExit::Text))typeText_=false;return;}
         const int count=static_cast<int>(std::strlen(TypeKeys));
         typeKey_=(typeKey_+horizontal+vertical*12+count*12)%count;
         if(erase&&!typeBuffer_.empty()) typeBuffer_.pop_back();
@@ -6161,7 +6177,113 @@ public:
         sourceEditorRow_ = 0;
         defaultFileChosen_=false;
         AutoSelectDraftDefault();
+        CaptureSourceDraft();
         sourceEditor_ = true;
+    }
+
+    void CaptureSourceDraft() {
+        initialSourceDraft_=draftSource_;initialMediaDraft_=draftMediaSource_;
+    }
+    bool CheckDraftExit(const std::string &path) {
+        const auto fail=[](int line){std::printf("FAIL: unsaved editor line %d\n",line);return false;};
+        for(const bool media:{false,true})for(const bool adding:{false,true}){
+            VisualPreview(media?"mediaedit":"sourceedit");
+            if(adding)SourceAdd();
+            const auto sourceBefore=sources_;const auto mediaBefore=mediaSources_;
+            SettingsInput(0,0,false,true);
+            if(sourceEditor_ || draftExit_!=DraftExit::None)return fail(__LINE__);
+            if(adding)SourceAdd();else {if(!media)sourceRow_=1;SourceActivate();}
+            const auto original=DraftPath();DraftPath()+="/changed";
+            SettingsInput(0,0,false,true);
+            if(!sourceEditor_ || draftExit_==DraftExit::None || draftExitYes_)return fail(__LINE__);
+            SettingsInput(0,0,true); // No is initially selected.
+            if(!sourceEditor_ || draftExit_!=DraftExit::None || DraftPath()!=original+"/changed")return fail(__LINE__);
+            DraftPath()=original;SettingsInput(0,0,false,true);
+            if(sourceEditor_ || draftExit_!=DraftExit::None)return fail(__LINE__);
+            if(adding)SourceAdd();else {if(!media)sourceRow_=1;SourceActivate();}
+            if(media)draftMediaSource_.video.volume++;else draftSource_.autoSortVC=!draftSource_.autoSortVC;
+            SettingsInput(0,0,false,true);
+            if(draftExit_==DraftExit::None)return fail(__LINE__);
+            if(!Render(0,path+(media?"-media":"-library")+(adding?"-new.png":"-existing.png")))return false;
+            SettingsTouch(200,210); // Underlying sidebar must not receive a tap.
+            if(draftExit_==DraftExit::None)return fail(__LINE__);
+            SettingsTouch(790,440);
+            if(sourceEditor_ || sources_!=sourceBefore || mediaSources_!=mediaBefore)return fail(__LINE__);
+        }
+        for(const bool adding:{false,true}){
+            VisualPreview("sources");sourceRow_=0;SourceActivate();typeRow_=adding?0:1;TypeActivate();
+            SettingsInput(0,0,false,true);
+            if(typeEditor_ || draftExit_!=DraftExit::None)return fail(__LINE__);
+            TypeActivate();const auto original=typeDraft_;typeDraft_.name+=" changed";
+            SettingsInput(0,0,false,true);SettingsInput(0,0,false,true); // B keeps edits.
+            if(!typeEditor_ || typeDraft_.name==original.name || draftExit_!=DraftExit::None)return fail(__LINE__);
+            typeDraft_=original;SettingsInput(0,0,false,true);
+            if(typeEditor_ || draftExit_!=DraftExit::None)return fail(__LINE__);
+            TypeActivate();typeRow_=0;TypeActivate();typeBuffer_+='X';
+            SettingsInput(0,0,false,true);
+            if(draftExit_!=DraftExit::Text)return fail(__LINE__);
+            SettingsInput(0,0,true);
+            if(!typeText_ || typeBuffer_.back()!='X')return fail(__LINE__);
+            SettingsInput(0,0,false,true);SettingsInput(1,0,true);
+            if(typeText_ || typeDraft_!=original)return fail(__LINE__);
+            typeDraft_.caseWidthMm++;SettingsInput(0,0,false,true);
+            if(!Render(0,path+(adding?"-type-new.png":"-type-existing.png")))return false;
+            SettingsInput(1,0,true);
+            if(typeEditor_)return fail(__LINE__);
+        }
+        VisualPreview("sourceedit");draftSource_.depth++;
+        SettingsChangeCategory(1);
+        if(settingsCategory_!=1 || draftExit_!=DraftExit::Category)return fail(__LINE__);
+        SettingsInput(1,0,true);
+        if(settingsCategory_!=2 || sourceEditor_)return fail(__LINE__);
+        VisualPreview("mediaedit");draftMediaSource_.defaultFile="chosen.png";ToggleSettings();
+        if(!settings_ || draftExit_!=DraftExit::Settings)return fail(__LINE__);
+        SettingsInput(1,0,true);if(settings_)return fail(__LINE__);
+        // Saving the actual editor still commits, then exits without a warning.
+        VisualPreview("sourceedit");std::filesystem::create_directories("fs:/vol/external01/wiiu/apps/uFlow");
+        draftSource_.depth=2;SaveDraftSource();
+        if(sourceEditor_ || sources_[0].depth!=2 || draftExit_!=DraftExit::None)return fail(__LINE__);
+        std::puts("PASS: new/existing library, media and content-type dirty exits, reverting, No/B, Yes/touch, field cancel, category switch and save");
+        return true;
+    }
+    bool TypeTextChanged() const {
+        return typeEditor_ && typeText_ && typeBuffer_!=(typeName_?typeDraft_.name:typeDraft_.extensions);
+    }
+    bool DraftChanged() const {
+        if(typeEditor_)return typeDraft_!=initialTypeDraft_ || TypeTextChanged();
+        return sourceEditor_ && (mediaMode_?draftMediaSource_!=initialMediaDraft_:draftSource_!=initialSourceDraft_);
+    }
+    bool ConfirmDraftExit(DraftExit action) {
+        if(draftExit_!=DraftExit::None)return true;
+        if(!(action==DraftExit::Text?TypeTextChanged():DraftChanged()))return false;
+        draftExit_=action;draftExitYes_=false;
+        return true;
+    }
+    void ResolveDraftExit(bool discard) {
+        const auto action=draftExit_;draftExit_=DraftExit::None;
+        if(!discard)return;
+        if(action==DraftExit::Text){typeText_=false;return;}
+        if(directoryBrowser_)BrowserCancel();
+        sourceEditor_=typeEditor_=typeText_=settingsEditing_=false;
+        if(action==DraftExit::Category)SettingsChangeCategory(draftExitCategory_);
+        else if(action==DraftExit::Settings)ToggleSettings();
+    }
+    void DrawDraftExit(Color accent) {
+        const bool light=preferences_.skin==1 || preferences_.skin==2;
+        const PopupTextGlowScope glow(light);
+        const Color ink=light?Color{38,53,64,255}:Color{238,244,252,255};
+        FillRoundedRect(renderer_,{0,0,kWidth,kHeight},0,{0,0,0,130});
+        FillRoundedRect(renderer_,{300,225,680,280},24,light?Color{239,246,248,255}:Color{20,31,49,255});
+        if(light)DrawGlassSurface(renderer_,{300,225,680,280},24,accent,100,true);
+        DrawText(renderer_,"UNSAVED CHANGES",640,260,3,ink,true);
+        DrawText(renderer_,"Exit without saving your changes?",640,324,2,ink,true);
+        DrawText(renderer_,"Choose No to keep editing.",640,365,1,ink,true);
+        for(int i=0;i<2;++i){
+            const SDL_Rect rect{350+i*300,414,280,56};
+            if(draftExitYes_==(i==1))FillRoundedRect(renderer_,{rect.x-3,rect.y-3,rect.w+6,rect.h+6},15,accent);
+            FillRoundedRect(renderer_,rect,12,light?Color{225,239,245,255}:Color{32,52,73,255});
+            DrawText(renderer_,i?"YES - DISCARD":"NO - KEEP EDITING",490+i*300,433,1,ink,true);
+        }
     }
 
     void SourceAdd() {
@@ -6171,6 +6293,7 @@ public:
             sourceRow_=static_cast<int>(std::find_if(rows.begin(),rows.end(),[](const auto &row){return row.kind==MediaDirectoryRow::Add;})-rows.begin()); SourceActivate();
             if(selected.kind==MediaDirectoryRow::Header || selected.kind==MediaDirectoryRow::Directory)
                 draftMediaSource_.libraryId=selected.key;
+            CaptureSourceDraft();
             return;
         }
         sourceRow_=SourceCount()+(mediaMode_?0:1); SourceActivate();
@@ -6857,6 +6980,7 @@ public:
             if(fade>=1.f) {SDL_DestroyTexture(startupFrame_);startupFrame_=nullptr;}
         }
         DrawGallery();DrawPowerPrompt();
+        if(draftExit_!=DraftExit::None)DrawDraftExit(accent);
         const bool captured = capturePath.empty() || SaveVisualFrame(renderer_, capturePath);
         SDL_RenderPresent(renderer_);
 #ifndef UFLOW_HOST_PREVIEW
@@ -9379,6 +9503,12 @@ private:
     int sourceEditorRow_ = 0;
     int editingSourceIndex_ = -1;
     ContentSource draftSource_;
+    ContentSource initialSourceDraft_;
+    MediaSource initialMediaDraft_;
+    LibraryDefinition initialTypeDraft_;
+    DraftExit draftExit_=DraftExit::None;
+    bool draftExitYes_=false;
+    int draftExitCategory_=0;
     std::string browserPath_ = "fs:/vol";
     std::vector<std::string> browserDirectories_;
     std::unique_ptr<BrowserWorker> browserWorker_;
@@ -10173,7 +10303,8 @@ int main(int argc, char **argv) {
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND); InitSmoothFonts();
     bool ok;
     { std::vector<GameEntry> games; Dashboard dashboard(renderer, games);
-      if(std::string(argv[1])=="scanchecks")ok=dashboard.CheckScanDialog(argv[2]);
+      if(std::string(argv[1])=="draftchecks")ok=dashboard.CheckDraftExit(argv[2]);
+      else if(std::string(argv[1])=="scanchecks")ok=dashboard.CheckScanDialog(argv[2]);
       else if(std::string(argv[1])=="asyncbrowserchecks")ok=dashboard.CheckAsyncBrowser(argv[2]);
       else if(std::string(argv[1])=="asyncartworkchecks")ok=dashboard.CheckAsyncArtwork(argv[2]);
       else if(std::string(argv[1])=="artworkmemorychecks")ok=dashboard.CheckArtworkWorkingSet(argv[2]);

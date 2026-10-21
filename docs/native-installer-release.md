@@ -1,5 +1,13 @@
 # Native installer release workflow
 
+Unsaved editor changes (2026-10-21): Core app confirms discard for changed
+library/media directories and content types, including category switches and
+content-type text cancellation. Opening snapshots keep reverted values clean.
+Rebuild app, sync the existing Core mapping, rebuild Setup, and run actual Core
+fresh-install/reinstall checks. No new defaults or settings migration required.
+Keep this fix local until a release/deployment is requested.
+
+
 Release 2026.10.21.1 (sequence 2026102101): app includes additive scans and Wii
 USB identification/dispatch; Setup includes the tested WiiFlow probe/retry and
 USB Loader GX adapters. Publish installer plus app to Karotech and GitHub, and

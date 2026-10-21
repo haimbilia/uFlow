@@ -5,7 +5,13 @@ between the sidebar and main panel. Up/down navigates the focused area; holding
 repeats. **A** opens a path/action or enters selector edit mode. While editing,
 **left/right** changes the highlighted value; **B** ends editing in place, and
 **up/down** ends editing and moves to the adjacent row. A also ends editing.
-Returning to the sidebar and back preserves your draft unless you change sections.
+Returning to the sidebar and back preserves your draft. Leaving a changed library
+directory, media directory or content type asks **Unsaved changes — Exit without
+saving your changes?** Choose **No — Keep editing** (the default), or press B,
+to retain your edits. **Yes — Discard** leaves without saving. Switching sections
+also asks first. Unchanged forms and fully reverted edits close without a prompt.
+Cancelling a changed content-type name or extensions field asks before dropping
+the text; Done applies the field to the draft, and Save commits the whole form.
 Touch a section or row to select/open it; tap value arrows to change options.
 Vertical swipes scroll lists; the footer buttons are touchable too. In the folder
 browser, tap a folder to enter it, **Use Folder** to select it, or **Parent/Cancel**.
