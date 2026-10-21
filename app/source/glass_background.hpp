@@ -13,8 +13,11 @@ public:
     bool Ready() const { return player_.Ready(); }
     bool Draw(int width,int height) const { return player_.Draw(width,height); }
     VideoPlayer::Stats Statistics() const { return player_.Statistics(); }
-    void Update(bool enabled,bool paused,bool previewRequested,bool previewRetired) {
+    void Update(bool enabled,bool paused,bool previewRequested,bool previewRetired,bool blocked=false) {
         if(!enabled) { Stop(); Released(); return; }
+        // Settings and scans must not reopen a decoder that menu entry stopped.
+        // Reap cancellation without blocking and retain an existing still frame.
+        if(blocked) { Stop(true); Released(); return; }
         // Keep the stock menu frame while the game decoder opens and buffers.
         if(previewRequested) { Stop(true); Released(); return; }
         if(!previewRetired) return;

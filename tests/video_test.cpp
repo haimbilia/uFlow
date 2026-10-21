@@ -1,6 +1,7 @@
 #include "video.hpp"
 #include "video_color.hpp"
 #include "video_order.hpp"
+#include "glass_background.hpp"
 #include <cassert>
 #include <cstdlib>
 #include <iostream>
@@ -173,6 +174,33 @@ int main(int argc, char **argv) {
     auto *renderer = SDL_CreateRenderer(window,-1,SDL_RENDERER_SOFTWARE);
     assert(renderer);
     {
+        // A modal opened before the first background frame must not start a
+        // decoder. After a running loop is stopped it must stay stopped while
+        // its asynchronous cleanup finishes, then resume when the modal closes.
+        SDL_setenv("UFLOW_GLASS_BACKGROUND_VIDEO",argv[1],1);
+        {
+            GlassBackground background(renderer);
+            background.Update(true,true,false,true,true);
+            assert(!background.Active() && background.Released());
+            background.Update(true,false,false,true,false);
+            assert(background.Active());
+            SDL_setenv("UFLOW_VIDEO_TEST_CLEANUP_DELAY_MS","300",1);
+            const auto begin=SDL_GetTicks();
+            background.Update(true,true,false,true,true);
+            assert(!background.Active());
+            assert(SDL_GetTicks()-begin<250);
+            while(SDL_GetTicks()-begin<700){
+                background.Update(true,true,false,true,true);
+                assert(!background.Active());SDL_Delay(5);
+            }
+            assert(background.Released());
+            background.Update(true,false,false,true,false);
+            assert(background.Active());
+            background.Stop();
+            while(!background.Released())SDL_Delay(5);
+            SDL_setenv("UFLOW_VIDEO_TEST_CLEANUP_DELAY_MS","0",1);
+        }
+        std::cout<<"PASS: modal blocks background startup/restart without blocking cleanup; loop resumes after modal\n";
         VideoPlayer player(renderer);
         const auto waitAvailable=[&] {
             const auto since=SDL_GetTicks();

@@ -3,6 +3,9 @@
 #include <SDL2/SDL.h>
 #include <atomic>
 #include <utility>
+#ifdef __WIIU__
+#include <coreinit/debug.h>
+#endif
 
 class ScanWorker {
 public:
@@ -37,6 +40,9 @@ private:
     struct Interrupted {};
     static int Run(void *self){return static_cast<ScanWorker *>(self)->Work();}
     int Work(){
+#ifdef __WIIU__
+        OSReport("uFlow: scan-worker-enter media=%d additive=%d\n",mediaOnly_,addOnly_);
+#endif
         SDL_SetThreadPriority(SDL_THREAD_PRIORITY_LOW);
         Status final;
         try {
@@ -45,6 +51,9 @@ private:
                 if(stop_)throw Interrupted{};
                 const auto now=SDL_GetTicks();
                 if(progress.stage!=stage || now-last>=50 || (progress.total && progress.completed==progress.total)){
+#ifdef __WIIU__
+                    if(progress.stage!=stage)OSReport("uFlow: scan-stage %s path=%s games=%u\n",progress.stage.c_str(),progress.path.c_str(),unsigned(progress.games));
+#endif
                     SDL_LockMutex(mutex_);status_.progress=progress;SDL_UnlockMutex(mutex_);
                     stage=progress.stage;last=now;
                 }

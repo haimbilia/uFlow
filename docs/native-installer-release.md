@@ -1,3 +1,33 @@
+Release 2026.10.22.1 (2026102201), authorized 2026-10-22: publish app, Setup,
+signed stable update and GitHub source/release. This supersedes earlier local-only
+instructions. Add new games succeeded in the user retest of f59e268d; Complete
+scan remains without a separate hardware confirmation. See release notes.
+
+Console retest of scan/video transition (2026-10-21): user still observed a
+freeze. Captured decoder/converter/reader exits at 00:46:58; crash at 00:47:28
+was _free_r via SDL WIIU_FrameDone/RenderPresent. Video overlap is therefore
+not an established root cause or resolved fix. Diagnostic build logs scan
+request, first dialog draw/present, worker entry and stage transitions through
+OSReport (no diagnostic SD writes during browsing). File discovery begins only
+after the first scan frame has presented; cancellation still keeps the catalog.
+Evidence: artifacts/scan-freeze-fix/syslog.txt. Keep Setup local.
+
+Scan/video transition (2026-10-21): scans wait asynchronously for all video
+players to finish cancellation before starting filesystem discovery. Glass
+backgrounds do not reopen their decoder while settings, scanning, updating or
+other blocking overlays are open. Cancel during this wait preserves the library.
+Both complete/additive scans and media refresh use this handoff. Captured .150
+crashes occurred in rendering/allocation immediately after a background restart;
+this change removes that overlap, but console confirmation is still required.
+The public 2026.10.21.1 app lacks the later unsaved-editor confirmation; this
+build includes it. Rebuild app, sync Core payload, rebuild Setup and run actual
+Core fresh/reinstall checks. Deploy app only to .150; keep Setup local.
+
+Validation: video lifecycle tests, ASan/UBSan scan-worker tests, scan dialog
+and pre-start cancellation, dirty-editor tests, app/Setup builds and actual
+Core/Core+WiiU fresh/reinstall payload checks passed. Evidence is in
+artifacts/scan-freeze-fix. Console freeze resolution remains pending retest.
+
 # Native installer release workflow
 
 UStealth signature handling (2026-10-21): the shared read-only FatFs parser

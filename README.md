@@ -6,10 +6,10 @@ platform-specific launch adapters stay hidden behind a single **Launch** action.
 
 **[Downloads, setup guides and showcase videos](https://karotech.io/uflow/)**
 
-Latest release: **2026.10.21.1** — additive library scans and Wii FAT32 USB
-launching. See the [release notes](docs/releases/2026.10.21.1.md).
-Run the latest Setup for the updated Wii backends; the automatic update replaces
-only the uFlow app.
+Latest release: **2026.10.22.1** - scan startup, unsaved-edit confirmation and
+UStealth support. See the [release notes](docs/releases/2026.10.22.1.md).
+Run Setup and restart for the matching UStealth raw-loader module; the automatic
+update replaces only the uFlow app.
 
 uFlow requires a Wii U running Aroma. Copy `uFlow-Setup.wuhb` to
 `SD:/wiiu/apps/`, launch Setup from Wii U Menu, review the selected components,

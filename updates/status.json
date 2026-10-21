@@ -6,7 +6,7 @@
     "stable",
     "testing"
   ],
-  "published_release": "2026.10.21.1",
+  "published_release": "2026.10.22.1",
   "client_available": true,
-  "hardware_validation": "Wii Sports launched from rear FAT32 USB with WiiFlow and USB Loader GX on the tested console. Front-port attempts failed in the shared bridge. OTA updates app only; run Setup for the updated Wii backends."
+  "hardware_validation": "User confirmed Add new games worked after the scan-start change. Separate Complete scan hardware confirmation remains pending. OTA updates the app only; run Setup and reboot for the UStealth loader update."
 }

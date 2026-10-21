@@ -2262,6 +2262,11 @@ public:
             if(!Render(0,output+"-"+std::to_string(skin)+"-error.png"))return false;
         }
         ScanInput(true);if(scanOpen_)return false;
+        const auto beforeCancel=games_.size();
+        StartScan();if(!scanStartPending_)return false;
+        CancelScan();PollScan();
+        if(scanStartPending_ || !scanState_.finished || games_.size()!=beforeCancel)return false;
+        ScanInput(true);if(scanOpen_)return false;
         // Exercise the actual worker-to-dashboard handoff, including cache-save
         // result and opening the modal without requiring the settings screen.
         StartScan();if(!ScanOpen())return false;
@@ -4671,6 +4676,7 @@ public:
     bool ScanOpen() const {return scanOpen_;}
     void StartScan() {
         if(scanOpen_)return;
+        Trace("scan-request-before-stop");
         mediaRefresh_=false;
         sourceMediaRefreshPending_=false;
         FlushSettingsSave(true);BrowserCancel();DismissVideo();StopMusic();
@@ -4679,11 +4685,17 @@ public:
 #ifndef UFLOW_HOST_PREVIEW
         USBStorage::LogReadStats("scan-start");
 #endif
-        scanWorker_.Start(games_,scanAddOnly_);
+        scanStartPending_=true;
+        scanFirstFrame_=true;
+        Trace("scan-request-ready");
     }
-    void StopScan(){scanWorker_.Stop();}
+    void StopScan(){scanStartPending_=false;scanWorker_.Stop();}
     void CancelScan(){
         if(scanOpen_ && !scanState_.finished && scanState_.progress.stage!="SAVING LIBRARY"){
+            if(scanStartPending_){
+                scanStartPending_=false;scanApplied_=true;scanState_.finished=true;
+                scanState_.progress.stage="SCAN CANCELLED";return;
+            }
             scanCancelling_=true;scanWorker_.RequestCancel();
         }
     }
@@ -4697,10 +4709,27 @@ public:
             FlushSettingsSave(true);DismissVideo();StopMusic();
             scanState_={};scanState_.progress.stage=sourceMediaRefreshPending_?"UPDATING MEDIA":"UPDATING CONTENT TYPE MEDIA";scanApplied_=false;scanCancelling_=false;
             scanOpen_=true;scanStarted_=SDL_GetTicks();scanElapsed_=0;detailsBackdropReady_=false;
-            scanWorker_.StartMedia(games_,libraries_,sourceMediaRefreshPending_);
+            scanRefreshSources_=sourceMediaRefreshPending_;scanStartPending_=true;
+            scanFirstFrame_=true;
             sourceMediaRefreshPending_=false;
         }
         if(!scanOpen_ || scanApplied_)return;
+        scanElapsed_=(SDL_GetTicks()-scanStarted_)/1000;
+        if(scanStartPending_){
+            // Stop is asynchronous. Keep drawing/cancelling the scan dialog
+            // while all decoder workers release their queues and frame leases.
+            if(scanFirstFrame_ && !preview_)return;
+            const bool videoReady=video_.CanStart();
+            const bool detailsReady=detailsVideo_.CanStart();
+            const bool backgroundReady=glassBackground_.Released();
+            if(!videoReady || !detailsReady || !backgroundReady){
+                scanState_.progress.stage="FINISHING VIDEO PLAYBACK";return;
+            }
+            scanStartPending_=false;
+            Trace("scan-worker-start");
+            if(mediaRefresh_)scanWorker_.StartMedia(games_,libraries_,scanRefreshSources_);
+            else scanWorker_.Start(games_,scanAddOnly_);
+        }
         scanState_=scanWorker_.Poll();scanElapsed_=(SDL_GetTicks()-scanStarted_)/1000;
         if(scanState_.finished){
 #ifndef UFLOW_HOST_PREVIEW
@@ -6835,7 +6864,9 @@ public:
             !preferences_.backgroundMotion||scanOpen_||updateOpen_||WelcomeOpen()||InjectionDialogOpen()||settings_||details_||
             detailsProgress_>.01f||settingsProgress_>.01f,
             videoPending_||video_.Active()||detailsVideoPending_||detailsVideo_.Active()||!detailsVideo_.CanStart(),
-            !video_.Active()&&video_.CanStart()&&detailsVideo_.CanStart());
+            !video_.Active()&&video_.CanStart()&&detailsVideo_.CanStart(),
+            scanOpen_||updateOpen_||WelcomeOpen()||InjectionDialogOpen()||settings_||details_||
+            detailsProgress_>.01f||settingsProgress_>.01f);
         if(videoIsolationUntil_ && (SDL_TICKS_PASSED(SDL_GetTicks(),videoIsolationUntil_) || !video_.Active() || OverlayOpen()))
             videoIsolationUntil_=0;
         if(videoIsolationUntil_ && video_.Ready()) {
@@ -6941,7 +6972,11 @@ public:
         if (WelcomeOpen()) DrawWelcome(accent);
         if (updateOpen_) DrawUpdate(accent);
         if (launchOptionsOpen_) DrawLaunchOptions(accent);
-        if (scanOpen_) DrawScan(accent);
+        if (scanOpen_) {
+            if(scanFirstFrame_)Trace("scan-first-dialog-draw");
+            DrawScan(accent);
+            if(scanFirstFrame_)Trace("scan-first-dialog-drawn");
+        }
         gGlassBackdrop = nullptr;
         if (videoOptions_.mode!=VideoMode::Background)
             video_.Draw(kWidth,kHeight,videoOptions_.mode==VideoMode::Showcase?
@@ -6982,7 +7017,9 @@ public:
         DrawGallery();DrawPowerPrompt();
         if(draftExit_!=DraftExit::None)DrawDraftExit(accent);
         const bool captured = capturePath.empty() || SaveVisualFrame(renderer_, capturePath);
+        if(scanOpen_ && scanFirstFrame_)Trace("scan-first-present");
         SDL_RenderPresent(renderer_);
+        if(scanOpen_ && scanFirstFrame_){Trace("scan-first-presented");scanFirstFrame_=false;}
 #ifndef UFLOW_HOST_PREVIEW
         // SDL waits for older GPU work, not necessarily the queued display flip.
         // Pace against the submitted flip rather than queueing another scan-buffer
@@ -9528,6 +9565,8 @@ private:
     ScanWorker scanWorker_;
     ScanWorker::Status scanState_;
     bool scanOpen_=false,scanApplied_=false,scanCancelling_=false;
+    bool scanStartPending_=false,scanRefreshSources_=false;
+    bool scanFirstFrame_=false;
     bool mediaRefreshPending_=false,mediaRefresh_=false;
     bool sourceMediaRefreshPending_=false;
     std::string mediaRefreshSelection_;
