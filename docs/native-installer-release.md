@@ -1,5 +1,18 @@
 # Native installer release workflow
 
+UStealth signature handling (2026-10-21): the shared read-only FatFs parser
+accepts 55 AB only at sector zero, without changing buffers or disk bytes.
+Rebuild app and RPXLoadingModule (BUILD=build-native); both use this source.
+Existing payload mappings ship both binaries. Sync only after both builds
+finish, rebuild Setup, then run actual Core fresh-install/reinstall checks.
+WiiFlow/GX already accept UStealth signatures; no backend or cIOS changes.
+Host tests cover app/loader configs with ASan/UBSan, normal/hidden MBR, file
+read/seek/listing, hidden superfloppy, unchanged bytes and invalid signatures.
+User reports an already recognized UStealth drive on the previous build; the
+reason is unresolved. Do not claim the prior release universally lacked support.
+Keep these artifacts local; full raw-loader support needs Setup plus reboot.
+
+
 Unsaved editor changes (2026-10-21): Core app confirms discard for changed
 library/media directories and content types, including category switches and
 content-type text cancellation. Opening snapshots keep reverted values clean.

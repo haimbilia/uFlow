@@ -1,5 +1,11 @@
 # Content and media directories
 
+FAT32 USB discovery accepts both normal and UStealth-hidden drive signatures.
+uFlow reads the drive without unhiding it or changing its partition table. This
+recognition applies to the library browser and the raw-game loader; USB port,
+power and launcher requirements still apply. The explicit signature handling
+requires the updated app and RPXLoadingModule supplied together by Setup.
+
 Open Settings with **+**. Left/right on the **D-pad or left stick** moves focus
 between the sidebar and main panel. Up/down navigates the focused area; holding
 repeats. **A** opens a path/action or enters selector edit mode. While editing,

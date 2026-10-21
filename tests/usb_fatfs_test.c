@@ -50,6 +50,39 @@ int main(void){
     assert(f_open(&file,"0:/CONTENT/../TEST.TXT",FA_READ)==FR_OK);assert(f_close(&file)==FR_OK);
     assert(f_opendir(&dir,"0:/MISSING/../CONTENT")==FR_NO_PATH);
     assert(f_stat("0:/missing.bin",&info)==FR_NO_FILE);assert(reads>0);f_mount(NULL,"0:",0);
-    memset(image,0,(START+TOTAL)*512);assert(f_mount(&fs,"0:",1)==FR_NO_FILESYSTEM);f_mount(NULL,"0:",0);free(image);
-    puts("PASS: read-only FAT32 MBR mount, file read/seek, directory enumeration, missing file and invalid disk");
+    /* UStealth changes only the sector-zero signature from 55 AA to 55 AB.
+       Verify real mounting/reading and that no in-memory disk bytes are changed. */
+    image[511]=0xab;
+    unsigned char *snapshot=malloc((START+TOTAL)*512);assert(snapshot);
+    memcpy(snapshot,image,(START+TOTAL)*512);
+    assert(f_mount(&fs,"0:",1)==FR_OK && fs.fs_type==FS_FAT32);
+    assert(f_open(&file,"0:/CONTENT/TEST.TXT",FA_READ)==FR_OK);
+#if FF_USE_FASTSEEK
+    DWORD hiddenClusters[32]={32};file.cltbl=hiddenClusters;
+    assert(f_lseek(&file,CREATE_LINKMAP)==FR_OK);
+    assert(fs.database+(hiddenClusters[2]-2)*fs.csize==DATA+1);
+#endif
+    memset(bytes,0,sizeof(bytes));assert(f_read(&file,bytes,8,&got)==FR_OK&&got==5&&!strcmp(bytes,"hello"));
+    assert(f_lseek(&file,1)==FR_OK);assert(f_read(&file,bytes,2,&got)==FR_OK&&got==2&&!memcmp(bytes,"el",2));
+    assert(f_close(&file)==FR_OK);
+    assert(f_opendir(&dir,"0:/")==FR_OK);assert(f_readdir(&dir,&info)==FR_OK&&!strcmp(info.fname,"TEST.TXT"));
+    assert(f_closedir(&dir)==FR_OK);f_mount(NULL,"0:",0);
+    assert(!memcmp(snapshot,image,(START+TOTAL)*512));
+    image[511]=0xac;assert(f_mount(&fs,"0:",1)==FR_NO_FILESYSTEM);f_mount(NULL,"0:",0);
+    image[511]=0xab;image[START*512+511]=0xab;
+    /* A hidden MBR does not excuse an invalid partition boot sector. */
+    assert(f_mount(&fs,"0:",1)==FR_NO_FILESYSTEM);f_mount(NULL,"0:",0);
+    image[START*512+511]=0xaa;image[511]=0xaa;
+    assert(f_mount(&fs,"0:",1)==FR_OK);f_mount(NULL,"0:",0);
+    /* Sector zero can also be a FAT32 volume without a partition table. */
+    memmove(image,image+START*512,TOTAL*512);image[511]=0xab;
+    memcpy(snapshot,image,(START+TOTAL)*512);
+    assert(f_mount(&fs,"0:",1)==FR_OK);
+    assert(f_open(&file,"0:/TEST.TXT",FA_READ)==FR_OK);
+    memset(bytes,0,sizeof(bytes));assert(f_read(&file,bytes,8,&got)==FR_OK&&got==5&&!strcmp(bytes,"hello"));
+    assert(f_close(&file)==FR_OK);f_mount(NULL,"0:",0);
+    assert(!memcmp(snapshot,image,(START+TOTAL)*512));free(snapshot);
+    memset(image,0,(START+TOTAL)*512);image[510]=0x55;image[511]=0xab;
+    assert(f_mount(&fs,"0:",1)==FR_NO_FILESYSTEM);f_mount(NULL,"0:",0);free(image);
+    puts("PASS: normal/UStealth FAT32 mount, file read/seek, directory enumeration, unchanged disk bytes, invalid signatures/volumes and hidden superfloppy");
 }

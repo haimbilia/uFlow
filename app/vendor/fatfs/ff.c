@@ -3379,6 +3379,11 @@ static UINT check_fs (	/* 0:FAT/FAT32 VBR, 1:exFAT VBR, 2:Not FAT and valid BS, 
 	fs->wflag = 0; fs->winsect = (LBA_t)0 - 1;		/* Invaidate window */
 	if (move_window(fs, sect) != FR_OK) return 4;	/* Load the boot sector */
 	sign = ld_16(fs->win + BS_55AA);
+	/* uFlow: UStealth hides a drive by changing sector zero's 55 AA to
+	   55 AB. Accept it for discovery only; leave the sector buffer and disk
+	   untouched so raw identity hashes and the hidden state are preserved.
+	   Partition boot sectors must still carry their normal signature. */
+	if (sect == 0 && sign == 0xAB55) sign = 0xAA55;
 #if FF_FS_EXFAT
 	if (sign == 0xAA55 && !memcmp(fs->win + BS_JmpBoot, "\xEB\x76\x90" "EXFAT   ", 11)) return 1;	/* It is an exFAT VBR */
 #endif
