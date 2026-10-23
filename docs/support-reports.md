@@ -68,7 +68,7 @@ settings, games and saves. Fresh installs start with recording disabled.
 Live endpoint/admin tests cover schema, size, content type, private storage,
 escaped content, exact JSON round-trip, search/status and expiry. Synthetic
 reports used for verification are removed. App and Setup are built locally;
-no new public release/version bump. The first iteration was deployed to 192.168.1.116 with full FTP readback.
+Included in release 2026.10.23.3. The first iteration was deployed to 192.168.1.116 with full FTP readback.
 The combined Send action and simplified About/Yes/No labels passed host tests
 and were deployed app-only to .116 with full FTP readback verification.
 SHA-256: ca164da2c3be4e46708af362953b7592a7bcefc77eba883d5f7e00df3f46197c.

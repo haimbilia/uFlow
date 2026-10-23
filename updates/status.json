@@ -6,7 +6,7 @@
     "stable",
     "testing"
   ],
-  "published_release": "2026.10.23.2",
+  "published_release": "2026.10.23.3",
   "client_available": true,
-  "hardware_validation": "Security rebuild: console boot and game-launch retest pending. Binary and installer checks cover removal of IOSU network debugging. Run updated Setup and restart; app-only OTA does not replace the affected modules."
+  "hardware_validation": "About and Support host and installer checks passed; console upload confirmation pending. Run Setup and restart if the previous security fix has not been applied; app-only updates do not replace boot modules."
 }

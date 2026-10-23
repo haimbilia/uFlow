@@ -6,11 +6,12 @@ platform-specific launch adapters stay hidden behind a single **Launch** action.
 
 **[Downloads, setup guides and showcase videos](https://karotech.io/uflow/)**
 
-Latest release: **2026.10.23.2 - security update**. Removes privileged IOSU
-network debugging left enabled in the bundled loader. **Run the updated Setup
-and restart the console; app-only updates do not replace the affected modules.**
-Settings, games and saves are preserved. See the [release notes](docs/releases/2026.10.23.2.md).
-Console boot/game-launch retesting of this rebuild remains pending.
+Latest release: **2026.10.23.3 - About & Support**. A small Settings info button
+opens problem recording and **Send report**, with Yes/No confirmation and an SD
+copy if uploading fails. See the [release notes](docs/releases/2026.10.23.3.md).
+**If you have not applied the previous security fix through Setup, run the latest
+Setup and restart; app-only updates do not replace boot modules.** Settings,
+games and saves are preserved. Console upload confirmation remains pending.
 
 uFlow requires a Wii U running Aroma. Copy `uFlow-Setup.wuhb` to
 `SD:/wiiu/apps/`, launch Setup from Wii U Menu, review the selected components,

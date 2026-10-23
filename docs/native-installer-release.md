@@ -1,3 +1,7 @@
+Release 2026.10.23.3 (2026102303), authorized 2026-10-23: publish About & Support
+app, Setup, signed stable update, GitHub release and Karotech page links/history.
+Supersedes previous local-only instructions. Console upload confirmation pending.
+
 About & Support (2026-10-23, hardware test pending): small Settings info button,
 combined About/report page, explicit-consent HTTPS reports and SD export.
 App uses the existing mandatory Core payload mapping. Native Setup rebuilt;
