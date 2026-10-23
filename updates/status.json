@@ -6,7 +6,7 @@
     "stable",
     "testing"
   ],
-  "published_release": "2026.10.22.1",
+  "published_release": "2026.10.23.1",
   "client_available": true,
-  "hardware_validation": "User confirmed Add new games worked after the scan-start change. Separate Complete scan hardware confirmation remains pending. OTA updates the app only; run Setup and reboot for the UStealth loader update."
+  "hardware_validation": "USB-as-SD: internal title discovery confirmed; Superstar Saga installed in ~7 seconds and NSMBU in ~2m49s, automatically added to the library. Other historical freezes are not claimed resolved. App-only OTA includes these fixes; Setup supports fresh installs and preserves existing settings, games and saves."
 }

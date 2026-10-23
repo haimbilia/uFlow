@@ -60,6 +60,12 @@ public:
         SDL_CondSignal(condition_); SDL_UnlockMutex(mutex_);
         return result;
     }
+    bool Idle() {
+        if(!thread_)return true;
+        SDL_LockMutex(mutex_);
+        const bool idle=active_.empty()&&queue_.empty();
+        SDL_UnlockMutex(mutex_);return idle;
+    }
     void Reset() {
         if (!thread_) return;
         SDL_LockMutex(mutex_); ++generation_; wanted_.clear(); queue_.clear();

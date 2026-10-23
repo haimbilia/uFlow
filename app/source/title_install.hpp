@@ -77,7 +77,7 @@ inline std::vector<Group> Scan(const std::string &root,int depth){
         std::array<bool,3> seen{};for(auto &p:g.packages){p.selected=!seen[int(p.kind)]&&p.error.empty();seen[int(p.kind)]=true;}}
     return groups;
 }
-struct Snapshot {bool busy=false,complete=false;uint64_t done=0,total=0;std::string message;size_t package=0;};
+struct Snapshot {bool busy=false,complete=false;uint64_t done=0,total=0;std::string message;size_t package=0;uint64_t elapsedMs=0,progressIdleMs=0,queryMs=0;};
 bool Refresh(std::vector<Package>& packages);
 bool FreeSpace(int target,uint64_t &bytes,std::string &error);
 // Starts only from the user's Install button. All work and callbacks remain

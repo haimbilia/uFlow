@@ -1446,8 +1446,14 @@ public:
         if(resident_.contains(path) && !resident_.at(path).texture) return;
         if (!worker_) Load(path); else Queue(path);
     }
+    bool workPaused_=false;
+    void PauseWork(bool paused) {
+        workPaused_=paused;
+        if(paused){pending_.clear();urgentThumbnails_.clear();if(worker_)worker_->Request({});}
+    }
+    bool WorkIdle() {return !worker_||worker_->Idle();}
     void PumpOne(bool preload=true) {
-        if (!worker_) return;
+        if (!worker_ || workPaused_) return;
         while (warmCursor_<warmPaths_.size() && !warming_.contains(warmPaths_[warmCursor_])) ++warmCursor_;
         for (std::size_t i=warmCursor_;preload && i<warmPaths_.size() && pending_.size()<ArtworkWorker::Capacity;++i)
             if (warming_.contains(warmPaths_[i])) Queue(ThumbnailJob(warmPaths_[i]));
@@ -4271,7 +4277,7 @@ public:
         detailsBackdropReady_ = false;
     }
     bool CoverInspectOpen() const { return coverInspectOpen_ || coverInspectProgress_ > .01f; }
-    bool InstallBusy() const {return titleInstallJob_.Poll().busy;}
+    bool InstallBusy() const {return installStartPending_ || titleInstallJob_.Poll().busy;}
     bool IsInstall(const GameEntry *g)const{return g && !g->installPackages.empty();}
     bool RefreshInstallStatus(){
         std::vector<TitleInstall::Package> all;
@@ -4316,17 +4322,42 @@ public:
         if(accept&&installRow_==count+2&&InstalledLaunchGame()){installLaunchRequested_=true;return;}
         if(accept&&installRow_==count+1){
             if(!preferences_.titleInstallerEnabled||!TitleInstall::Available()){installMessage_="Title installer is disabled";return;}
+            if(!std::any_of(g->installPackages.begin(),g->installPackages.end(),[&](const auto &p){return p.selected&&p.error.empty()&&!p.Installed(installTarget_);})){
+                installMessage_="Select an available package to install";return;
+            }
+            // Snapshot the request before waiting; cancellation is asynchronous.
+            installPendingPackages_=g->installPackages;
+            installStartPending_=true;installMessage_.clear();
+            textures_.PauseWork(true);
+            Trace(("install-request target="+std::to_string(installTarget_)+" title="+g->titleId).c_str());
             DismissVideo();StopMusic();
-            if(titleInstallJob_.Start(g->installPackages,installTarget_)){installWasBusy_=true;installMessage_.clear();
 #ifndef UFLOW_HOST_PREVIEW
-                OSEnableHomeButtonMenu(false);
+            OSEnableHomeButtonMenu(false);
 #endif
-            }else installMessage_="Select an available package to install";
         }
     }
     void PumpTitleInstall(){
+        if(installStartPending_){
+            const bool videoReady=video_.CanStart();
+            const bool detailsReady=detailsVideo_.CanStart();
+            const bool backgroundReady=glassBackground_.Released();
+            if(!videoReady||!detailsReady||!backgroundReady||!textures_.WorkIdle())return;
+            installStartPending_=false;
+            Trace("install-media-workers-released");
+            installWasBusy_=titleInstallJob_.Start(installPendingPackages_,installTarget_);
+            installPendingPackages_.clear();
+            if(!installWasBusy_){
+                textures_.PauseWork(false);
+                installMessage_="Select an available package to install";
+#ifndef UFLOW_HOST_PREVIEW
+                OSEnableHomeButtonMenu(true);
+#endif
+            }
+        }
         const auto state=titleInstallJob_.Poll();
         if(installWasBusy_&&!state.busy){installWasBusy_=false;installMessage_=state.message;
+            textures_.PauseWork(false);
+            Trace(("install-result "+state.message).c_str());
             const auto key=Selected()?Selected()->absolutePath:std::string{};
             // Also reconcile partial jobs: a base game remains installed if a later DLC fails.
             if(RefreshInstallStatus()) {
@@ -4377,12 +4408,18 @@ public:
             DrawText(renderer_,std::string(p.selected&&!p.Installed(installTarget_)?"[X] ":"[ ] ")+TitleInstall::Name(p.kind)+"   v"+std::to_string(p.version)+"   "+TitleInstall::Size(p.bytes),x+14,y+7,2,buttonInk(installRow_==i+1));
             DrawFittedText(renderer_,status,x+14,y+29,748,1,buttonInk(installRow_==i+1));
         }
-        if(state.busy){
+        if(state.busy||installStartPending_){
             double ratio=state.total?std::min(1.,double(state.done)/state.total):0;
             FillRoundedRect(renderer_,{x,493,780,13},6,{110,130,145,80});
             if(ratio>0)FillRoundedRect(renderer_,{x,493,int(780*ratio),13},6,accent);
-            DrawText(renderer_,state.message+"  "+std::to_string(int(ratio*100))+"%",x,519,2,ink);
-            DrawText(renderer_,TitleInstall::Size(state.done)+" / "+TitleInstall::Size(state.total),x,551,1,ink);
+            DrawText(renderer_,(installStartPending_?std::string("Finishing media activity"):state.message)+"  "+std::to_string(int(ratio*100))+"%",x,519,2,ink);
+            std::string transfer=TitleInstall::Size(state.done)+" / "+TitleInstall::Size(state.total);
+            if(!installStartPending_&&state.elapsedMs){
+                char rate[80];std::snprintf(rate,sizeof(rate),"  %.2f MB/s average  %llus",double(state.done)*1000/(1048576.0*state.elapsedMs),(unsigned long long)(state.elapsedMs/1000));
+                transfer+=rate;
+                if(state.progressIdleMs>=5000)transfer+="  Waiting for system progress";
+            }
+            DrawFittedText(renderer_,transfer,x,551,780,1,ink);
         }else{
             DrawFittedText(renderer_,installMessage_,x,497,780,1,ink);
             const bool canInstall=std::any_of(g.installPackages.begin(),g.installPackages.end(),[&](const auto&p){return p.selected&&p.error.empty()&&!p.Installed(installTarget_);});
@@ -4397,7 +4434,7 @@ public:
                 DrawFittedText(renderer_,"LAUNCH INSTALLED GAME",x+416,550,348,2,buttonInk(active));
             }
         }
-        DrawText(renderer_,state.busy?"INSTALLING - KEEP POWER CONNECTED":"UP / DOWN SELECT   A TOGGLE / INSTALL   B BACK",x,599,1,ink);
+        DrawText(renderer_,InstallBusy()?"INSTALLING - KEEP POWER CONNECTED":"UP / DOWN SELECT   A TOGGLE / INSTALL   B BACK",x,599,1,ink);
     }
     void ToggleDetails() {
         if (!Selected() || InstallBusy()) return;
@@ -6865,7 +6902,7 @@ public:
             detailsProgress_>.01f||settingsProgress_>.01f,
             videoPending_||video_.Active()||detailsVideoPending_||detailsVideo_.Active()||!detailsVideo_.CanStart(),
             !video_.Active()&&video_.CanStart()&&detailsVideo_.CanStart(),
-            scanOpen_||updateOpen_||WelcomeOpen()||InjectionDialogOpen()||settings_||details_||
+            InstallBusy()||scanOpen_||updateOpen_||WelcomeOpen()||InjectionDialogOpen()||settings_||details_||
             detailsProgress_>.01f||settingsProgress_>.01f);
         if(videoIsolationUntil_ && (SDL_TICKS_PASSED(SDL_GetTicks(),videoIsolationUntil_) || !video_.Active() || OverlayOpen()))
             videoIsolationUntil_=0;
@@ -9402,7 +9439,8 @@ private:
     std::vector<GameEntry> &games_;
     TitleInstall::Job titleInstallJob_;
     int installRow_=0,installTarget_=1;
-    bool installWasBusy_=false;
+    bool installWasBusy_=false,installStartPending_=false;
+    std::vector<TitleInstall::Package> installPendingPackages_;
     std::string installMessage_;
     std::string installSpace_;
     TextureCache textures_;

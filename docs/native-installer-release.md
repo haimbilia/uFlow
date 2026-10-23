@@ -1,3 +1,78 @@
+Release 2026.10.23.1 (2026102301), authorized 2026-10-23: publish the tested
+installed-title discovery and installation handoff fixes in app, Setup, signed
+stable update and GitHub release. Supersedes earlier local-only/pending notes.
+See docs/releases/2026.10.23.1.md for hardware results and limitations.
+
+NSMBU USB-as-SD reinstall hardware pass (2026-10-23):
+User deleted NSMBU and reinstalled the same package on the deployed
+92f414aa4517f1d6292e5599d6d001e0f853a906845c58f9fdce15fc9456c960 build.
+Request 01:18.200, media retired 01:18.286, MCP start 01:18.368 with
+1,816,199,168 bytes; success callback 04:07.144; UI completion 04:07.219.
+Elapsed request-to-completion 169.019 s (~2m49s), ~10.25 MiB/s overall.
+Every five-second progress sample reports query_ms=0, idle_ms=0, result=0;
+passed previous 23%/98% stalls. User confirmed completion. FTP cache contains
+fs:/vol/storage_usb01/usr/title/00050000/10101d00 without a post-install scan.
+Background video resumed after completion. No freeze on this retest. The
+combined changes pass this regression; no isolated causal A/B or claim that
+all historical browsing freezes are fixed. Source packages retained.
+Evidence: ssd-sd-repro-20261023/discovery/install-performance-retest.txt.
+
+USB-as-SD installation retest (2026-10-23):
+Deployed app SHA256 92f414aa4517f1d6292e5599d6d001e0f853a906845c58f9fdce15fc9456c960.
+Superstar Saga 0005000010157400, 93,028,352 content bytes: request 12:34.416,
+media retired 12:34.501, MCP start 12:34.577, callback success 12:41.295,
+UI completion 12:41.373 (~6.96 s total). At 5.014 s: 78,085,120 bytes,
+query_ms=0, idle_ms=0. FTP confirms USB title and installed cache entry.
+User reported 7 seconds; subsequent background playback resumed. This proves
+this package completes quickly and is added automatically on split USB storage;
+it does not prove NSMBU's earlier slowdown or recurring freezes are resolved.
+Evidence: ssd-sd-repro-20261023/discovery/install-performance-retest.txt.
+
+Installation storage contention follow-up (2026-10-23):
+Pause the artwork request queue during installation, wait for its active decode
+as well as video cancellation, then start MCP. Resume artwork on success/failure.
+Installer UI reports average progress throughput and elapsed time; OSReport every
+5 seconds records bytes, progress-idle interval and MCP query latency. No added
+filesystem logging or boot/plugin changes. These changes remove competing app
+media I/O; throughput improvement on USB-as-SD is not yet measured.
+ASan/UBSan artwork tests cover idle after active decode/cancelled pending work;
+installer worker tests cover timing fields as well as real callbacks/failures.
+NSMBU installed directory 10101d00 and matching app.xml now exist on USB;
+final MCP completion/library reconciliation has not yet been verified.
+App and Setup rebuilt; synced payload verified; actual Core+WiiU fresh/reinstall
+test passed (37 files). Installer worker and artwork tests pass with ASan/UBSan.
+Hardware throughput/freeze retest remains pending. No public release.
+
+Installer/video handoff (2026-10-23, hardware retest pending):
+Install now snapshots selected packages and waits for all three video players to
+finish asynchronous cancellation before starting the title-install worker. Pending
+startup remains modal, blocks background decoder restart, and reports the wait.
+OSReport records request target/title, worker handoff and final result. This removes
+an observed lifecycle gap; it does NOT establish the cause of the captured heap
+corruption in _malloc_r during background avformat_find_stream_info.
+SSD test: USB was initially unformatted (no usr/sys directories). After the user
+formatted it and retried, Mario Bros 0005000010107c00 is present under
+/storage_usb/usr/title/00050000/10107c00 with matching app.xml; uFlow cache
+already contains its canonical USB installed entry. WFS install and recognition
+are hardware-verified on the previous discovery build; launch is not tested.
+Video lifecycle and actual Core+WiiU fresh/reinstall tests pass (37 files).
+Build app, sync existing Core payload, rebuild Setup and verify actual Core+WiiU
+fresh/reinstall payload. Preserve settings, content and saves. No release bump.
+
+Installed-title discovery correction (2026-10-23, MLC hardware retest passed):
+A fresh Aroma fs: client cannot read other titles' code/app.xml (FTP confirmed
+553 Not owner on the canonical MLC path, while an unlocked mount read the same
+file). uFlow now owns privileged MLC/WFS metadata mounts; MCP paths and title
+IDs remain the launch identity. New installed_storage coverage verifies MLC/USB
+metadata discovery without accessible fs: paths; installed_discovery, library,
+and vc_sort pass. Actual native Core+Wii U payload fresh/reinstall tests pass
+(37 files); rebuilt Setup must accompany any release. No public release yet.
+Hardware: user confirmed LEGO Batman 2 appears on the USB-emulated SD setup.
+installed-scan-verified.log records MCP title 0005000010135e00 accepted.
+WFS-installed game discovery remains host-tested only; the new WFS partition
+has no installed games. SSD-only Aroma boot also confirmed after adding both
+required payload ELF files omitted during initial SSD preparation.
+
 Release 2026.10.22.1 (2026102201), authorized 2026-10-22: publish app, Setup,
 signed stable update and GitHub source/release. This supersedes earlier local-only
 instructions. Add new games succeeded in the user retest of f59e268d; Complete

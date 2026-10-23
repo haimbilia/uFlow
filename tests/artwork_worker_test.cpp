@@ -59,6 +59,14 @@ int main() {
         result=Wait(worker); assert(result.path=="large" && result.surface); SDL_FreeSurface(result.surface);
         assert(SDL_SemWaitTimeout(entered,3000)==0); SDL_SemPost(releaseDecode);
         result=Wait(worker); assert(result.path=="after-large"); SDL_FreeSurface(result.surface);
+        worker.Request({"install-active", "install-queued"});
+        assert(SDL_SemWaitTimeout(entered,3000)==0);
+        worker.Request({});assert(!worker.Idle()); // active I/O cannot be retired early
+        SDL_SemPost(releaseDecode);
+        const auto idleDeadline=SDL_GetTicks()+3000;
+        while(!worker.Idle()&&!SDL_TICKS_PASSED(SDL_GetTicks(),idleDeadline))SDL_Delay(1);
+        assert(worker.Idle());assert(!worker.Take().available);
+        assert(SDL_SemWaitTimeout(entered,50)==SDL_MUTEX_TIMEDOUT); // queued work stayed cancelled
         worker.Reset(); worker.Request({"shutdown"});
         assert(SDL_SemWaitTimeout(entered, 3000) == 0);
         SDL_SemPost(releaseDecode); // destructor must join and discard/free the result

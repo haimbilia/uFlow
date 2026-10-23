@@ -11,6 +11,9 @@
 #include "wiiu_vc.hpp"
 
 #include <coreinit/mcp.h>
+#if defined(__WIIU__) || defined(UFLOW_TEST_INSTALLED_MOUNTS)
+#include <mocha/mocha.h>
+#endif
 #include <dirent.h>
 #include <malloc.h>
 #include <sys/stat.h>
@@ -25,6 +28,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <utility>
@@ -44,14 +48,36 @@ constexpr std::uint32_t kLibraryCacheMaxEntries = 8192;
 constexpr std::uint32_t kLibraryCacheMaxString = 256 * 1024;
 constexpr std::size_t kLibraryCacheMaxBytes = 32 * 1024 * 1024;
 
+// WUT's fs: client cannot read other titles on a fresh Aroma installation.
+// Keep MCP paths as game identity, but read metadata through owned, unlocked mounts.
+std::string InstalledReadPath(const std::string &path) {
+#if defined(__WIIU__) || defined(UFLOW_TEST_INSTALLED_MOUNTS)
+    struct Mount { const char *source; const char *name; bool ready; };
+    static std::mutex mountMutex;
+    const std::lock_guard lock(mountMutex);
+    static Mount mounts[]={{"fs:/vol/storage_mlc01/","ufmlc",false},
+                           {"fs:/vol/storage_usb01/","ufwfs",false}};
+    for (auto &mount:mounts) {
+        if (path.rfind(mount.source,0)!=0) continue;
+        if (!mount.ready) {
+            if (Mocha_InitLibrary()!=MOCHA_RESULT_SUCCESS) return path;
+            const std::string volume=std::string(mount.source+3, std::strlen(mount.source)-4);
+            mount.ready=Mocha_MountFS(mount.name,nullptr,volume.c_str())==MOCHA_RESULT_SUCCESS;
+        }
+        if (mount.ready) return std::string(mount.name)+":/"+path.substr(std::strlen(mount.source));
+    }
+#endif
+    return path;
+}
+
 bool IsDirectory(const std::string &path) {
     struct stat info {};
-    return stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
+    return stat(InstalledReadPath(path).c_str(), &info) == 0 && S_ISDIR(info.st_mode);
 }
 
 bool IsFile(const std::string &path) {
     struct stat info {};
-    return stat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode);
+    return stat(InstalledReadPath(path).c_str(), &info) == 0 && S_ISREG(info.st_mode);
 }
 
 bool EnsureDirectory(const std::string &path) {
@@ -67,7 +93,7 @@ std::string CacheInstalledIcon(const std::string &sourcePath, const std::string 
 }
 
 std::string ReadTextFile(const std::string &path, std::size_t maximum = 256 * 1024) {
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream input(InstalledReadPath(path), std::ios::binary);
     if (!input) return {};
     input.seekg(0, std::ios::end);
     const std::streamoff length = input.tellg();
@@ -226,9 +252,18 @@ std::string FormatTitleId(std::uint64_t titleId) {
 }
 
 bool ScanInstalledGames(ScanResult &result, const std::vector<GameEntry> *cached = nullptr) {
+    // Keep rejected MCP entries observable on fresh installs and redirected storage.
+    const auto diagnostic=[](const char *phase, int code, const char *path="") {
+        if (FILE *log=std::fopen("fs:/vol/external01/wiiu/apps/uFlow/installed-scan.log","a")) {
+            std::fprintf(log,"%s code=%d path=%s\n",phase,code,path);
+            std::fclose(log);
+        }
+    };
     const int32_t handle = static_cast<int32_t>(MCP_Open());
+    diagnostic("mcp-open",handle);
     if (handle < 0) return false;
     const int32_t count = static_cast<int32_t>(MCP_TitleCount(handle));
+    diagnostic("mcp-count",count);
     if (count <= 0 || count > 4096) {
         MCP_Close(handle);
         return count == 0;
@@ -243,10 +278,15 @@ bool ScanInstalledGames(ScanResult &result, const std::vector<GameEntry> *cached
     uint32_t received = static_cast<uint32_t>(count);
     const int32_t listResult = static_cast<int32_t>(MCP_TitleList(handle, &received, titles, bytes));
     MCP_Close(handle);
+    diagnostic("mcp-list",listResult);
+    diagnostic("mcp-received",static_cast<int>(received));
     if (listResult >= 0) {
         for (uint32_t index = 0; index < std::min(received, static_cast<uint32_t>(count)); ++index) {
             const auto &title = titles[index];
             const auto titleGroup=title.titleId>>32;
+            if (titleGroup==0x00050000ULL || titleGroup==0x00050002ULL)
+                diagnostic("mcp-title",static_cast<int>(title.appType),
+                    (FormatTitleId(title.titleId)+" "+std::string(title.path,strnlen(title.path,sizeof(title.path)))).c_str());
             if ((title.appType != MCP_APP_TYPE_GAME && title.appType != MCP_APP_TYPE_GAME_WII) ||
                 (titleGroup != 0x00050000ULL && !(titleGroup==0x00050002ULL&&title.appType==MCP_APP_TYPE_GAME_WII))) continue;
             GameEntry game;
@@ -260,8 +300,10 @@ bool ScanInstalledGames(ScanResult &result, const std::vector<GameEntry> *cached
             // point at an actual installed title on MLC or Wii U USB storage.
             const auto titleSuffix="/usr/title/"+game.titleId.substr(0,8)+"/"+game.titleId.substr(8);
             if (game.absolutePath!="fs:/vol/storage_mlc01"+titleSuffix &&
-                game.absolutePath!="fs:/vol/storage_usb01"+titleSuffix) continue;
-            if (!IsDirectory(game.absolutePath + "/code") || !IsFile(game.absolutePath + "/code/app.xml")) continue;
+                game.absolutePath!="fs:/vol/storage_usb01"+titleSuffix) { diagnostic("reject-path",0,game.absolutePath.c_str()); continue; }
+            if (!IsDirectory(game.absolutePath + "/code")) { diagnostic("reject-code-dir",errno,game.absolutePath.c_str()); continue; }
+            if (!IsFile(game.absolutePath + "/code/app.xml")) { diagnostic("reject-app-xml",errno,game.absolutePath.c_str()); continue; }
+            diagnostic("accepted",0,game.absolutePath.c_str());
             if (cached) {
                 const auto previous = std::find_if(cached->begin(), cached->end(), [&](const auto &entry) {
                     return entry.installed && entry.installedTitleId == game.installedTitleId &&
@@ -272,7 +314,7 @@ bool ScanInstalledGames(ScanResult &result, const std::vector<GameEntry> *cached
                     continue;
                 }
             }
-            const std::string metaPath = game.absolutePath + "/meta";
+            const std::string metaPath = InstalledReadPath(game.absolutePath + "/meta");
             const std::string meta = ReadTextFile(metaPath + "/meta.xml");
             game.name = MetaName(meta);
             if (game.name.empty()) game.name = "INSTALLED TITLE " + game.titleId;

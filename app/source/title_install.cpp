@@ -8,6 +8,7 @@
 #include <sys/statvfs.h>
 #ifdef __WIIU__
 #include <coreinit/mcp.h>
+#include <coreinit/debug.h>
 #include <coreinit/ios.h>
 #include <coreinit/memdefaultheap.h>
 #include <coreinit/filesystem_fsa.h>
@@ -68,6 +69,9 @@ struct Job::Impl {mutable std::mutex mutex;Snapshot state;std::thread thread;
         if(result){closeFail("Destination selection",result);return;}
         if(target&&(result=MCP_InstallSetTargetUsb(fd,1))){closeFail("USB selection",result);return;}
         s.total=required;uint64_t finished=0;
+        const auto started=std::chrono::steady_clock::now();
+        auto advanced=started,lastReport=started;
+        OSReport("uFlow: install-start target=%d packages=%u bytes=%llu\n",target,unsigned(packages.size()),(unsigned long long)required);
         for(size_t i=0;i<packages.size();++i){auto &p=packages[i];if(p.Installed(target))continue;
             constexpr const char *prefix="fs:/vol/external01/";
             if(p.path.rfind(prefix,0)!=0||(p.path.find("/../")!=std::string::npos||p.path.ends_with("/.."))){MCP_Close(fd);fail("Installation source must be on the SD card");return;}
@@ -83,10 +87,27 @@ struct Job::Impl {mutable std::mutex mutex;Snapshot state;std::thread thread;
             result=IOS_IoctlvAsync(fd,0x81,1,0,&r->vector,callback,r.get());if(result){closeFail("Install submission",result);return;}
             s.package=i;s.message="Installing "+std::string(Name(p.kind))+" ("+std::to_string(i+1)+"/"+std::to_string(packages.size())+")";
             while(!r->done.load()){
-                if(MCP_InstallGetProgress(fd,&r->progress)==0&&r->progress.inProgress)s.done=finished+std::min(p.bytes,uint64_t(r->progress.sizeProgress));
+                const auto queryStart=std::chrono::steady_clock::now();
+                const int progressResult=MCP_InstallGetProgress(fd,&r->progress);
+                const auto now=std::chrono::steady_clock::now();
+                s.queryMs=std::chrono::duration_cast<std::chrono::milliseconds>(now-queryStart).count();
+                const auto previous=s.done;
+                if(progressResult==0&&r->progress.inProgress)s.done=finished+std::min(p.bytes,uint64_t(r->progress.sizeProgress));
+                if(s.done>previous)advanced=now;
+                s.elapsedMs=std::chrono::duration_cast<std::chrono::milliseconds>(now-started).count();
+                s.progressIdleMs=std::chrono::duration_cast<std::chrono::milliseconds>(now-advanced).count();
+                if(now-lastReport>=std::chrono::seconds(5)){
+                    OSReport("uFlow: install-progress target=%d package=%u bytes=%llu elapsed_ms=%llu idle_ms=%llu query_ms=%llu result=%d\n",
+                        target,unsigned(i),(unsigned long long)s.done,(unsigned long long)s.elapsedMs,
+                        (unsigned long long)s.progressIdleMs,(unsigned long long)s.queryMs,progressResult);
+                    lastReport=now;
+                }
                 Set(s);std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
-            result=r->result.load();if(result){closeFail("Installation",result);return;}
+            result=r->result.load();
+            OSReport("uFlow: install-callback target=%d package=%u result=%d\n",target,unsigned(i),result);
+            if(result){closeFail("Installation",result);return;}
+            s.message="Verifying installed title";Set(s);
             if(!Refresh(packages)||!p.Installed(target)){MCP_Close(fd);fail("Installation finished, but the installed title could not be verified");return;}
             finished+=p.bytes;s.done=finished;Set(s);
         }

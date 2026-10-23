@@ -50,7 +50,7 @@ int main(){
     auto ps=Scan(root,3)[0].packages;Job job;
     installed.push_back({ps[0].titleId,ps[0].version,{'o','d','d',0}});Refresh(ps);assert(!ps[0].Installed(0)&&!ps[0].Installed(1));installed.clear();
     auto reverse=ps;std::reverse(reverse.begin(),reverse.end());assert(job.Start(reverse,1));assert(job.Poll().busy);assert(!job.Start(ps,0));
-    auto s=wait(job);assert(s.complete&&!s.busy&&s.done==192&&submitted.size()==3);assert(submitted[0]==ps[0].titleId&&submitted[1]==ps[1].titleId);
+    auto s=wait(job);assert(s.complete&&!s.busy&&s.done==192&&submitted.size()==3);assert(s.elapsedMs>=400&&s.progressIdleMs<=s.elapsedMs);assert(submitted[0]==ps[0].titleId&&submitted[1]==ps[1].titleId);
     Refresh(ps);for(auto &p:ps)assert(p.Installed(1)&&!p.Installed(0));assert(!job.Start(ps,1));
     completionError=-42;assert(job.Start(ps,0));s=wait(job);assert(!s.complete&&!s.busy&&s.message.find("FFFFFFD6")!=std::string::npos);
     Refresh(ps);for(auto &p:ps)assert(!p.Installed(0));
