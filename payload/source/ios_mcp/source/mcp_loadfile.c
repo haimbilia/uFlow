@@ -815,21 +815,12 @@ int _MCP_ioctl100_patch(ipcmessage *msg) {
                 InitIOPShell();
                 break;
             }
-            case IPC_CUSTOM_START_TCP_LOGGING: {
-                bool useIPFilter  = false;
-                uint32_t ipFilter = 0;
-                if (msg->ioctl.buffer_in && msg->ioctl.length_in >= 0x0C) {
-                    useIPFilter = msg->ioctl.buffer_in[1] == 1;
-                    ipFilter    = msg->ioctl.buffer_in[2];
-                }
-
-                TCPSyslogStartThread(useIPFilter, ipFilter);
+            case IPC_CUSTOM_START_TCP_LOGGING:
+                // Remote IOSU diagnostics are not available in uFlow releases.
+                return 29;
+            case IPC_CUSTOM_STOP_TCP_LOGGING:
+                // Compatibility no-op: there is no network service to stop.
                 break;
-            }
-            case IPC_CUSTOM_STOP_TCP_LOGGING: {
-                TCPSyslogEndThread();
-                break;
-            }
             case IPC_CUSTOM_GET_MOCHA_API_VERSION: {
                 if (msg->ioctl.buffer_io && msg->ioctl.length_io >= 8) {
                     msg->ioctl.buffer_io[0] = 0xCAFEBABE;

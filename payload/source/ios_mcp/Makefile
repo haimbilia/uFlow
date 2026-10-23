@@ -73,6 +73,8 @@ export VPATH	:= $(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
 export DEPSDIR	:= $(CURDIR)/$(BUILD)
 
 CFILES	:= $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+# Never link the legacy privileged network command server.
+CFILES := $(filter-out wupserver.c dk.c socket.c logger.c,$(CFILES))
 SFILES	:= $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
 BINFILES	:= $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
 

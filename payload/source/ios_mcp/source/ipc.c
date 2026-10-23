@@ -22,7 +22,6 @@
  * distribution.
  ***************************************************************************/
 #include "../../common/kernel_commands.h"
-#include "dk.h"
 #include "fsa.h"
 #include "imports.h"
 #include "logger.h"
@@ -120,9 +119,6 @@ static int ipc_ioctl(ipcmessage *message) {
         }
         case IOCTL_KILL_SERVER: {
             ipcNodeKilled = 1;
-#ifdef WUPSERVER_ENABLED
-            wupserver_deinit();
-#endif
             break;
         }
         case IOCTL_MEMCPY: {
@@ -395,7 +391,8 @@ static int ipc_ioctlv(ipcmessage *message) {
 
     switch (message->ioctlv.command) {
         case IOCTLV_DK_PCHAR_ACTIVATE:
-            res = dkPCHARActivateSmd(message->ioctlv.vecs);
+            // Legacy devkit network bridge is excluded from release builds.
+            res = IOS_ERROR_INVALID_ARG;
             break;
         default:
             res = IOS_ERROR_INVALID_ARG;

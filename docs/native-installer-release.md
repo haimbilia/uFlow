@@ -1,3 +1,11 @@
+Release 2026.10.23.2 (2026102302), authorized 2026-10-23: security correction.
+Remove the RPX loader TCP diagnostics startup call, remove network syslog code,
+reject TCP-start IPC, and exclude WUP/devkit bridge/socket objects from IOS MCP.
+Local/USB syslog hooks remain. Sync pins both rebuilt modules to prevent stale
+insecure inputs. Both ship as Core replacements. Run Setup and restart: app-only
+OTA cannot remediate older boot modules. Built-symbol checks, 22 payload tests, six release tests and actual Core/Core+WiiU
+fresh/reinstall checks passed; console boot/game-launch retest is pending. See release notes.
+
 Release 2026.10.23.1 (2026102301), authorized 2026-10-23: publish the tested
 installed-title discovery and installation handoff fixes in app, Setup, signed
 stable update and GitHub release. Supersedes earlier local-only/pending notes.

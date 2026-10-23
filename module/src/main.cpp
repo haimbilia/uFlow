@@ -78,9 +78,7 @@ WUMS_INITIALIZE() {
         OSFatal("Failed to init libmocha. Make sure to use the latest version of MochaPayload");
     }
 
-    // Keep IOSU logging available during early retail-title startup, before the
-    // game can draw an error or accept HOME input.
-    Mocha_StartTCPSyslogLogging(false, 0);
+    // Public builds never start privileged network diagnostics.
 
     if (!RawTitleKernel_Initialize()) {
         OSFatal(RawTitleKernel_GetInitializeError());

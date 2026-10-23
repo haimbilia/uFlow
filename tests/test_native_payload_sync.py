@@ -47,6 +47,9 @@ class PayloadSyncTest(unittest.TestCase):
         font.parent.mkdir(parents=True)
         font.write_bytes(b"font")
         shutil.copyfile(font, self.project / "native-installer/content/font.ttf")
+        original_network = dict(sync.NETWORK_DISABLED_INPUTS)
+        self.addCleanup(setattr, sync, "NETWORK_DISABLED_INPUTS", original_network)
+        sync.NETWORK_DISABLED_INPUTS = {name: sync.digest(sync.inputs(self.project, self.sources)[name]) for name in original_network}
         original_music = dict(sync.MUSIC_INPUTS)
         self.addCleanup(setattr, sync, "MUSIC_INPUTS", original_music)
         sync.MUSIC_INPUTS = {name: sync.digest(self.project / "native-installer/assets/music" / name) for name in original_music}
@@ -73,6 +76,18 @@ class PayloadSyncTest(unittest.TestCase):
         original_ftp = sync.FTPIIU_PATCH_HASH
         self.addCleanup(setattr, sync, "FTPIIU_PATCH_HASH", original_ftp)
         sync.FTPIIU_PATCH_HASH = sync.digest(self.sources / "ftpiiu_plugin/ftpiiu.wps")
+
+    def test_network_debug_modules_are_core_replacements_and_pinned(self):
+        self.run_sync(True)
+        for name in sync.NETWORK_DISABLED_INPUTS:
+            entry = next(m for m in sync.ENTRY.finditer(self.manifest.read_text()) if m[1] == name)
+            self.assertEqual((entry[4], entry[5]), (str(1 << 31), "r"))
+            source = sync.inputs(self.project, self.sources)[name]
+            original = source.read_bytes()
+            source.write_bytes(b"old insecure module")
+            with self.assertRaisesRegex(ValueError, "network-debug-disabled"):
+                self.run_sync(True)
+            source.write_bytes(original)
 
     def test_skin_manifests_and_icons_are_core_preserved(self):
         prefix = "wiiu/apps/uFlow/skins/"
@@ -200,6 +215,7 @@ class PayloadSyncTest(unittest.TestCase):
         path = "wiiu/environments/aroma/modules/setup/00_mocha.rpx"
         source = self.project / "payload/00_mocha.rpx"
         source.write_bytes(b"new raw-game early RPL loader build")
+        sync.NETWORK_DISABLED_INPUTS[path] = sync.digest(source)  # Approved rebuilt fixture.
         with self.assertRaisesRegex(ValueError, "Stale native payload"):
             self.run_sync()
         self.run_sync(True)

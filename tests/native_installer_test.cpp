@@ -289,6 +289,9 @@ int main(int argc,char **argv){
         Put(actual+"/"+ftpPlugin,"stock FTP");Put(actual+"/"+ftpConfig,"preserve FTP choices");
         const std::string preparedPreview="wiiu/apps/uFlow/media/wiiu/previews/00050000101c0800.mp4";
         Put(actual+"/"+preparedPreview,"user prepared 720p30 preview");
+        // Existing insecure modules must be replaced even with only Core selected.
+        for(const char *path:{"wiiu/environments/aroma/modules/RPXLoadingModule.wms","wiiu/environments/aroma/modules/setup/00_mocha.rpx"})
+            Put(actual+"/"+path,"old network diagnostics build");
         auto files=BundledFiles();auto ready=Prepare(actual,argv[1],files,bits,{});
         assert(std::none_of(files.begin(),files.end(),[](const auto &f){return f.path.ends_with("/visual-check.key");}));
         for(const char *name:{"app_booter.bin","ext_loader.bin","ext_booter.bin"}) {
@@ -302,6 +305,9 @@ int main(int argc,char **argv){
         std::cout<<"Real bundle: "<<ready.items.size()<<" files, "<<ready.bytes<<" bytes\n"<<std::flush;
         auto result=Install(actual,argv[1],ready,"real-bundle",{});
         assert(!File(actual+"/wiiu/apps/uFlow/visual-check.key"));
+        for(const char *path:{"wiiu/environments/aroma/modules/RPXLoadingModule.wms","wiiu/environments/aroma/modules/setup/00_mocha.rpx"})
+            assert(HashFile(actual+"/"+path,{},"")==HashFile(std::string(argv[1])+"/payload/"+path,{},""));
+
         const std::string contentModule="wiiu/environments/aroma/modules/ContentRedirectionModule.wms";
         assert(HashFile(actual+"/"+contentModule,{},"")==HashFile(std::string(argv[1])+"/payload/"+contentModule,{},""));
         for(const char *name:{"app_booter.bin","ext_loader.bin","ext_booter.bin"}) {

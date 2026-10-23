@@ -1,4 +1,7 @@
 #pragma once
+#ifdef WUPSERVER_ENABLED
+#error "Privileged network debugging must not be enabled in uFlow builds"
+#endif
 
 #include "ipc_types.h"
 #include <assert.h>
@@ -41,22 +44,15 @@ typedef struct PACKED SyslogBuffers {
 CHECK_SIZE(SyslogBuffers, 0x80030);
 
 #define SYSLOG_BUFFER_FLAG_USB_SERIAL 0x08
-#define SYSLOG_BUFFER_FLAG_TCP_SERVER 0x10
 
 extern uint32_t Syslog_CircularBuffer_ForceWrite(SyslogCircularBuffer *buffer, void *data, uint32_t dataLen);
 extern uint32_t Syslog_CircularBuffer_Read(SyslogCircularBuffer *buffer, void *dst, uint32_t destLen);
 extern void (*const Syslog_SignalSyslogOutputThread)();
 extern void (*const Syslog_FlushHistoryToOutput)(const SyslogCircularBuffer *buffer, uint32_t flags);
 
-int syslogRouteThreadStart();
 
 extern SyslogBuffers *gSyslogBuffers;
 extern SyslogCircularBuffer *gActiveSyslogBuffer;
 extern uint32_t gSyslogBufferFlags;
 
 extern bool gSkipSyslogCatchUpForUSBOutput;
-
-int TCPSyslogStartThread(bool useIPFilter, uint32_t allowedIP);
-
-void TCPSyslogInit();
-void TCPSyslogEndThread();

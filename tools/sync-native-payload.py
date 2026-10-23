@@ -17,6 +17,8 @@ SIGPATCHES = "wiiu/environments/aroma/modules/setup/01_sigpatches.rpx"
 SIGPATCHES_HASH = "41f9409f0c615cf3276e647bcad44a4723389388342f0e2b8994527651a38776"
 # User-provided system menu tracks, restored from the SD music folder.
 MUSIC_INPUTS = {'GameCube Menu.ogg': '4648ca65fad2285c88828f1ca94d1984fdaef4ee6ada9aaad4de50e2f5aa2993', 'Wii Menu.ogg': 'd35cae2250f40ec95deddc3745d0b7cb3fbe3ab3b1136dbf472ea7465f660536', 'Wii Shop Channel.ogg': '6411fd422c301c1958d4c77cb99eb50a4bfaca1e94f734778f1adb25dbc3c083', 'Wii U Menu.ogg': '3f833c34f3f0066b1aa69472471ae96be418035565d41439c332dee6072bd0c5'}
+# Security release: reject older builds with privileged network diagnostics.
+NETWORK_DISABLED_INPUTS = {'wiiu/environments/aroma/modules/RPXLoadingModule.wms': 'ecb6ef9fe5cd7100438ee08cc42feb343b18393ff2392162fd764524b59b2ffd', 'wiiu/environments/aroma/modules/setup/00_mocha.rpx': '1a650a341a0d91e7fb676984d701ba74000b90a6a4e151349a28b235305e3d85'}
 RAW = 1017  # Wii U and DS/NES/SNES/GBA/N64/PCE/MSX VC selections.
 REGION = "wiiu/environments/aroma/plugins/regionfree.wps"
 FTPIIU = "wiiu/environments/aroma/plugins/ftpiiu.wps"
@@ -149,6 +151,8 @@ def synchronize(project, sources, sync=False):
         if not source.is_file():
             raise ValueError(f"Build input missing: {source}; build components and mount sources first")
         hashed, size = digest(source), source.stat().st_size
+        if path in NETWORK_DISABLED_INPUTS and hashed != NETWORK_DISABLED_INPUTS[path]:
+            raise ValueError("Input differs from network-debug-disabled build: " + path)
         music_name = path.removeprefix("wiiu/apps/uFlow/music/")
         is_music = path.startswith("wiiu/apps/uFlow/music/") and music_name in MUSIC_INPUTS
         if is_music and (hashed != MUSIC_INPUTS[music_name] or not 0 < size <= 32 * 1024 * 1024):
