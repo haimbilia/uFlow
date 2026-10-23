@@ -283,6 +283,8 @@ int main(int argc,char **argv){
     if(argc>=2){
         const uint32_t bits=argc==3?std::stoul(argv[2]):All;
         const auto actual=root+"/actual";Aroma(actual);
+        Put(actual+"/wiiu/apps/uFlow/support-report.json","user diagnostic report");
+        Put(actual+"/wiiu/apps/uFlow/support-session.log","user diagnostic log");
         Put(actual+"/wiiu/environments/aroma/modules/PluginBackend.wms","stock plugin backend");
         Put(actual+"/"+regionPlugin,"stock Aroma region plugin");
         Put(actual+"/"+regionConfig,"preserve these region choices");
@@ -348,6 +350,8 @@ int main(int argc,char **argv){
         assert(HashFile(actual+"/wiiu/apps/uFlow/skins/switch-dark/skin.ini",{},"")==Hash("user customized skin"));
         assert(HashFile(actual+"/wiiu/apps/uFlow/skins/my-theme/skin.ini",{},"")==Hash("third party skin"));
         assert(HashFile(actual+"/wiiu/apps/uFlow/user-stats-1.cfg",{},"")==Hash("user ratings and play counts"));
+        assert(HashFile(actual+"/wiiu/apps/uFlow/support-report.json",{},"")==Hash("user diagnostic report"));
+        assert(HashFile(actual+"/wiiu/apps/uFlow/support-session.log",{},"")==Hash("user diagnostic log"));
         assert(HashFile(actual+"/wiiu/apps/uFlow/cache/library-v1.bin",{},"")==Hash("user saved game catalog"));
         assert(HashFile(actual+"/wiiu/apps/uFlow/media-refresh.pending",{},"")==Hash("pending\n"));
         assert(HashFile(actual+"/"+preparedPreview,{},"")==Hash("user prepared 720p30 preview"));

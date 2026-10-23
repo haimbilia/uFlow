@@ -1,3 +1,11 @@
+About & Support (2026-10-23, hardware test pending): small Settings info button,
+combined About/report page, explicit-consent HTTPS reports and SD export.
+App uses the existing mandatory Core payload mapping. Native Setup rebuilt;
+22 payload tests and actual Core/Core+WiiU fresh/reinstall checks pass, including
+preservation of reports, settings, games and saves. Recording is off by default.
+No new dependencies or boot-module changes; network-service removal checks pass.
+No public release bump. See docs/support-reports.md.
+
 Release 2026.10.23.2 (2026102302), authorized 2026-10-23: security correction.
 Remove the RPX loader TCP diagnostics startup call, remove network syslog code,
 reject TCP-start IPC, and exclude WUP/devkit bridge/socket objects from IOS MCP.

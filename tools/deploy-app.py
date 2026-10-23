@@ -1,4 +1,7 @@
-"""Upload only uFlow.wuhb, backing up the old app and verifying full readback."""
+"""Upload only uFlow.wuhb, checking the target and verifying full readback.
+
+Does not create app backups or restore an older build.
+"""
 import argparse
 import ftplib
 import hashlib
@@ -30,10 +33,9 @@ with ftplib.FTP(args.host, timeout=45) as ftp:
         return data.getvalue()
 
     previous = fetch()
+    if not previous.startswith(b'WUHB'):
+        raise RuntimeError('Target is not an existing WUHB app; refusing replacement')
     old_hash = hashlib.sha256(previous).hexdigest()
-    backup = output / ('before-' + old_hash + '.wuhb')
-    if not backup.exists():
-        backup.write_bytes(previous)
     if fetch() != previous:
         raise RuntimeError('Remote app changed during preflight')
     print('Uploading app only; settings and ROMs unchanged.', flush=True)

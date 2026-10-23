@@ -13,6 +13,7 @@
 #include "injection_dialog.hpp"
 #include "preparation_progress.hpp"
 #include "update_model.hpp"
+#include "diagnostics.hpp"
 #ifndef UFLOW_HOST_PREVIEW
 #include "updater.hpp"
 #endif
@@ -1750,7 +1751,7 @@ private:
 };
 
 class Dashboard {
-    enum class DraftExit { None, Editor, Text, Category, Settings };
+    enum class DraftExit { None, Editor, Text, Category, Settings, Support };
 public:
     Dashboard(SDL_Renderer *renderer, std::vector<GameEntry> &games)
         : renderer_(renderer), games_(games), textures_(renderer), preferences_(LoadSettings()),
@@ -4036,6 +4037,7 @@ public:
     }
 #endif
     void SetStatus(std::string status, Uint32 lifetime = 3500) {
+        support_.Event(status);
         status_ = std::move(status); statusUntil_ = SDL_GetTicks() + lifetime;
     }
     bool InjectionDialogOpen() const {return injectionDialog_.Open();}
@@ -4679,6 +4681,7 @@ public:
     }
     void ToggleSettings() {
         if(settings_ && ConfirmDraftExit(DraftExit::Settings))return;
+        supportOpen_=supportFocus_=supportConfirm_=false;
         settingsAction_=-1;
         detailsBackdropReady_ = false;
         settings_=!settings_; details_=false;
@@ -4768,6 +4771,7 @@ public:
             else scanWorker_.Start(games_,scanAddOnly_);
         }
         scanState_=scanWorker_.Poll();scanElapsed_=(SDL_GetTicks()-scanStarted_)/1000;
+        if(supportScanStage_!=scanState_.progress.stage){supportScanStage_=scanState_.progress.stage;support_.Event("Scan "+supportScanStage_);}
         if(scanState_.finished){
 #ifndef UFLOW_HOST_PREVIEW
             USBStorage::LogReadStats("scan-end");
@@ -5009,6 +5013,8 @@ public:
     bool ConsumeScanRequest() { const bool result = scanRequested_; scanRequested_ = false; return result; }
     void CloseOverlay() {
         if(draftExit_!=DraftExit::None){draftExit_=DraftExit::None;return;}
+        if(supportOpen_){if(supportConfirm_)supportConfirm_=false;else {supportOpen_=false;supportFocus_=true;}return;}
+        supportFocus_=false;
         settingsAction_=-1;
         if(alphabetOpen_){alphabetOpen_=false;return;}
         if(searchOpen_){searchOpen_=false;return;}
@@ -5034,6 +5040,7 @@ public:
 
     void SettingsChangeCategory(int amount) {
         if(amount && ConfirmDraftExit(DraftExit::Category)){draftExitCategory_=amount;return;}
+        supportOpen_=supportFocus_=supportConfirm_=false;
         settingsAction_=-1;
         typeManager_=typeEditor_=typeText_=false;
         launcherEditor_=launcherBrowse_=false;launcherRow_=vcMapMode_=0;
@@ -5478,12 +5485,89 @@ public:
     }
     // A enters value editing; only then do left/right adjust instead of moving focus.
     // B ends editing in place; up/down ends editing and moves to the adjacent row.
+    bool CheckSupport(const std::string &path) {
+        VisualPreview("settings");settingsCategory_=5;settingsSidebar_=true;
+        SettingsInput(0,1);if(!supportFocus_)return false;
+        SettingsInput(0,0,true);if(!supportOpen_)return false;
+        // The combined action requires consent even before a local report exists.
+        supportRow_=1;SettingsInput(0,0,true);if(!supportConfirm_||supportYes_||support_.Poll().busy)return false;
+        SettingsInput(0,0,true);if(supportConfirm_||support_.Poll().busy)return false;
+        for(int skin=0;skin<4;++skin){preferences_.skin=skin;
+            if(!Render(0,path+"-about-"+std::to_string(skin)+".png"))return false;
+            supportConfirm_=true;supportYes_=false;
+            if(!Render(0,path+"-consent-"+std::to_string(skin)+".png"))return false;
+            SettingsInput(0,0,true);if(supportConfirm_||support_.Poll().busy)return false;
+        }
+        SettingsInput(0,0,false,true);if(supportOpen_||!supportFocus_)return false;
+        SettingsTouch(144,594);if(!supportOpen_)return false;
+        SettingsInput(0,0,false,true);
+        VisualPreview("sourceedit");draftSource_.depth++;
+        SettingsTouch(144,594);if(draftExit_!=DraftExit::Support||supportOpen_)return false;
+        SettingsInput(0,0,true);if(!sourceEditor_||supportOpen_)return false;
+        SettingsTouch(144,594);SettingsInput(1,0,true);
+        if(!supportOpen_||sourceEditor_)return false;
+        return true;
+    }
+    void OpenSupport() {
+        if(ConfirmDraftExit(DraftExit::Support))return;
+        supportOpen_=true;supportFocus_=false;supportConfirm_=false;supportRow_=0;settingsAction_=-1;
+    }
+    void SupportInput(int horizontal,int vertical,bool accept,bool back) {
+        if(back){CloseOverlay();return;}
+        const auto state=support_.Poll();
+        if(supportConfirm_){
+            if(horizontal || vertical)supportYes_=!supportYes_;
+            if(accept){supportConfirm_=false;if(supportYes_)support_.Send(games_.size(),sources_.size(),mediaSources_.size());}
+            return;
+        }
+        if(vertical)supportRow_=(supportRow_+vertical+2)%2;
+        if(!accept || state.busy)return;
+        if(supportRow_==0){support_.Record(!state.recording);support_.Event("Problem recording started");}
+        else {supportConfirm_=true;supportYes_=false;}
+    }
+    void DrawSupport(int x,Color accent,bool light) {
+        const auto state=support_.Poll();
+        const Color ink=light?Color{38,53,64,255}:Color{238,244,252,255};
+        const Color muted=light?Color{64,83,96,255}:Color{160,180,198,255};
+        DrawText(renderer_,"ABOUT & SUPPORT",x,195,3,ink);
+        DrawText(renderer_,"uFlow",x,239,2,ink);
+        DrawText(renderer_,"Build "+std::to_string(UFlowUpdate::BuildSequence),x,270,2,muted);
+        DrawText(renderer_,"karotech.io",x,300,1,muted);
+        if(supportConfirm_){
+            DrawText(renderer_,"SEND THIS REPORT TO KAROTECH?",x,350,2,ink);
+            DrawText(renderer_,"Includes build, counts, numeric settings and recent logs.",x,388,1,muted);
+            DrawText(renderer_,"Path/address lines are omitted; logs may name games.",x,413,1,muted);
+            DrawText(renderer_,"Private to site admins. Deleted after 90 days. No ROMs or saves.",x,438,1,muted);
+            for(int i=0;i<2;++i){FillRoundedRect(renderer_,{x+i*370,474,350,44},10,
+                (supportYes_==(i==1))?Color{accent.r,accent.g,accent.b,100}:Color{80,100,120,35});
+                DrawText(renderer_,i?"YES":"NO",x+20+i*370,487,2,ink);}
+        } else {
+            const std::string labels[]={state.recording?"STOP PROBLEM RECORDING":"START PROBLEM RECORDING","SEND REPORT"};
+            for(int i=0;i<2;++i){
+                if(i==supportRow_)FillRoundedRect(renderer_,{x-12,350+i*46,748,42},10,{accent.r,accent.g,accent.b,65});
+                DrawText(renderer_,labels[i],x,362+i*46,2,state.busy?muted:ink);
+            }
+            DrawFittedText(renderer_,state.message,x,505,736,1,muted);
+            if(!state.reportId.empty())DrawText(renderer_,"REPORT ID: "+state.reportId,x,534,2,ink);
+            else DrawText(renderer_,"If sending fails, the report stays on SD so you can send it from a PC.",x,536,1,muted);
+        }
+        FillRoundedRect(renderer_,{x+555,574,176,40},10,{accent.r,accent.g,accent.b,40});
+        DrawText(renderer_,"B BACK",x+591,587,2,ink);
+    }
     void SettingsInput(int horizontal,int vertical,bool accept=false,bool back=false,
                        bool previous=false,bool useFolder=false,bool plus=false) {
         if (!settings_) return;
         if(draftExit_!=DraftExit::None){
             if(back)ResolveDraftExit(false);
             else {if(horizontal || vertical)draftExitYes_=!draftExitYes_;if(accept)ResolveDraftExit(draftExitYes_);}
+            return;
+        }
+        if(supportOpen_){SupportInput(horizontal,vertical,accept,back);return;}
+        if(supportFocus_){
+            if(back){supportFocus_=false;CloseOverlay();}
+            else if(accept)OpenSupport();
+            else if(vertical<0){supportFocus_=false;settingsSidebar_=true;}
+            else if(horizontal>0 || vertical>0){supportFocus_=false;FocusSettingsActions();}
             return;
         }
         if(back)MenuSound(MenuSounds::Back);
@@ -5514,7 +5598,7 @@ public:
             if(accept && settingsAction_>=0)ActivateSettingsAction(settingsAction_);
             return;
         }
-        if(vertical>0 && settingsSidebar_ && settingsCategory_==5){FocusSettingsActions();return;}
+        if(vertical>0 && settingsSidebar_ && settingsCategory_==5){supportFocus_=true;return;}
         if(vertical && !settingsSidebar_ && settingsAction_<0) {
             auto &row=SettingsContentRow();const int count=SettingsContentCount();
             if(vertical>0 && (count==0 || row>=(typeText_?count-12:count-1))) {FocusSettingsActions();return;}
@@ -5601,6 +5685,17 @@ public:
             }
             return;
         }
+        if(supportOpen_){
+            if(std::abs(dragY)>=30)return;
+            if(supportConfirm_){
+                if(y>=474 && y<518 && x>=390 && x<1125){supportYes_=x>=760;SupportInput(0,0,true,false);}
+                else if(y>=574 && y<614)SupportInput(0,0,false,true);
+            } else if(y>=574 && y<614)SupportInput(0,0,false,true);
+            else if(x>=390 && x<1125 && y>=350 && y<442){supportRow_=(y-350)/46;SupportInput(0,0,true,false);}
+            return;
+        }
+        if(std::abs(dragY)<30 && x>=118 && x<170 && y>=574 && y<618){OpenSupport();return;}
+        supportFocus_=false;
         if(std::abs(dragY)<30 && x>=390 && x<1121 && y>=574 && y<614) {
             const int action=(x-390)/185;
             if((x-390)%185<176){settingsSidebar_=false;ActivateSettingsAction(action);}
@@ -6333,6 +6428,7 @@ public:
         sourceEditor_=typeEditor_=typeText_=settingsEditing_=false;
         if(action==DraftExit::Category)SettingsChangeCategory(draftExitCategory_);
         else if(action==DraftExit::Settings)ToggleSettings();
+        else if(action==DraftExit::Support)OpenSupport();
     }
     void DrawDraftExit(Color accent) {
         const bool light=preferences_.skin==1 || preferences_.skin==2;
@@ -8967,19 +9063,24 @@ private:
         else if(!SwitchSkin()) FillRoundedRect(renderer_,{x+38,182,240,390},18,{5,11,21,220});
         for(int index=0;index<6;++index){
             const int y=208+index*61;
-            if(index==settingsCategory_){
+            if(index==settingsCategory_ && !supportOpen_ && !supportFocus_){
                 if(glass) {
                     FillRoundedRect(renderer_,{x+56,y-12,204,38},11,{accent.r,accent.g,accent.b,62});
                 }
                 else FillRoundedRect(renderer_,{x+52,y-16,212,46},14,{accent.r,accent.g,accent.b,48});
             }
-            if(index==settingsCategory_ && settingsSidebar_)
+            if(index==settingsCategory_ && settingsSidebar_ && !supportOpen_ && !supportFocus_)
                 FillRoundedRect(renderer_,{x+43,y-12,5,38},2,accent);
             DrawText(renderer_,categories[index],x+74,y-5,2,
                      index==settingsCategory_?(glass?Color{50,61,69,255}:Color{255,255,255,255}):
                                               (glass?Color{65,79,90,255}:Color{128,143,166,255}));
         }
         const int contentX=x+320;
+        const bool infoSelected=supportOpen_ || supportFocus_;
+        FillSmoothDot(renderer_,float(x+74),594,17,infoSelected?accent:(glass?Color{224,237,242,180}:Color{31,49,62,230}));
+        DrawText(renderer_,"i",x+70,584,2,glass?Color{32,65,78,255}:Color{230,245,250,255});
+        if(infoSelected)DrawText(renderer_,"ABOUT",x+104,586,1,glass?Color{32,65,78,255}:Color{230,245,250,255});
+        if(supportOpen_){DrawSupport(contentX,accent,glass);return;}
         if(typeManager_||typeText_) { DrawTypes(contentX,accent,glass); return; }
         if(settingsCategory_==5) {DrawLaunchers(contentX,accent,glass);return;}
         // Source navigation replaces the content pane inside this same frame.
@@ -9581,6 +9682,10 @@ private:
     ContentSource initialSourceDraft_;
     MediaSource initialMediaDraft_;
     LibraryDefinition initialTypeDraft_;
+    UFlowSupport::Client support_;
+    bool supportOpen_=false,supportFocus_=false,supportConfirm_=false,supportYes_=false;
+    int supportRow_=0;
+    std::string supportScanStage_;
     DraftExit draftExit_=DraftExit::None;
     bool draftExitYes_=false;
     int draftExitCategory_=0;
@@ -10380,7 +10485,8 @@ int main(int argc, char **argv) {
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND); InitSmoothFonts();
     bool ok;
     { std::vector<GameEntry> games; Dashboard dashboard(renderer, games);
-      if(std::string(argv[1])=="draftchecks")ok=dashboard.CheckDraftExit(argv[2]);
+      if(std::string(argv[1])=="supportchecks")ok=dashboard.CheckSupport(argv[2]);
+      else if(std::string(argv[1])=="draftchecks")ok=dashboard.CheckDraftExit(argv[2]);
       else if(std::string(argv[1])=="scanchecks")ok=dashboard.CheckScanDialog(argv[2]);
       else if(std::string(argv[1])=="asyncbrowserchecks")ok=dashboard.CheckAsyncBrowser(argv[2]);
       else if(std::string(argv[1])=="asyncartworkchecks")ok=dashboard.CheckAsyncArtwork(argv[2]);
