@@ -1,0 +1,33 @@
+{
+  "source_triangles": 4532,
+  "source_bounds": [
+    [
+      -59.920074462890625,
+      0.0,
+      -66.19920349121094
+    ],
+    [
+      59.22873306274414,
+      19.049999237060547,
+      66.87803649902344
+    ]
+  ],
+  "levels": [
+    {
+      "name": "nes-cart",
+      "vertices": 302,
+      "triangles": 600,
+      "indexed_bytes": 7236,
+      "watertight": true,
+      "volume_change_percent": -0.07543147595225896
+    },
+    {
+      "name": "nes-cart-small",
+      "vertices": 152,
+      "triangles": 300,
+      "indexed_bytes": 3636,
+      "watertight": true,
+      "volume_change_percent": -0.24259421585212104
+    }
+  ]
+}

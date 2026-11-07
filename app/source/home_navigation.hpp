@@ -1,22 +1,22 @@
 // Dashboard home navigation and stable wall grid.
     bool WallLayout() const {
-        const int t=preferences_.coverType,l=PresentationLayout();
+        const int t=ViewType(),l=PresentationLayout();
         return (t==CoverPresentation::Box&&(l==7||l==9))||(t==CoverPresentation::Logo&&l==6)||
             (t==CoverPresentation::Media&&l==3)||(t==CoverPresentation::Thumbnails&&l==1);
     }
-    bool CurvedWall() const {return preferences_.coverType==CoverPresentation::Box && PresentationLayout()==9;}
+    bool CurvedWall() const {return ViewType()==CoverPresentation::Box && PresentationLayout()==9;}
     SDL_Rect GridViewport() const {return SkinSpec().gridFullscreen?SDL_Rect{0,0,1280,720}:SDL_Rect{80,SkinSpec().gridTop,1120,SkinSpec().gridHeight};}
     int GridColumns() const {return SkinSpec().gridColumns;}
     float GridGap() const {return std::clamp(preferences_.coverSpacing/10.f,5.f,20.f);}
     float GridPitchX() const {return float(GridViewport().w)/(SkinSpec().gridFullscreen?std::max(2,GridColumns()-1):GridColumns());}
     float GridPitchY() const {
         if(!SkinSpec().gridFullscreen)return float(SkinSpec().gridHeight)/SkinSpec().gridRows;
-        return preferences_.coverType==CoverPresentation::Box?(GridPitchX()-GridGap())/.71f*(CurvedWall()?1.f:std::cos(.72f))+GridGap():GridPitchX();
+        return ViewType()==CoverPresentation::Box?(GridPitchX()-GridGap())/.71f*(CurvedWall()?1.f:std::cos(.72f))+GridGap():GridPitchX();
     }
     int GridRows() const {return int(std::ceil(GridViewport().h/GridPitchY()));}
     SDL_Rect GridCellAt(float column,float row) const {
         const auto viewport=GridViewport();const float scale=std::min(1.f,preferences_.coverZoom/120.f);
-        const bool box=preferences_.coverType==CoverPresentation::Box;
+        const bool box=ViewType()==CoverPresentation::Box;
         const int w=int((box?GridPitchX()-GridGap():std::min(GridPitchX(),GridPitchY())-GridGap())*scale);
         const int h=box?int(w/.71f):w;
         return {int(640+(column-gridCameraX_)*GridPitchX()-w*.5f),
@@ -25,8 +25,8 @@
     SDL_Rect GridCell(int index) const {return index==int(selected_)?GridCellAt(gridTargetX_,gridTargetY_):GridCellAt(index%GridColumns(),index/GridColumns());}
     SDL_Rect GridFocusRect() const {
         const auto cell=GridCell(int(selected_)),viewport=GridViewport();
-        const int h=preferences_.coverType==CoverPresentation::Box?std::min(340,int(viewport.h*.76f)):std::min(300,int(cell.h*1.8f));
-        const int w=preferences_.coverType==CoverPresentation::Box?int(h*.71f):h;
+        const int h=ViewType()==CoverPresentation::Box?std::min(340,int(viewport.h*.76f)):std::min(300,int(cell.h*1.8f));
+        const int w=ViewType()==CoverPresentation::Box?int(h*.71f):h;
         return {640-w/2,viewport.y+(viewport.h-h)/2,w,h};
     }
     void EnsureGridSelection() {
@@ -44,7 +44,7 @@
         gridTargetX_+=horizontal;gridTargetY_+=vertical;gridSelection_=selected_;
     }
     void UpdateGridCamera(float seconds) {
-        if(!WallLayout()){gridCameraReady_=false;return;}
+        if(SceneSkin()||!WallLayout()){gridCameraReady_=false;return;}
         EnsureGridSelection();
         const float blend=1.f-std::exp(-std::max(0.f,seconds)*24.f);
         const float x=gridTargetX_,y=gridTargetY_;
@@ -100,8 +100,9 @@
             std::array<SDL_Vertex,81> vertices;std::array<int,384> indices;int n=0;
             const int ni=CoverProjection::Build(projected,0.f,1.f,vertices.data(),indices.data(),n,face.art?3:1);
             const bool turn=texture.texture && face.side!=CoverFaces::Face::Spine && CoverFaces::TurnSleeve(p.sidewaysSleeve,p.sidewaysDefaultSleeve,art.sleeve,art.path==game.defaultSleevePath,texture.width,texture.height);
+            const auto material=BoxModelSDLColor(game,{45,65,73,255});
             for(int j=0;j<n;++j){const auto uv=vertices[j].tex_coord;
-                vertices[j].color=texture.texture?SDL_Color{Uint8(face.shade),Uint8(face.shade),Uint8(face.shade),255}:SDL_Color{45,65,73,255};
+                vertices[j].color=texture.texture?SDL_Color{Uint8(face.shade),Uint8(face.shade),Uint8(face.shade),255}:material;
                 if(turn){const auto t=CoverFaces::SidewaysUV(art.u0,art.u1,uv.x,uv.y,face.side,art.path==game.defaultSleevePath&&(p.sidewaysDefaultSleeve||face.side==CoverFaces::Face::Back));vertices[j].tex_coord={t.u,t.v};}
                 else vertices[j].tex_coord={art.u0+uv.x*(art.u1-art.u0),uv.y};
             }
@@ -114,10 +115,10 @@
         const bool resting=std::abs(gridCameraX_-gridTargetX_)<.001f&&std::abs(gridCameraY_-gridTargetY_)<.001f;
         const bool hidden=detailsProgress_>.015f||coverInspectProgress_>.015f||showcaseProgress_>0;
         const std::string cacheKey="wall:"+std::to_string(bookshelfEpoch_)+":"+std::to_string(selected_)+":"+
-            std::to_string(gridCameraX_)+":"+std::to_string(gridCameraY_)+":"+std::to_string(preferences_.coverType)+":"+
+            std::to_string(gridCameraX_)+":"+std::to_string(gridCameraY_)+":"+std::to_string(ViewType())+":"+
             std::to_string(PresentationLayout())+":"+std::to_string(preferences_.coverZoom)+":"+std::to_string(preferences_.coverSpacing)+":"+
             SkinSpec().id+":"+std::to_string(preferences_.theme)+":"+std::to_string(hidden)+":"+std::to_string(Selected()->favorite);
-        if(resting&&bookshelfTexture_&&bookshelfCached_&&bookshelfKey_==cacheKey&&bookshelfRevision_==textures_.Revision()){
+        if(resting&&bookshelfTexture_&&bookshelfCached_&&bookshelfKey_==cacheKey&&BookshelfAssetsCurrent()){
             SDL_RenderCopy(renderer_,bookshelfTexture_,nullptr,nullptr);++bookshelfCacheHits_;return;
         }
         if(!bookshelfTexture_){
@@ -143,7 +144,7 @@
             const int logical=row*GridColumns()+column;
             const int i=(logical%count+count)%count;
             if(row==int(gridTargetY_) && column==int(gridTargetX_))continue;
-            if(preferences_.coverType==CoverPresentation::Box){float yaw,pitch;auto scene=WallScene(column,row,yaw,pitch);cells.push_back({i,scene,yaw,pitch});}
+            if(ViewType()==CoverPresentation::Box){float yaw,pitch;auto scene=WallScene(column,row,yaw,pitch);cells.push_back({i,scene,yaw,pitch});}
             else {const auto rect=GridCellAt(float(column),float(row));if(SDL_HasIntersection(&rect,&clip))DrawPresentation(games_[visible_[i]],rect,false,accent);}
         }
         std::sort(cells.begin(),cells.end(),[](const Cell&a,const Cell&b){return a.scene.z<b.scene.z;});
@@ -154,22 +155,47 @@
         }
         if(!visible_.empty()&&detailsProgress_<=.015f&&coverInspectProgress_<=.015f&&showcaseProgress_<=0){
             const auto &game=games_[visible_[selected_]];const auto rect=GridFocusRect();
-            if(preferences_.coverType==CoverPresentation::Box)DrawBox(game,rect,0.f,true,accent,.18f,-.04f,0.f,true);
+            if(ViewType()==CoverPresentation::Box)DrawBox(game,rect,0.f,true,accent,.18f,-.04f,0.f,true);
             else DrawPresentation(game,rect,true,accent);
         }
         SDL_RenderSetClipRect(renderer_,clipped?&previousClip:nullptr);
         if(capture){SDL_SetRenderTarget(renderer_,oldTarget);SDL_RenderSetViewport(renderer_,&oldViewport);SDL_RenderSetClipRect(renderer_,oldClipped?&oldClip:nullptr);
-            SDL_RenderCopy(renderer_,bookshelfTexture_,nullptr,nullptr);bookshelfKey_=cacheKey;bookshelfRevision_=textures_.Revision();bookshelfCached_=true;}
+            SDL_RenderCopy(renderer_,bookshelfTexture_,nullptr,nullptr);
+            std::vector<int> indices;indices.reserve(cells.size()+1);for(const auto &cell:cells)indices.push_back(cell.index);indices.push_back(selected_);
+            CaptureBookshelfAssets(indices);bookshelfKey_=cacheKey;bookshelfCached_=true;}
     }
     void NextLayout(){
+        if(FixedShelfScene()){SetStatus("THIS SKIN USES BOX / BOOKSHELF");return;}
         if(OverlayOpen())return;
         DismissVideo();CancelHomeSwipe();dockFocus_=-1;
-        auto &layout=PresentationLayout();layout=(layout+1)%CoverPresentation::LayoutCount(preferences_.coverType);
+        auto &layout=PresentationLayout();const int before=layout;layout=(layout+1)%CoverPresentation::LayoutCount(ViewType());
+        if(PresentationOverride()&&!SaveLibraries(libraries_,false)){layout=before;SetStatus("COULD NOT SAVE CONTENT TYPE LAYOUT");return;}
         visualSelected_=float(selected_);gridCameraReady_=false;ClearSideCases();
-        detailsBackdropReady_=false;PrefetchArtwork();QueueSettingsSave();
-        SetStatus(CoverPresentation::LayoutName(preferences_.coverType,layout));
+        detailsBackdropReady_=false;PrefetchArtwork();if(!PresentationOverride())QueueSettingsSave();
+        SetStatus(CoverPresentation::LayoutName(ViewType(),layout));
     }
-    void FocusSystemButtons(){if(SwitchSkin())dockFocus_=0;}
+    bool GlassFooterAvailable()const{return preferences_.skin==1||UForceSkin();}
+    bool SystemButtonsFocused()const{return SceneSkin()?sceneButtonFocus_>=0:LayoutSkin()?skinButtonFocus_>=0:dockFocus_>=0;}
+    SDL_Rect GlassFooterRect(int index)const{return index==6?SDL_Rect{1134,677,104,41}:SDL_Rect{42+index*180,677,174,41};}
+    void FocusSystemButtons(){if(SceneSkin()){FocusSceneButtons();return;}if(GlassFooterAvailable()){DismissVideo();dockFocus_=dockFocus_<0?0:-1;}else if(SwitchSkin())dockFocus_=0;}
+    void DrawGlassFooter(Color accent){
+        DrawGlassSurface(renderer_,{32,674,1216,78},23,accent,88,true);
+        for(int i=0;i<7;++i){const auto r=GlassFooterRect(i);
+            if(dockFocus_==i)FillRoundedRect(renderer_,r,12,{accent.r,accent.g,accent.b,95});
+            if(i==6){
+                const int cx=r.x+r.w/2,cy=r.y+r.h/2;
+                const Color ink{68,78,87,255};
+                DrawArc(renderer_,float(cx),float(cy+1),10,-1.05f,4.19f,ink);
+                SetColor(renderer_,ink);
+                SDL_Rect stem{cx-1,cy-12,2,13};SDL_RenderFillRect(renderer_,&stem);
+                continue;
+            }
+            const auto &hint=footerHints_[i];
+            const std::string label=hint.button.find("NONE")!=std::string::npos?hint.action:hint.button+" "+hint.action;
+            DrawFittedText(renderer_,label,r.x+8,689,r.w-16,2,{68,78,87,255});
+        }
+        if(dockFocus_>=0)DrawText(renderer_,"L3 / B BACK    A SELECT",640,650,1,{68,78,87,255},true);
+    }
     bool HomeNavigate(int horizontal,int vertical,bool accept,bool back) {
         if(powerPrompt_) {
             if(back){powerPrompt_=false;return true;}
@@ -177,13 +203,15 @@
             if(accept){if(powerConfirm_)shutdownRequested_=true;powerPrompt_=false;}
             return true;
         }
+        if(LayoutSkin())return LayoutNavigate(horizontal,vertical,accept,back);
         if(dockFocus_>=0) {
             horizontal=(horizontal>0)-(horizontal<0);
             if(back||vertical<0){dockFocus_=-1;return true;}
-            if(horizontal)dockFocus_=std::clamp(dockFocus_+horizontal,0,5);
+            if(horizontal)dockFocus_=std::clamp(dockFocus_+horizontal,0,GlassFooterAvailable()?6:5);
             if(accept)ActivateDock(dockFocus_);
             return true;
         }
+        if(WiiUMenuLayout()){if(horizontal||vertical)WiiUMenuNavigate(horizontal,vertical);return horizontal||vertical;}
         if(WallLayout()) {
             if(horizontal||vertical)MoveWall(horizontal,vertical);
             return horizontal||vertical;
@@ -194,6 +222,16 @@
     }
     void ActivateDock(int index) {
         DismissVideo();dockFocus_=-1;
+        if(GlassFooterAvailable()){
+            if(index==0)detailsLaunchRequested_=true;
+            else if(index==1)ToggleDetails();
+            else if(index==2)ToggleFavorite();
+            else if(index==3)ChangeTab(1);
+            else if(index==4)ToggleSettings();
+            else if(index==5)FindOrClearSearch();
+            else if(index==6){powerPrompt_=true;powerConfirm_=false;}
+            return;
+        }
         if(index==2){OpenGallery();return;}
         if(index==4){ToggleSettings();return;}
         if(index==5){powerPrompt_=true;powerConfirm_=false;return;}
@@ -207,17 +245,27 @@
 #endif
     }
     bool HomeTouch(int x,int y) {
-        const auto &skin=SkinSpec();if(!SwitchSkin()||std::abs(y-skin.dockY)>40)return false;
+        if(LayoutSkin())return LayoutTouch(x,y);
+        if(UForceSkin()&&UForceTouch(x,y))return true;
+        if(GlassFooterAvailable())for(int i=0;i<7;++i){const auto r=GlassFooterRect(i);if(x>=r.x&&x<r.x+r.w&&y>=r.y&&y<r.y+r.h){ActivateDock(i);return true;}}
+
+        if(UForceSkin()&&UForceHome())return false;
+        if(WiiUMenuLayout() && WiiUMenuTouch(x,y))return true;
+        const auto &skin=SkinSpec();if(UForceSkin()||!SwitchSkin()||std::abs(y-HomeDockY())>40)return false;
         const int index=(x-skin.dockX+skin.dockGap/2)/skin.dockGap;
         if(x<skin.dockX-skin.dockGap/2||index<0||index>=6)return false;
         ActivateDock(index);return true;
     }
     void DrawPowerPrompt() {
         if(!powerPrompt_)return;
-        FillRoundedRect(renderer_,{330,238,620,230},18,SwitchBackground());
-        DrawText(renderer_,"SHUT DOWN THE WII U?",640,275,3,SwitchInk(),true);
-        DrawText(renderer_,"Unsaved changes will be saved before shutdown.",640,325,1,SwitchInk(),true);
-        for(int i=0;i<2;++i){SDL_Rect r{410+i*260,383,200,52};FillRoundedRect(renderer_,r,10,(powerConfirm_==bool(i))?SwitchAccent():SwitchMuted());DrawText(renderer_,i?"SHUT DOWN":"CANCEL",r.x+100,r.y+16,2,SwitchInk(),true);}
+        const bool glass=preferences_.skin==1;
+        const PopupTextGlowScope glow(glass);
+        const Color ink=glass?Color{42,53,62,255}:SwitchInk();
+        FillRoundedRect(renderer_,{330,238,620,230},24,glass?Color{239,246,248,245}:SwitchBackground());
+        if(glass)DrawGlassSurface(renderer_,{330,238,620,230},24,SwitchAccent(),100,true);
+        DrawText(renderer_,"SHUT DOWN THE WII U?",640,275,3,ink,true);
+        DrawText(renderer_,"Unsaved changes will be saved before shutdown.",640,325,1,ink,true);
+        for(int i=0;i<2;++i){SDL_Rect r{410+i*260,383,200,52};FillRoundedRect(renderer_,r,10,(powerConfirm_==bool(i))?SwitchAccent():SwitchMuted());DrawText(renderer_,i?"SHUT DOWN":"CANCEL",r.x+100,r.y+16,2,ink,true);}
     }
     bool ConsumeShutdown(){const bool result=shutdownRequested_;shutdownRequested_=false;if(result)FlushSettingsSave(true);return result;}
     float gridCameraX_=0,gridCameraY_=0,gridTargetX_=0,gridTargetY_=0;
@@ -286,8 +334,24 @@
     void CancelHomeSwipe(bool force=false){homeSwipe_.Cancel(force);}
     bool HomeSwipeInput(bool sample,bool valid,bool down,int x,int y){
         if(OverlayOpen()){homeSwipe_.Cancel();return false;}
-        const bool wheel=preferences_.coverType==CoverPresentation::Logo&&(PresentationLayout()==1||PresentationLayout()==2);
-        const bool browse=y>=100&&y<(SwitchSkin()?SkinSpec().dockY-42:620);
+        if(SceneSkin()){
+            const auto *library=SceneLibrary();
+            const bool inside=library&&x>=library->x&&x<library->x+library->w&&y>=library->y&&y<library->y+library->h;
+            const bool grid=library&&(library->mode=="grid"||library->mode=="shelf");
+            const auto event=homeSwipe_.Update(sample,valid,down,x,y,inside,inside&&grid,
+                library?float(library->w)/library->columns:120.f,library?float(library->h)/library->rows:100.f);
+            if(event.dx||event.dy){sceneButtonFocus_=-1;dockFocus_=-1;DismissVideo();Move(event.dx+(grid?event.dy*library->columns:0));}
+            if(event.tap)HomeTouch(event.x,event.y);
+            return event.consumed;
+        }
+        if(WiiUMenuLayout()){
+            const auto event=homeSwipe_.Update(sample,valid,down,x,y,y>=WiiUMenuViewport().y&&y<WiiUMenuViewport().y+WiiUMenuViewport().h,false,400.f*WiiUMenuScale(),100.f);
+            if(event.dx){dockFocus_=-1;WiiUMenuPage(event.dx>0?1:-1);}
+            if(event.tap)HomeTouch(event.x,event.y);
+            return event.consumed;
+        }
+        const bool wheel=ViewType()==CoverPresentation::Logo&&(PresentationLayout()==1||PresentationLayout()==2);
+        const bool browse=UForceHome()?(y>=488&&y<636):(y>=100&&y<(SwitchSkin()?HomeDockY()-42:620));
         const auto event=homeSwipe_.Update(sample,valid,down,x,y,browse&&(!wheel||WallLayout()),browse&&(wheel||WallLayout()),
             WallLayout()?GridPitchX():120.f,WallLayout()?GridPitchY():100.f);
         if(event.dx||event.dy){

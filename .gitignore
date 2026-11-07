@@ -30,3 +30,11 @@ app/content/skins/glass/background.mp4
 emulators/NooDS/
 native-installer/vendor/libmocha/
 fs*/
+
+# Private Karo Cloud implementation: public-source policy in docs/public-source-release.md.
+# Shared-file integration still requires the mandatory source release check.
+app/source/cloud_media.cpp
+app/source/cloud_media.hpp
+app/source/cloud_settings_members.hpp
+app/content/cloud/
+docs/cloud-media.md

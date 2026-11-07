@@ -18,6 +18,8 @@ int main(){
     assert(WiiUVC::System("WUP-N-D43E",true)=="gamecube");
     assert(WiiUVC::System("WUP-N-RMGE",true)=="wii");
     assert(WiiUVC::System("WUP-P-ABCD")=="wiiu");
+    assert(WiiUVC::System("WUP-N-MCVE")=="wiiu");
+    assert(WiiUVC::System("WUP-N-MNEJ")=="msx");
     GameEntry g;g.absolutePath=base+"/game";g.titleId="0005000012345600";g.vcSystem="gamecube";
     g.physicalMediaPath="disc.png";g.coverPath="keep.png";g.rpxRelative="raw/game/code/main.rpx";g.favorite=true;
     std::vector<GameEntry> games{g,g};games[1].installed=true;games[1].installedTitleId=0x0005000012345600ULL;
@@ -56,5 +58,9 @@ int main(){
     Put(g.absolutePath+"/meta/meta.xml","<menu><product_code>WUP-N-GKGE</product_code></menu>");Put(g.absolutePath+"/code/fw.img","fixture");
     assert(LoadLibraryCache(cached)&&cached[0].vcSystem=="gamecube"&&cached[0].coverPath==g.coverPath);
     fs::remove_all(g.absolutePath);assert(LoadLibraryCache(cached)&&cached[0].vcSystem=="gamecube");
+    g.vcSystem="msx";Put(g.absolutePath+"/meta/meta.xml","<menu><product_code>WUP-N-MCVE</product_code></menu>");
+    assert(SaveLibraryCache({g}));
+    std::fstream legacy(cache,std::ios::binary|std::ios::in|std::ios::out);uint32_t v11=11;legacy.seekp(4);legacy.write(reinterpret_cast<char*>(&v11),4);legacy.close();
+    assert(LoadLibraryCache(cached)&&cached[0].vcSystem=="wiiu"&&cached[0].coverPath==g.coverPath);
     std::cout<<"PASS: VC classification, independent switches, source boundaries, launch/media preservation, settings and cache migration\n";
 }

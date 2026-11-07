@@ -1,3 +1,4 @@
+#include "navigation_default_sleeve.hpp"
 #include "library_tabs.hpp"
 #include "launcher_overrides.hpp"
 #include <cassert>
@@ -31,11 +32,39 @@ int main(){
     std::vector<GameEntry> cached;assert(LoadLibraryCache(cached));
     assert(cached[0].fullCoverPath==original.full&&cached[0].coverPath==original.cover&&cached[0].mediaLibraryId.empty());
     libraries[1].mediaByContentType=false;ApplyContentTypeMedia(games,libraries);
-    assert(games[0].coverPath==original.cover&&games[0].fullCoverPath==original.full&&games[0].previewPath==original.video&&!games[0].sourceMedia);
+    assert(games[0].coverPath==original.cover&&games[0].fullCoverPath==original.full&&games[0].previewPath==original.video&&games[0].sourceMedia);
+    assert(games[0].defaultSleevePath==sleeves+"/Default.png");
     libraries[1].mediaByContentType=true;games[0].navigationLibraryId.clear();ApplyContentTypeMedia(games,libraries);
     assert(games[0].fullCoverPath==original.full); // sorting off restores source appearance
     games[0].navigationLibraryId="snes";assert(SaveMediaSources({}));ApplyContentTypeMedia(games,libraries);
     assert(games[0].fullCoverPath.empty()&&games[0].coverPath.empty()&&games[0].mediaLibraryId=="snes"&&games[0].previewPath==original.video);
     RestoreSourceMedia(games[0]);assert(games[0].fullCoverPath==original.full);
-    std::cout<<"PASS: type media persistence, strict library matching, SNES sleeve fallback, video settings, native launch identity, reversible appearance and original-media cache\n";
+    libraries[1].mediaByContentType=false;
+    const auto nativeDefault=root+"/wiiu/Default.png";Put(nativeDefault);
+    sources.back().defaultFile="Default.png";assert(SaveMediaSources(sources));
+    games={g};games[0].coverPath.clear();games[0].fullCoverPath=nativeDefault;games[0].defaultSleevePath=nativeDefault;
+    assert(ContentTypeMediaNeeded(games[0],libraries));ApplyContentTypeMedia(games,libraries);
+    assert(games[0].fullCoverPath.empty()&&games[0].defaultSleevePath==sleeves+"/Default.png");
+    assert(!ContentTypeMediaNeeded(games[0],libraries));
+    assert(SaveLibraryCache(games));assert(LoadLibraryCache(cached));assert(cached[0].fullCoverPath==nativeDefault);
+    games[0].navigationLibraryId.clear();assert(ContentTypeMediaNeeded(games[0],libraries));ApplyContentTypeMedia(games,libraries);
+    assert(games[0].fullCoverPath==nativeDefault&&!ContentTypeMediaNeeded(games[0],libraries));
+    for(const std::string id:{"ds","nes","snes","gba","n64","pce","msx"})for(bool own:{false,true}){
+        auto type=snes;type.id=id;type.mediaByContentType=own;
+        const auto folder=root+"/defaults/"+id;Put(folder+"/Default.png");
+        MediaSource fallback{MediaType::FullCover,-1,folder,true,0,id};fallback.defaultFile="Default.png";
+        assert(SaveMediaSources({sources.back(),fallback}));
+        games={g};games[0].navigationLibraryId=id;games[0].coverPath.clear();games[0].backCoverPath.clear();
+        games[0].fullCoverPath=games[0].defaultSleevePath=nativeDefault;
+        ApplyContentTypeMedia(games,{libraries[0],type});
+        assert(games[0].defaultSleevePath==folder+"/Default.png");
+        assert(games[0].fullCoverPath!=nativeDefault&&!ContentTypeMediaNeeded(games[0],{libraries[0],type}));
+    }
+    std::map<std::string,GameMedia> defaults;defaults["wiiu"].sleeve=nativeDefault;defaults["ds"].sleeve="ds-default.png";
+    auto fast=g;fast.navigationLibraryId="ds";fast.coverPath.clear();fast.fullCoverPath=fast.defaultSleevePath=nativeDefault;
+    ApplyNavigationDefaultSleeve(fast,defaults);assert(fast.fullCoverPath.empty()&&fast.defaultSleevePath=="ds-default.png");
+    assert(fast.sourceMedia->full==nativeDefault);ApplyNavigationDefaultSleeve(fast,defaults);assert(fast.defaultSleevePath=="ds-default.png");
+    fast.navigationLibraryId.clear();ApplyNavigationDefaultSleeve(fast,defaults);assert(fast.fullCoverPath==nativeDefault);
+    fast.navigationLibraryId="ds";fast.fullCoverPath="real-game.png";ApplyNavigationDefaultSleeve(fast,defaults);assert(fast.fullCoverPath=="real-game.png");
+    std::cout<<"PASS: type media, shared-artwork system defaults, reversible appearance and source cache\n";
 }

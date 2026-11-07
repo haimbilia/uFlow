@@ -56,6 +56,7 @@ constexpr uint32_t NunchukStick(float x, float y, uint32_t previous) {
 // accepting input again. The neutral interval also lets old wireless samples drain.
 class InputResumeGate {
 public:
+    bool Active() const { return active_; }
     void Arm() { active_ = true; neutralSeen_ = false; }
     bool Allows(uint32_t ticks, bool neutral) {
         if (!active_) return true;
@@ -70,10 +71,39 @@ private:
     uint32_t neutralSince_ = 0;
 };
 
+// Keep each device's resume gate and button combinations independent. A new
+// press takes control. A held remote button cannot reclaim it every frame.
+class DashboardInputRouter {
+public:
+    enum class Source { GamePad, Remote };
+    void Arm() {
+        padGate_.Arm();
+        remoteGate_.Arm();
+        source_ = Source::GamePad;
+    }
+    Source Select(uint32_t ticks, bool padSample, bool padActive, bool padPressed,
+                  bool remoteHeld, bool remotePressed) {
+        padAllowed_ = padSample ? padGate_.Allows(ticks, !padActive) : !padGate_.Active();
+        remoteAllowed_ = remoteGate_.Allows(ticks, !remoteHeld && !remotePressed);
+        if (padAllowed_ && padPressed) source_ = Source::GamePad;
+        else if (remoteAllowed_ && remotePressed) source_ = Source::Remote;
+        else if (padAllowed_ && padActive && (!remoteAllowed_ || !remoteHeld)) source_ = Source::GamePad;
+        return source_;
+    }
+    bool Allowed() const { return source_ == Source::GamePad ? padAllowed_ : remoteAllowed_; }
+private:
+    InputResumeGate padGate_, remoteGate_;
+    Source source_ = Source::GamePad;
+    bool padAllowed_ = false, remoteAllowed_ = false;
+};
+
 class WiiRemoteInput {
 public:
-    void Reset() { channels_ = {}; }
+    static constexpr unsigned ChannelCount = 7;
+    void Reset() { channels_ = {}; proSamples_ = 0; }
+    bool HasProSample() const { return proSamples_ != 0; }
     void Merge(VPADStatus &input, uint32_t ticks) {
+        proSamples_ = 0;
         for (unsigned i = 0; i < channels_.size(); ++i) {
             auto &cached = channels_[i];
             KPADStatus remote{};
@@ -81,40 +111,51 @@ public:
             const auto count = KPADReadEx(static_cast<KPADChan>(i), &remote, 1, &error);
             if (count && error == KPAD_ERROR_OK && remote.error == 0) {
                 if (remote.extensionType == WPAD_EXT_PRO_CONTROLLER) {
+                    ++proSamples_;
                     const auto directions=StickButton::Directions(remote.pro.leftStick.x,remote.pro.leftStick.y)|StickButton::RightDirections(remote.pro.rightStick.x,remote.pro.rightStick.y);
                     input.trigger|=directions&~cached.stick;cached.stick=directions;
                     cached.hold=ProControllerButtons(remote.pro.hold)|directions;
                     input.trigger |= ProControllerButtons(remote.pro.trigger);
                     cached.updated = ticks;
-                    input.hold |= cached.hold;
-                    continue;
+                    cached.leftX=remote.pro.leftStick.x;
+                    cached.leftY=remote.pro.leftStick.y;
+                    cached.rightX=remote.pro.rightStick.x;
+                    cached.rightY=remote.pro.rightStick.y;
+                } else {
+                    cached.leftX=cached.leftY=cached.rightX=cached.rightY=0;
+                    const bool supported = remote.extensionType == WPAD_EXT_CORE ||
+                        remote.extensionType == WPAD_EXT_NUNCHUK || remote.extensionType == WPAD_EXT_CLASSIC ||
+                        remote.extensionType == WPAD_EXT_MPLUS || remote.extensionType == WPAD_EXT_MPLUS_NUNCHUK ||
+                        remote.extensionType == WPAD_EXT_MPLUS_CLASSIC;
+                    cached.hold = supported ? WiiRemoteButtons(remote.hold) : 0;
+                    const bool nunchuk = remote.extensionType == WPAD_EXT_NUNCHUK ||
+                        remote.extensionType == WPAD_EXT_MPLUS_NUNCHUK;
+                    if (nunchuk) {
+                        cached.stick = NunchukStick(remote.nunchuk.stick.x, remote.nunchuk.stick.y, cached.stick);
+                        cached.hold |= cached.stick | NunchukButtons(remote.nunchuk.hold);
+                        input.trigger |= NunchukButtons(remote.nunchuk.trigger);
+                    } else cached.stick = 0;
+                    cached.updated = ticks;
+                    if (supported) input.trigger |= WiiRemoteButtons(remote.trigger);
                 }
-                const bool supported = remote.extensionType == WPAD_EXT_CORE ||
-                    remote.extensionType == WPAD_EXT_NUNCHUK || remote.extensionType == WPAD_EXT_CLASSIC ||
-                    remote.extensionType == WPAD_EXT_MPLUS || remote.extensionType == WPAD_EXT_MPLUS_NUNCHUK ||
-                    remote.extensionType == WPAD_EXT_MPLUS_CLASSIC;
-                cached.hold = supported ? WiiRemoteButtons(remote.hold) : 0;
-                const bool nunchuk = remote.extensionType == WPAD_EXT_NUNCHUK ||
-                    remote.extensionType == WPAD_EXT_MPLUS_NUNCHUK;
-                if (nunchuk) {
-                    cached.stick = NunchukStick(remote.nunchuk.stick.x, remote.nunchuk.stick.y, cached.stick);
-                    cached.hold |= cached.stick | NunchukButtons(remote.nunchuk.hold);
-                    input.trigger |= NunchukButtons(remote.nunchuk.trigger);
-                } else cached.stick = 0;
-                cached.updated = ticks;
-                if (supported) input.trigger |= WiiRemoteButtons(remote.trigger);
             } else if ((error != KPAD_ERROR_NO_SAMPLES && error != KPAD_ERROR_BUSY) ||
                        count || uint32_t(ticks - cached.updated) >= 100) {
-                cached.hold = 0;
-                cached.stick = 0;
+                cached = {};
             }
             // Preserve held navigation between wireless samples, never replay triggers.
             input.hold |= cached.hold;
+            MergeStick(input.leftStick,cached.leftX,cached.leftY);
+            MergeStick(input.rightStick,cached.rightX,cached.rightY);
         }
     }
 private:
-    struct Channel { uint32_t hold = 0, updated = 0, stick = 0; };
-    std::array<Channel, 4> channels_{};
+    template<class Stick>
+    static void MergeStick(Stick& dst,float x,float y){
+        if(x*x+y*y > dst.x*dst.x+dst.y*dst.y){dst.x=x;dst.y=y;}
+    }
+    unsigned proSamples_ = 0;
+    struct Channel { uint32_t hold = 0, updated = 0, stick = 0; float leftX=0,leftY=0,rightX=0,rightY=0; };
+    std::array<Channel, ChannelCount> channels_{};
 };
 
 static_assert(WiiRemoteButtons(WPAD_BUTTON_1) == VPAD_BUTTON_L);

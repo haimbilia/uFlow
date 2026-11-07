@@ -9,10 +9,14 @@
 #include <cstring>
 #include <cstdlib>
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
 std::string directory;int failure=0,queued=0;
 std::vector<uint8_t> HexBytes(const char *s){std::vector<uint8_t> out;while(s&&*s){char *end=nullptr;out.push_back(strtoul(s,&end,16));s=*end==','?end+1:end;}return out;}
 MemIOS::~MemIOS(){free(ticket);free(tmd);if(contents){for(unsigned i=0;i<numContents;++i)free(contents[i].data);free(contents);}}
-void Patcher_Log(const std::string &){}
+std::string diagnostics;
+void Patcher_Log(const std::string &s){diagnostics+=s;}
+std::string ToHexString(uint32_t value,int width){std::ostringstream s;s<<std::hex<<std::setw(width)<<std::setfill('0')<<value;return s.str();}
 bool State::AppRunning(){return true;}
 extern "C" void sha(const uint8_t *data,unsigned n,uint8_t *hash){memset(hash,0,20);for(unsigned i=0;i<n;++i)hash[i%20]^=data[i];}
 bool ReadFileToBuffer(const std::string &path,uint8_t **data,uint32_t *size){
@@ -37,9 +41,16 @@ std::unique_ptr<MemIOS> ReadBaseIOS(uint32_t base){
 }
 bool WritePatchedIOS(uint32_t slot,MemIOS &ios){assert(slot>=248&&slot<=251);assert(ios.numContents>=20&&FromBE16(ios.tmd->numContents)==ios.numContents);assert(ios.contents[0].data[0]==0x1e);++queued;return true;}
 int main(int argc,char **argv){assert(argc==2);directory=argv[1];
-    for(failure=0;failure<5;++failure){queued=0;std::vector<std::pair<int,bool>> result;PrepareD2XBatch(directory+"/d2x-v11-beta3-vWii",result);
+    for(failure=0;failure<5;++failure){queued=0;diagnostics.clear();std::vector<std::pair<int,bool>> result;PrepareD2XBatch(directory+"/d2x-v11-beta3-vWii",result);
         if(!failure){assert(queued==4&&result.size()==4&&std::all_of(result.begin(),result.end(),[](auto p){return p.second;}));}
-        else assert(queued==0&&!result.empty()&&!result.back().second);
+        else {
+            assert(queued==0&&!result.empty()&&!result.back().second);
+            assert(diagnostics.find("slot 248 (base 38)")!=std::string::npos);
+            if(failure==1)assert(diagnostics.find("content 00000000, offset 00000000")!=std::string::npos);
+            if(failure==2)assert(diagnostics.find("Failed to read module")!=std::string::npos);
+            if(failure==3)assert(diagnostics.find("expected 4380, got 4381")!=std::string::npos);
+            if(failure==4)assert(diagnostics.find("TMD index 99")!=std::string::npos);
+        }
     }
     std::cout<<"PASS: actual vWii ciosmaps/modules, four slot preparations, mismatch/revision/missing-module/bounds rejection before queueing\n";
 }

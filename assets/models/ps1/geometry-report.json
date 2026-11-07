@@ -1,0 +1,15 @@
+{
+  "source_sha256": "38d468f5406afb58c3ada9714f4bba5ca6102dc64d5f6903fe8f8caae55a0431",
+  "vertices": 20,
+  "quads": 13,
+  "triangles": 26,
+  "dimensions": [
+    0.9827486276626587,
+    0.8636353015899658,
+    0.10171371698379517
+  ],
+  "textures": [
+    "shell.png: 512px",
+    "disc.png: 256px"
+  ]
+}

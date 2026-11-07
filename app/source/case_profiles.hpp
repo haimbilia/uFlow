@@ -37,6 +37,8 @@ inline Size For(std::string id, std::string launcher={}, std::string extensions=
     // the older landscape generic sleeve as well as the new portrait strip.
     if(is("n64",".z64") || extensions.find(".v64")!=std::string::npos || extensions.find(".n64")!=std::string::npos)return {178,125,30,true,false};
     if(is("gba",".gba"))return {127,127,25};
+    if(id=="ps1"||id=="playstation"||launcher=="ps1")return {142,125,10};
+    if(id=="gb"||id=="gbc"||id=="gameboy"||id=="gameboycolor"||extensions.find(".gb")!=std::string::npos)return {127,127,25};
     if(is("pce",".pce"))return {142,125,10};
     if(is("msx",".mx1") || extensions.find(".mx2")!=std::string::npos)return {135,190,25};
     return {};

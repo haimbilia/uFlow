@@ -59,7 +59,14 @@ inline bool SdRelativeWithSuffix(const std::string &path,const char *suffix) {
 inline bool RetroArchCorePath(const std::string &path){return SdRelativeWithSuffix(path,".rpx");}
 inline bool RetroArchBundlePath(const std::string &path){return SdRelativeWithSuffix(path,".wuhb");}
 inline const std::vector<LauncherModule> &InstalledLauncherModules() {static const auto modules=DiscoverLauncherModules();return modules;}
-inline const LauncherModule *FindLauncherModule(const std::string &id) {for(const auto &m:InstalledLauncherModules())if(m.id==id)return &m;return nullptr;}
+// Shared protocol is part of Core, independent of system preset manifests.
+inline constexpr const char *kSharedRetroArchModule="retroarch";
+inline const LauncherModule *FindLauncherModule(const std::string &id) {
+    static const LauncherModule retroarch=[] {LauncherModule m;m.id=kSharedRetroArchModule;m.name="RetroArch";m.version="1.0.0";
+        m.protocol=kRetroArchProtocol;m.contentBundle="wiiu/apps/retroarch.wuhb";return m;}();
+    if(id==kSharedRetroArchModule)return &retroarch;
+    for(const auto &m:InstalledLauncherModules())if(m.id==id)return &m;return nullptr;
+}
 inline std::vector<LauncherDefinition> MergeLauncherModules(std::vector<LauncherDefinition> list) {
     list.erase(std::remove_if(list.begin(),list.end(),[](const auto &l){return l.kind==LauncherKind::VirtualConsole;}),list.end());
     for(const auto &m:InstalledLauncherModules()) {

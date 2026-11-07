@@ -1,0 +1,26 @@
+{
+  "source_sha256": "d88cc162eb2204d47119ed9a9424b5907f69fbecba9e053c2dcf55941982ead2",
+  "selected_solid": 48,
+  "source_triangles": 6850,
+  "dimensions_mm": [
+    135.00000000000009,
+    84.98500000000003,
+    20.000000000000004
+  ],
+  "levels": [
+    {
+      "name": "snes-cart",
+      "triangles": 1000,
+      "vertices": 502,
+      "watertight": true,
+      "volume_change_percent": 0.022820947462509622
+    },
+    {
+      "name": "snes-cart-small",
+      "triangles": 600,
+      "vertices": 302,
+      "watertight": true,
+      "volume_change_percent": 0.1993211333681355
+    }
+  ]
+}

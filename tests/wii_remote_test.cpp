@@ -2,8 +2,8 @@
 #include <cassert>
 #include <cstdio>
 
-static std::array<KPADStatus,4> samples{};
-static std::array<KPADError,4> errors{};
+static std::array<KPADStatus,7> samples{};
+static std::array<KPADError,7> errors{};
 uint32_t KPADReadEx(KPADChan channel, KPADStatus *out, uint32_t count, KPADError *error) {
     assert(count==1);
     *out=samples[channel]; *error=errors[channel];
@@ -37,8 +37,17 @@ int main() {
     samples[2].pro.trigger=WPAD_PRO_BUTTON_A|WPAD_PRO_TRIGGER_R;
     input={}; remote.Merge(input,1300); assert(input.hold==(VPAD_BUTTON_RIGHT|VPAD_BUTTON_L));
     assert(input.trigger==(VPAD_BUTTON_A|VPAD_BUTTON_R));
+    // Bloopair exposes a PS4 controller as a Pro Controller. A GamePad
+    // press must survive both the connection sample and later idle samples.
+    input={VPAD_BUTTON_UP,VPAD_BUTTON_B};remote.Merge(input,1301);
+    assert(input.hold==(VPAD_BUTTON_UP|VPAD_BUTTON_RIGHT|VPAD_BUTTON_L));
+    assert(input.trigger==(VPAD_BUTTON_B|VPAD_BUTTON_A|VPAD_BUTTON_R));
+    samples[2].pro.hold=samples[2].pro.trigger=0;
+    input={VPAD_BUTTON_UP,VPAD_BUTTON_A};remote.Merge(input,1302);
+    assert(input.hold==VPAD_BUTTON_UP && input.trigger==VPAD_BUTTON_A);
     samples[2].pro.leftStick={-1,1};samples[2].pro.rightStick={1,-1};
     input={};remote.Merge(input,1310);
+    assert(input.leftStick.x==-1 && input.leftStick.y==1 && input.rightStick.x==1 && input.rightStick.y==-1);
     assert((input.hold&(StickButton::Left|StickButton::Up|StickButton::RRight|StickButton::RDown))==(StickButton::Left|StickButton::Up|StickButton::RRight|StickButton::RDown));
     assert((input.trigger&StickButton::RDown)!=0);
     input={};remote.Merge(input,1320);assert((input.trigger&StickButton::RDown)==0);
@@ -80,6 +89,35 @@ int main() {
     input={}; remote.Merge(input,1748); assert(input.hold==0 && input.trigger==0);
     puts("PASS: Wii Remote mappings, no GamePad, repeat samples, expiry, disconnect, merge, reset");
     puts("PASS: Nunchuk stick/deadzone/hysteresis, C/Z, MotionPlus, detachment and errors");
+    errors.fill(KPAD_ERROR_NO_SAMPLES);
+    errors[0]=errors[6]=KPAD_ERROR_OK;
+    samples[0]={}; samples[6]={};
+    samples[0].extensionType=samples[6].extensionType=WPAD_EXT_PRO_CONTROLLER;
+    samples[0].pro.hold=WPAD_PRO_BUTTON_A;
+    samples[6].pro.hold=WPAD_PRO_BUTTON_RIGHT;
+    samples[6].pro.leftStick={.75f,0};
+    input={};remote.Merge(input,1800);
+    assert((input.hold&VPAD_BUTTON_A)&&(input.hold&VPAD_BUTTON_RIGHT));
+    assert(input.leftStick.x==.75f);
+    errors.fill(KPAD_ERROR_NO_SAMPLES);
+    input={};remote.Merge(input,1816);assert(input.leftStick.x==.75f && !input.trigger);
+    input={};remote.Merge(input,1900);assert(!input.hold && input.leftStick.x==0);
+    DashboardInputRouter router;
+    using Source=DashboardInputRouter::Source;
+    assert(router.Select(0,true,false,false,true,true)==Source::Remote);
+    assert(router.Select(1,true,true,true,true,false)==Source::GamePad);
+    assert(router.Select(2,true,false,false,true,false)==Source::GamePad);
+    assert(router.Select(3,true,false,false,true,true)==Source::Remote);
+    assert(router.Select(4,true,true,true,true,true)==Source::GamePad);
+    router.Arm();
+    router.Select(5,true,false,false,true,false);
+    router.Select(155,true,false,false,true,false);
+    assert(router.Select(156,true,true,true,true,false)==Source::GamePad && router.Allowed());
+    router.Arm();
+    router.Select(160,false,false,false,false,false);
+    router.Select(310,false,false,false,false,false);
+    assert(router.Select(311,false,false,false,true,true)==Source::Remote && router.Allowed());
+    puts("PASS: PS4 reconnect, GamePad takeover, held remote, simultaneous presses and independent HOME release");
     InputResumeGate gate;
     assert(gate.Allows(0,false)); // normal use has no gate
     gate.Arm();

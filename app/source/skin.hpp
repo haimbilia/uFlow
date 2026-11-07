@@ -1,4 +1,6 @@
 #pragma once
+#include "skin_layout.hpp"
+#include "saved_file.hpp"
 #include <algorithm>
 #include <array>
 #include <dirent.h>
@@ -10,6 +12,7 @@
 namespace Skin {
 struct Definition {
     std::string id,name,root,backgroundImage;
+    SkinLayout::Document layout;
     int engine=2,avatarX=60,avatarY=38,avatarSize=54,dockX=350,dockY=546,dockGap=116;
     int rowX=100,rowY=322,tileSize=256,gridColumns=9,gridRows=3,gridTop=180,gridHeight=320;
     bool gridFullscreen=true;
@@ -28,7 +31,7 @@ inline bool Read(const std::string &root,const std::string &id,Definition &d) {
         try {
             if(k=="version")version=v=="1";
             else if(k=="name"&&v.size()<=60)d.name=v;
-            else if(k=="engine")d.engine=v=="pixel"?0:v=="glass"?1:v=="switch-dark"?3:2;
+            else if(k=="engine"){if(v!="layout"&&v!="pixel"&&v!="glass"&&v!="uforce"&&v!="switch-dark"&&v!="switch-light")return false;d.engine=v=="layout"?5:v=="pixel"?0:v=="glass"?1:v=="uforce"?4:v=="switch-dark"?3:2;}
             else if(k=="background_image"&&SafeAsset(v))d.backgroundImage=root+"/"+v;
             else if(k.rfind("icon_",0)==0){int i=std::stoi(k.substr(5));if(i>=0&&i<6&&SafeAsset(v))d.icons[i]=root+"/"+v;}
             else if(k=="background"||k=="ink"||k=="muted"||k=="accent") {
@@ -51,15 +54,15 @@ inline bool Read(const std::string &root,const std::string &id,Definition &d) {
             else if(k=="dock_gap")d.dockGap=std::clamp(std::stoi(v),70,120);
         }catch(...){}
     }
-    return version;
+    return version && (d.engine!=5 || SkinLayout::Read(root+"/layout.json",d.layout));
 }
 inline std::vector<Definition> Discover(const std::string &bundled,const std::string &user) {
     std::vector<Definition> list;
-    for(const char *id:{"pixel","glass","switch-light","switch-dark"}){Definition d;if(Read(bundled+"/"+id,id,d))list.push_back(d);}
+    for(const char *id:{"pixel","glass"}){Definition d;if(Read(bundled+"/"+id,id,d))list.push_back(d);}
     if(DIR *dir=opendir(user.c_str())) {
         std::vector<std::string> names;while(const auto *e=readdir(dir))if(e->d_name[0]!='.')names.push_back(e->d_name);closedir(dir);
         std::sort(names.begin(),names.end());
-        for(const auto &id:names){Definition d;if(!Read(user+"/"+id,id,d))continue;
+        for(const auto &id:names){Definition d;std::string root=user+"/"+id,release;auto current=SavedFile::Open(root+"/current");if(current){std::getline(current,release);if(release.empty()||release.size()>100||release.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-.")!=release.npos||release=="."||release=="..")continue;root+="/releases/"+release;}if(!Read(root,id,d))continue;
             auto old=std::find_if(list.begin(),list.end(),[&](const auto &s){return s.id==id;});if(old==list.end())list.push_back(d);else *old=d;}
     }
     if(list.empty()){Definition d;d.id="fallback";d.name="Default";list.push_back(d);}

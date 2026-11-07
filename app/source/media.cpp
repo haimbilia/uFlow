@@ -1,8 +1,11 @@
 #include "library.hpp"
+#include "media_filename.hpp"
+#include "media_name_match.hpp"
 #include "library_tabs.hpp"
 #include "browser_path.hpp"
 #include "directory_entry.hpp"
 #include "saved_file.hpp"
+#include "../vendor/picojson/picojson.h"
 #include <cerrno>
 #include "rom_art.hpp"
 #include <algorithm>
@@ -11,6 +14,7 @@
 #include <dirent.h>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <sys/stat.h>
 
@@ -18,7 +22,7 @@ namespace {
 constexpr const char *kRoot = "fs:/vol/external01/wiiu/apps/uFlow";
 constexpr const char *kConfig = "fs:/vol/external01/wiiu/apps/uFlow/media_sources.cfg";
 constexpr const char *kRefresh = "fs:/vol/external01/wiiu/apps/uFlow/media-refresh.pending";
-constexpr std::array<const char *,kMediaTypeCount> kKinds{"covers","fullcovers","backgrounds","logos","previews","metadata","back","spine","media"};
+constexpr std::array<const char *,kMediaTypeCount> kKinds{"covers","fullcovers","backgrounds","logos","previews","metadata","back","spine","media","labels"};
 std::string Lower(std::string s) {
     for (auto &c:s) c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
@@ -39,10 +43,10 @@ std::string Key(std::string s) {
     if (!out.empty() && out.back()=='_') out.pop_back();
     return out;
 }
-struct Asset { int library; std::string path; std::string libraryId; };
+struct Asset { int library; std::string path; std::string libraryId; std::string name,compact; };
 using Index=std::array<std::map<std::string,std::vector<Asset>>,kMediaTypeCount>;
 bool ExtensionMatches(MediaType type,const std::string &extension) {
-    if (type==MediaType::Metadata) return extension=="ini";
+    if (type==MediaType::Metadata) return extension=="json" || extension=="ini";
     if (type==MediaType::Preview) return extension=="mp4" || extension=="avi" || extension=="mov";
     return extension=="png" || extension=="tga" || extension=="jpg" || extension=="jpeg";
 }
@@ -52,10 +56,16 @@ std::string DefaultPath(const MediaSource &source) {
     return source.path+"/"+source.defaultFile;
 }
 std::string FindAsset(const std::vector<Asset> &assets,const GameEntry &game) {
-    for(const auto &asset:assets) if(!asset.libraryId.empty() && asset.libraryId==game.libraryId) return asset.path;
-    for(const int library:{static_cast<int>(game.platform),-1})
-        for(const auto &asset:assets) if(asset.libraryId.empty() && asset.library==library) return asset.path;
-    return {};
+    auto wanted=MediaNameMatch::RegionMask(game.name);
+    if(!wanted)wanted=MediaNameMatch::RegionMask(game.region,false);
+    int bestScope=-1,bestRegion=-1;std::string result;
+    for(const auto &asset:assets){
+        const int scope=!asset.libraryId.empty()?(asset.libraryId==game.libraryId?2:-1):(asset.library==int(game.platform)?1:asset.library==-1?0:-1);
+        const int region=MediaNameMatch::RegionRank(wanted,MediaNameMatch::RegionMask(asset.name));
+        if(scope<0||region<0)continue;
+        if(scope>bestScope||(scope==bestScope&&region>bestRegion)){bestScope=scope;bestRegion=region;result=asset.path;}
+    }
+    return result;
 }
 void IndexDirectory(Index &index,const MediaSource &source,const std::string &path,int depth,const ScanObserver &progress,std::size_t games) {
     if(progress)progress({"INDEXING ARTWORK",path,games,0,0});
@@ -80,8 +90,16 @@ void IndexDirectory(Index &index,const MediaSource &source,const std::string &pa
             if(full==DefaultPath(source)) continue; // A chosen fallback is not a game-specific match.
             const auto dot=name.find_last_of('.');
             if (dot==std::string::npos || !ExtensionMatches(source.type,Lower(name.substr(dot+1)))) continue;
-            const auto key=Key(name.substr(0,dot));
-            if (!key.empty()) index[static_cast<int>(source.type)][key].push_back({source.library,full,source.libraryId});
+            const auto stem=name.substr(0,dot), id=MediaFilename::Id(stem);
+            // Named downloads retain an exact ID so different releases never share artwork.
+            const auto key=Key(id.empty()?stem:id);
+            if (!key.empty()) {
+                Asset asset{source.library,full,source.libraryId};
+                if(id.empty()&&!MediaFilename::TitleId(stem)){
+                    asset.name=Lower(stem);asset.compact=MediaNameMatch::Compact(Key(stem));
+                }
+                index[static_cast<int>(source.type)][key].push_back(std::move(asset));
+            }
         }
     }
 }
@@ -94,10 +112,70 @@ std::string Find(const Index &index,MediaType type,const GameEntry &game) {
         const auto path=FindAsset(found->second,game);
         if(!path.empty()) return path;
     }
-    return {};
+    const auto query=MediaNameMatch::SearchTitle(game.name,game.publisher,game.developer);
+    const auto compact=MediaNameMatch::Compact(Key(query));
+    const auto edition=MediaNameMatch::Edition(query);
+    auto wantedRegion=MediaNameMatch::RegionMask(game.name);
+    if(!wantedRegion)wantedRegion=MediaNameMatch::RegionMask(game.region,false);
+    int best=0,second=0,bestScope=-1;std::string winner,name;
+    for(const auto&[key,assets]:index[static_cast<int>(type)])for(const auto&asset:assets){
+        if(asset.compact.empty())continue; // An explicit title ID is authoritative, never fuzzy.
+        const int scope=!asset.libraryId.empty()?(asset.libraryId==game.libraryId?2:-1):(asset.library==int(game.platform)?1:asset.library==-1?0:-1);
+        if(scope<0)continue;
+        if(MediaNameMatch::RegionRank(wantedRegion,MediaNameMatch::RegionMask(asset.name))<0)continue;
+        const int score=MediaNameMatch::Score(compact,asset.compact);if(score<89)continue;
+        if(asset.name==name){if(scope>bestScope){winner=asset.path;bestScope=scope;}continue;}
+        if(score>best){second=best;best=score;name=asset.name;winner=asset.path;bestScope=scope;}
+        else second=std::max(second,score);
+    }
+    if(best<94||best-second<6)return {};
+    // Check the winning original name, not its region/punctuation-normalized key.
+    if(MediaNameMatch::Edition(name)!=edition)return {};
+    return winner;
 }
 void Metadata(GameEntry &game,const std::string &path,bool missingOnly=false) {
-    std::ifstream input(path);
+    std::ifstream input(path,std::ios::binary);
+    if(Lower(path).ends_with(".json")) {
+        // Bound external metadata before parsing; malformed input leaves fields intact.
+        input.seekg(0,std::ios::end);const auto size=input.tellg();
+        if(size<=0 || size>1024*1024)return;
+        input.seekg(0);std::string data(static_cast<size_t>(size),'\0');
+        if(!input.read(data.data(),size))return;
+        if(data.starts_with("\xef\xbb\xbf"))data.erase(0,3);
+        picojson::value parsed;
+        if(!picojson::parse(parsed,data).empty() || !parsed.is<picojson::object>())return;
+        const auto &root=parsed.get<picojson::object>();
+        const auto entry=root.find("details");
+        const auto &details=entry!=root.end() && entry->second.is<picojson::object>()?entry->second.get<picojson::object>():root;
+        const auto text=[](const picojson::value &v)->std::string {
+            if(v.is<std::string>())return v.get<std::string>();
+            if(v.is<double>())return v.to_str();
+            if(v.is<picojson::array>()){
+                std::string out;
+                for(const auto &item:v.get<picojson::array>())if(item.is<std::string>()){
+                    if(!out.empty())out+=", ";out+=item.get<std::string>();
+                }
+                return out;
+            }
+            return {};
+        };
+        const auto assign=[&](std::string &target,std::initializer_list<const char*> keys,bool year=false){
+            if(missingOnly && !target.empty())return;
+            for(const auto *key:keys){
+                auto it=details.find(key);if(it==details.end())continue;
+                auto value=text(it->second);if(value.empty()||value.find('\0')!=std::string::npos)continue;
+                if(year){if(value.size()<4||!std::all_of(value.begin(),value.begin()+4,[](char c){return c>='0'&&c<='9';}))continue;value.resize(4);}
+                target=std::move(value);return;
+            }
+        };
+        if(game.name.empty()){auto it=root.find("title");if(it!=root.end())game.name=text(it->second);}
+        assign(game.description,{"description"});assign(game.publisher,{"publisher"});assign(game.developer,{"developer"});
+        assign(game.genre,{"genres","genre"});assign(game.region,{"region"});assign(game.rating,{"age_rating","rating"});
+        assign(game.releaseYear,{"release_date","year"},true);assign(game.players,{"max_players","players"});
+        return;
+    }
+    // Keep reading existing SD metadata; new catalog downloads use JSON only.
+
     std::string line;
     while (std::getline(input,line)) {
         const auto pos=line.find('=');
@@ -116,6 +194,23 @@ void Metadata(GameEntry &game,const std::string &path,bool missingOnly=false) {
         if(target && (!missingOnly || target->empty())) *target=value;
     }
 }
+}
+
+void ApplyMediaPatch(GameEntry &game,const GameEntry &patch,unsigned mask){
+    std::string* targets[]={&game.coverPath,&game.fullCoverPath,&game.backgroundPath,&game.logoPath,&game.previewPath,&game.metadataPath,&game.backCoverPath,&game.spinePath,&game.physicalMediaPath,&game.cartridgeLabelPath};
+    const std::string* values[]={&patch.coverPath,&patch.fullCoverPath,&patch.backgroundPath,&patch.logoPath,&patch.previewPath,&patch.metadataPath,&patch.backCoverPath,&patch.spinePath,&patch.physicalMediaPath,&patch.cartridgeLabelPath};
+    for(int i=0;i<kMediaTypeCount;++i)if(mask&(1u<<i))*targets[i]=*values[i];
+    if((mask&(1u<<int(MediaType::Cover)))&&!game.coverPath.empty()&&game.fullCoverPath==game.defaultSleevePath)game.fullCoverPath.clear();
+    if(mask&(1u<<int(MediaType::Metadata))){
+        game.description=patch.description;game.publisher=patch.publisher;game.developer=patch.developer;
+        game.genre=patch.genre;game.region=patch.region;game.rating=patch.rating;game.releaseYear=patch.releaseYear;game.players=patch.players;
+    }
+    if(game.sourceMedia){GameEntry source=game;SetGameMedia(source,*game.sourceMedia);source.sourceMedia.reset();ApplyMediaPatch(source,patch,mask);game.sourceMedia=std::make_shared<GameMedia>(CaptureGameMedia(source));}
+}
+void ReadMediaFile(GameEntry &game,MediaType type,const std::string &path){
+    if(type==MediaType::Metadata){game.metadataPath=path;Metadata(game,path);return;}
+    std::string* targets[]={&game.coverPath,&game.fullCoverPath,&game.backgroundPath,&game.logoPath,&game.previewPath,&game.metadataPath,&game.backCoverPath,&game.spinePath,&game.physicalMediaPath,&game.cartridgeLabelPath};
+    if(int(type)>=0&&int(type)<kMediaTypeCount)*targets[int(type)]=path;
 }
 
 bool MediaFileMatches(MediaType type,const std::string &path) {
@@ -151,7 +246,7 @@ std::vector<std::string> ListMediaFiles(const std::string &path,MediaType type,c
     return directories;
 }
 const char *MediaTypeName(MediaType type) {
-    constexpr const char *names[]={"FRONT COVERS","FULL SLEEVES","BACKGROUNDS","LOGOS","GAMEPLAY VIDEOS","METADATA","BACK COVERS","SPINES","DISCS / CARTRIDGES"};
+    constexpr const char *names[]={"FRONT COVERS","FULL SLEEVES","BACKGROUNDS","LOGOS","GAMEPLAY VIDEOS","METADATA","BACK COVERS","SPINES","DISCS / CARTRIDGES","CARTRIDGE LABELS"};
     const int value=static_cast<int>(type);
     return value>=0 && value<kMediaTypeCount ? names[value] : "UNKNOWN";
 }
@@ -221,8 +316,8 @@ std::vector<MediaSource> LoadMediaSources() {
     for(const auto &sleeve:configured) if(sleeve.type==MediaType::FullCover) {
         const auto slash=sleeve.path.find_last_of('/');
         if(slash==std::string::npos)continue;
-        for(const auto &[type,folder]:std::array<std::pair<MediaType,const char *>,4>{{
-                {MediaType::Cover,"front"},{MediaType::BackCover,"back"},{MediaType::Spine,"spine"},{MediaType::PhysicalMedia,"media"}}}) {
+        for(const auto &[type,folder]:std::array<std::pair<MediaType,const char *>,5>{{
+                {MediaType::Cover,"front"},{MediaType::BackCover,"back"},{MediaType::Spine,"spine"},{MediaType::PhysicalMedia,"media"},{MediaType::CartridgeLabel,"labels"}}}) {
             const auto path=sleeve.path.substr(0,slash)+"/"+folder;
             struct stat info{};
             if(stat(path.c_str(),&info) || !S_ISDIR(info.st_mode))continue;
@@ -237,11 +332,33 @@ bool MediaRefreshNeeded() {
     struct stat info{};
     return stat(kRefresh,&info)==0;
 }
-bool RequestMediaRefresh() {
-    mkdir(kRoot,0777);
-    std::ofstream output(kRefresh);output<<"pending\n";output.close();
-    return !output.fail();
+namespace {
+std::set<std::string> PendingMediaScopes() {
+    std::ifstream input(kRefresh);std::string line;std::set<std::string> scopes;
+    while(std::getline(input,line)) {
+        if(line=="pending" || line=="*")return {"*"};
+        if(line.rfind("id:",0)==0 || line.rfind("platform:",0)==0)scopes.insert(line);
+        else return {"*"}; // Older or incomplete marker: preserve full-refresh behavior.
+    }
+    if(MediaRefreshNeeded() && scopes.empty())return {"*"};
+    return scopes;
 }
+bool QueueMediaScopes(std::set<std::string> scopes) {
+    const auto previous=PendingMediaScopes();scopes.insert(previous.begin(),previous.end());
+    if(scopes.contains("*"))scopes={"*"};
+    mkdir(kRoot,0777);
+    const std::string temporary=std::string(kRefresh)+".tmp";
+    std::ofstream output(temporary);for(const auto &scope:scopes)output<<scope<<'\n';output.close();
+    if(output.fail() || !SavedFile::Commit(temporary,kRefresh)){std::remove(temporary.c_str());return false;}
+    return true;
+}
+bool SourceMatches(const MediaSource &s,const GameEntry &g){
+    return !s.libraryId.empty()?s.libraryId==g.libraryId:
+        s.library==-1||s.library==static_cast<int>(g.platform);
+}
+}
+bool MediaRefreshIsScoped() {const auto scopes=PendingMediaScopes();return !scopes.empty()&&!scopes.contains("*");}
+bool RequestMediaRefresh() { return QueueMediaScopes({"*"}); }
 void CompleteMediaRefresh() { std::remove(kRefresh); }
 bool SaveMediaSources(const std::vector<MediaSource> &sources) {
     for (const auto &source:sources) {
@@ -252,15 +369,22 @@ bool SaveMediaSources(const std::vector<MediaSource> &sources) {
             (!source.defaultFile.empty() && !MediaFileMatches(source.type,source.defaultFile))) return false;
     }
     const auto previous=LoadMediaSources();
-    const bool matchingChanged=previous.size()!=sources.size() ||
-        !std::equal(previous.begin(),previous.end(),sources.begin(),sources.end(),[](const auto &a,const auto &b){
-            return a.type==b.type && a.library==b.library && a.libraryId==b.libraryId &&
-                a.enabled==b.enabled && a.depth==b.depth && a.path==b.path && a.defaultFile==b.defaultFile;
-        });
-    // Playback options are read live. Artwork edits only mark media matching
-    // pending, including across restart; they never invalidate the game catalog.
+    const auto same=[](const auto &a,const auto &b){
+        return a.type==b.type && a.library==b.library && a.libraryId==b.libraryId &&
+            a.enabled==b.enabled && a.depth==b.depth && a.path==b.path && a.defaultFile==b.defaultFile;
+    };
+    std::set<std::string> changed;
+    const auto mark=[&](const MediaSource &s){if(s.enabled)changed.insert(!s.libraryId.empty()?"id:"+s.libraryId:
+        s.library<0?"*":"platform:"+std::to_string(s.library));};
+    for(const auto &s:previous)if(std::none_of(sources.begin(),sources.end(),[&](const auto &v){return same(s,v);}))mark(s);
+    for(const auto &s:sources)if(std::none_of(previous.begin(),previous.end(),[&](const auto &v){return same(s,v);}))mark(s);
+    // Reordering changes priority even when every source is otherwise identical.
+    if(changed.empty() && previous.size()==sources.size() && !std::equal(previous.begin(),previous.end(),sources.begin(),same))
+        for(const auto &s:sources)mark(s);
     mkdir(kRoot,0777);
-    if(matchingChanged && !RequestMediaRefresh())return false;
+    // Persist the union before the config: an interrupted save may refresh extra
+    // content, but can never lose a previously queued refresh.
+    if(!changed.empty() && !QueueMediaScopes(changed))return false;
     const std::string temporary=std::string(kConfig)+".tmp";
     std::ofstream output(temporary,std::ios::trunc);
     for (const auto &source:sources) {
@@ -308,7 +432,7 @@ void EnrichLibraryMedia(std::vector<GameEntry> &games,const ScanObserver &progre
     Index index;
     std::array<std::vector<Asset>,kMediaTypeCount> defaults;
     std::map<std::string,std::array<float,2>> layouts;
-    for (const auto &source:scopedSources?*scopedSources:LoadMediaSources()) if (source.enabled) {
+    for (const auto &source:scopedSources?*scopedSources:LoadMediaSources()) if (source.enabled && std::any_of(games.begin(),games.end(),[&](const auto &g){return SourceMatches(source,g);})) {
         IndexDirectory(index,source,source.path,source.depth,progress,games.size());
         const auto path=DefaultPath(source);
         struct stat info{};
@@ -340,10 +464,12 @@ void EnrichLibraryMedia(std::vector<GameEntry> &games,const ScanObserver &progre
         const auto background=Find(index,MediaType::Background,game);
         if (!background.empty()) game.backgroundPath=background;
         game.logoPath=Find(index,MediaType::Logo,game);
+        game.cartridgeLabelPath=Find(index,MediaType::CartridgeLabel,game);
         game.physicalMediaPath=Find(index,MediaType::PhysicalMedia,game);
         if(game.physicalMediaPath.empty())game.physicalMediaPath=FindAsset(defaults[static_cast<int>(MediaType::PhysicalMedia)],game);
         game.previewPath=Find(index,MediaType::Preview,game);
         const auto metadata=Find(index,MediaType::Metadata,game);
+        game.metadataPath=metadata;
         Metadata(game,metadata.empty()?FindAsset(defaults[static_cast<int>(MediaType::Metadata)],game):metadata,metadata.empty());
         // Extract only from the source cartridge/disc, never the injected donor.
         // Runs during scanning and is cached; rendering never reads ROM data.
@@ -369,7 +495,7 @@ void ApplyContentTypeMedia(std::vector<GameEntry> &games,const std::vector<Libra
     std::map<std::string,std::vector<size_t>> groups;
     for(size_t i=0;i<games.size();++i){
         RestoreSourceMedia(games[i]);
-        const auto id=DesiredMediaLibrary(games[i],libraries);
+        const auto id=games[i].platform==Platform::WiiU&&games[i].installPackages.empty()?GameLibraryId(games[i]):DesiredMediaLibrary(games[i],libraries);
         if(id!=games[i].libraryId)groups[id].push_back(i);
     }
     if(groups.empty())return;
@@ -380,6 +506,30 @@ void ApplyContentTypeMedia(std::vector<GameEntry> &games,const std::vector<Libra
         std::vector<MediaSource> scoped;
         for(const auto &s:sources)if(s.enabled && (s.libraryId==id ||
             (s.libraryId.empty()&&definition->parser!=Platform::Files&&s.library==static_cast<int>(definition->parser))))scoped.push_back(s);
+        if(!definition->mediaByContentType){
+            // Shared game artwork is intentional; shared platform placeholders
+            // are not. Resolve defaults only, without scanning game directories.
+            for(auto i:indices){auto &game=games[i];
+                game.sourceMedia=std::make_shared<GameMedia>(CaptureGameMedia(game));
+                game.defaultMediaLibraryId=id;
+                if(!game.defaultSleevePath.empty())for(auto *part:{&game.coverPath,&game.fullCoverPath,&game.backCoverPath,&game.spinePath})
+                    if(*part==game.defaultSleevePath)part->clear();
+                for(const auto &source:sources)if(source.enabled&&SourceMatches(source,game)&&IsCoverMedia(source.type)){
+                    const auto path=DefaultPath(source);if(path.empty())continue;
+                    for(auto *part:{&game.coverPath,&game.fullCoverPath,&game.backCoverPath,&game.spinePath})if(*part==path)part->clear();
+                }
+                game.defaultSleevePath.clear();game.defaultBackEnd=game.defaultFrontStart=0;
+                for(const auto &source:scoped)if(source.type==MediaType::FullCover){
+                    const auto path=DefaultPath(source);struct stat info{};
+                    if(path.empty()||stat(path.c_str(),&info)||!S_ISREG(info.st_mode))continue;
+                    game.defaultSleevePath=path;
+                    std::ifstream layout(path+".layout");std::string magic;uint64_t bytes=0;float back=0,front=0;
+                    if(layout>>magic>>bytes>>back>>front&&magic=="UFLOW-SLEEVE-1"&&bytes==uint64_t(info.st_size)&&back>0&&back<front&&front<1){game.defaultBackEnd=back;game.defaultFrontStart=front;}
+                    break;
+                }
+            }
+            continue;
+        }
         std::vector<GameEntry> variants;
         for(auto i:indices){auto variant=games[i];variant.libraryId=id;variant.platform=definition->parser;
             SetGameMedia(variant,{});variants.push_back(std::move(variant));}
@@ -392,8 +542,28 @@ void ApplyContentTypeMedia(std::vector<GameEntry> &games,const std::vector<Libra
             if(appearance.background.empty())appearance.background=game.backgroundPath;
             if(appearance.logo.empty())appearance.logo=game.logoPath;
             if(appearance.physical.empty())appearance.physical=game.physicalMediaPath;
+            if(appearance.cartridgeLabel.empty())appearance.cartridgeLabel=game.cartridgeLabelPath;
             if(appearance.video.empty())appearance.video=game.previewPath;
-            SetGameMedia(game,appearance);game.mediaLibraryId=id;
+            SetGameMedia(game,appearance);game.mediaLibraryId=id;game.defaultMediaLibraryId=id;
         }
     }
+}
+
+void RefreshPendingLibraryMedia(std::vector<GameEntry> &games,const std::vector<LibraryDefinition> &libraries,const ScanObserver &progress){
+    const auto scopes=PendingMediaScopes();
+    std::vector<size_t> indices;std::vector<GameEntry> affected;
+    for(size_t i=0;i<games.size();++i){
+        const auto &g=games[i];const auto desired=DesiredMediaLibrary(g,libraries);
+        bool match=scopes.empty()||scopes.contains("*")||scopes.contains("id:"+g.libraryId)||
+            scopes.contains("id:"+desired)||scopes.contains("id:"+g.mediaLibraryId)||
+            scopes.contains("platform:"+std::to_string(static_cast<int>(g.platform)))||
+            (!g.installPackages.empty()&&scopes.contains("id:wiiu"))||
+            desired!=(g.mediaLibraryId.empty()?g.libraryId:g.mediaLibraryId);
+        for(const auto &l:libraries)if(l.id==desired && scopes.contains("platform:"+std::to_string(static_cast<int>(l.parser))))match=true;
+        if(match){indices.push_back(i);affected.push_back(g);}
+    }
+    if(affected.empty())return;
+    RefreshLibraryMedia(affected,progress);
+    ApplyContentTypeMedia(affected,libraries,progress);
+    for(size_t i=0;i<indices.size();++i)games[indices[i]]=std::move(affected[i]);
 }

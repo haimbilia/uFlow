@@ -3,9 +3,10 @@
 #include <string>
 namespace UFlowUpdate {
 #ifndef UFLOW_UPDATE_SEQUENCE
-#define UFLOW_UPDATE_SEQUENCE 2026102303ULL
+#define UFLOW_UPDATE_SEQUENCE 2026110700ULL
 #endif
 inline constexpr uint64_t BuildSequence=UFLOW_UPDATE_SEQUENCE;
+inline constexpr const char *ReleaseVersion="2026.11.7";
 inline constexpr const char *BaseURL="https://karotech.io/updates/uFlow/";
 enum class State {Idle,Checking,Available,Downloading,Installing,Handoff,Success,Error};
 inline constexpr const char *HelperPath="fs:/vol/external01/wiiu/apps/uFlow/cache/update/install-helper.rpx";

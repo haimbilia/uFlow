@@ -18,7 +18,7 @@ inline std::string System(const std::string &product, bool wiiContainer=false,
         case 'J':return "snes";
         case 'N':return "n64";
         case 'D':return "ds";
-        case 'M':return "msx";
+        case 'M':return product[7]=='N'?"msx":"wiiu"; // MN is MSX; MC includes Pikmin movies.
         // P is shared by GBA and PC Engine; PN is the PC Engine family.
         case 'P':return product[7]=='N'?"pce":"gba";
         case 'V':return "wii";

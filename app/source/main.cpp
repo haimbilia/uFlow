@@ -1,4 +1,13 @@
+#include "prepared_models.hpp"
+#include "number_repeat.hpp"
+#include "ps1_jewel.hpp"
+#include "disc_model.hpp"
+#include "cardboard_box.hpp"
 #include "library.hpp"
+#include "nes_cartridge.hpp"
+#include "snes_cartridge.hpp"
+#include "cartridge_models.hpp"
+#include <map>
 #include <ctime>
 #include "library_sort.hpp"
 #include "browser_path.hpp"
@@ -14,6 +23,9 @@
 #include "preparation_progress.hpp"
 #include "update_model.hpp"
 #include "diagnostics.hpp"
+#include "frame_profile.hpp"
+#include "settings_writer.hpp"
+#include "controller_manager.hpp"
 #ifndef UFLOW_HOST_PREVIEW
 #include "updater.hpp"
 #endif
@@ -25,6 +37,7 @@
 #include "wii_vc.hpp"
 #include "return_to_uflow.hpp"
 #include "settings.hpp"
+#include "settings_help.hpp"
 #include "binding_capture.hpp"
 #include "touch_swipe.hpp"
 #include "case_model.hpp"
@@ -35,10 +48,13 @@
 #include "glass_ttf.h"
 #include "switch_ttf.h"
 #include "skin.hpp"
+#include "skin_effects.hpp"
+#include "skin_surface.hpp"
 #include "user_statistics.hpp"
 #include "visual_check.hpp"
 #include "thread_diagnostics.hpp"
 #include "glass_material.hpp"
+#include "wiiu_menu_material.hpp"
 #include "cover_transition.hpp"
 #include "browse_motion.hpp"
 #include "artwork_worker.hpp"
@@ -52,6 +68,7 @@
 #include "glass_background.hpp"
 #include "media_groups.hpp"
 #include "library_tabs.hpp"
+#include "navigation_default_sleeve.hpp"
 #include "text_utf8.hpp"
 #include "retroarch_args.hpp"
 
@@ -64,6 +81,7 @@
 #include <coreinit/time.h>
 #include <coreinit/systeminfo.h>
 #include <gx2/event.h>
+#include <gx2/state.h>
 #include <png.h>
 #include <rpxloader/rpxloader.h>
 #include <sysapp/launch.h>
@@ -131,6 +149,7 @@ struct CachedTexture { TextureInfo info; Uint32 lastUse = 0; std::size_t bytes =
 struct SmoothTextEntry { SDL_Texture *texture = nullptr; int width = 0; int height = 0; Uint32 lastUse = 0; };
 std::array<TTF_Font *, 6> gSmoothFonts{},gAlternateFonts{};
 bool gSwitchFont=false;
+bool gMenuFont=false;
 void SetSwitchFont(bool enabled){if(enabled!=gSwitchFont){gSmoothFonts.swap(gAlternateFonts);gSwitchFont=enabled;}}
 std::unordered_map<std::string, SmoothTextEntry> gSmoothTextCache;
 bool gSmoothText = false;
@@ -141,6 +160,7 @@ struct PopupTextGlowScope {
     ~PopupTextGlowScope(){gPopupTextGlow=previous;}
 };
 GlassMaterial gGlassMaterial;
+WiiUMenuMaterial gWiiUMenuMaterial;
 SDL_Texture *gGlassBackdrop = nullptr; // never aliases the active render target
 bool gGlassOverVideo = false;
 bool gGlassTextHalo = false;
@@ -284,6 +304,7 @@ float SmoothTextScale(int scale) {
 
 void ShutdownSmoothFonts() {
     gGlassMaterial.Clear();
+    gWiiUMenuMaterial.Clear();
     if (gStockMenuSymbols) SDL_DestroyTexture(gStockMenuSymbols);
     if (gEllipseShadow) SDL_DestroyTexture(gEllipseShadow);
     gStockMenuSymbols = gEllipseShadow = nullptr;
@@ -403,6 +424,21 @@ void FillRoundedRect(SDL_Renderer *renderer, SDL_Rect rect, int radius, Color co
     }
     SDL_RenderGeometry(renderer, nullptr, vertices.data(), static_cast<int>(vertices.size()),
                        indices.data(), static_cast<int>(indices.size()));
+}
+
+// Pixel-symmetric corners for compact controls; each pixel is blended once.
+void FillControlRoundedRect(SDL_Renderer *renderer,SDL_Rect rect,int radius,Color color) {
+    radius=std::clamp(radius,0,std::min(rect.w,rect.h)/2);
+    SetColor(renderer,color);
+    SDL_Rect middle{rect.x,rect.y+radius,rect.w,rect.h-2*radius};
+    if(middle.h>0)SDL_RenderFillRect(renderer,&middle);
+    for(int y=0;y<radius;++y){
+        const float dy=radius-y-.5f;
+        const int inset=int(std::ceil(radius-std::sqrt(radius*radius-dy*dy)-.5f));
+        SDL_Rect rows[]={{rect.x+inset,rect.y+y,rect.w-2*inset,1},
+                         {rect.x+inset,rect.y+rect.h-1-y,rect.w-2*inset,1}};
+        SDL_RenderFillRects(renderer,rows,2);
+    }
 }
 
 void FillVerticalGradient(SDL_Renderer *renderer, SDL_Rect rect, Color top, Color bottom,
@@ -633,13 +669,45 @@ static std::string ExtensionLower(const std::string &path) {
     return LowerCopy(path.substr(dot));
 }
 
+// Model preferences belong to the displayed content type. An injection's
+// launch source and cached artwork directory may still be native Wii U.
+static std::string GameModelLibraryId(const GameEntry &game){
+    if(!game.navigationLibraryId.empty())return game.navigationLibraryId;
+    return game.mediaLibraryId.empty()?GameLibraryId(game):game.mediaLibraryId;
+}
+static bool MediaUsesBoxModel(const GameEntry &game,const std::vector<LibraryDefinition> &libraries){
+    const auto id=GameModelLibraryId(game);
+    for(const auto &library:libraries)if(library.id==id)return library.mediaModel=="auto";
+    return true;
+}
+static std::string GamePreparedModel(const GameEntry &game,const std::vector<LibraryDefinition> &libraries,bool media){
+    const auto id=GameModelLibraryId(game);
+    const LibraryDefinition *definition=nullptr;
+    for(const auto &library:libraries)if(library.id==id){definition=&library;break;}
+    if(definition){const auto &choice=media?definition->mediaModel:definition->boxModel;if(choice!="auto")return choice;}
+    if(media){const auto box=GamePreparedModel(game,libraries,false);return box=="auto"?"dvd":box;}
+    if(!media){
+        std::string system=id;
+        for(const auto &l:libraries)if(l.id==id){
+            for(const char *cart:{"nes","snes","n64","gba","gb","gbc","32x"})
+                if(l.id==cart||l.launcherId==std::string(cart)+"-vc"||l.launcherId==std::string(cart)+"-retroarch")return "cardboard";
+            const auto &e=l.extensions;
+            if(e.find(".nes")!=std::string::npos||e.find(".sfc")!=std::string::npos||e.find(".smc")!=std::string::npos||e.find(".z64")!=std::string::npos||e.find(".n64")!=std::string::npos||e.find(".v64")!=std::string::npos||e.find(".gba")!=std::string::npos||e==".gb"||e==".gbc"||e==".32x")return "cardboard";
+        }
+        for(const char *cart:{"nes","snes","n64","gba","gb","gbc","32x"})if(system==cart)return "cardboard";
+    }
+    return id=="ps1"||id=="playstation"?"ps1-jewel":"auto";
+}
 static CaseProfile CaseProfileForGame(const GameEntry &game, const std::vector<LibraryDefinition> &libraries) {
-    const auto &id=game.mediaLibraryId.empty()?game.libraryId:game.mediaLibraryId;
+    const auto id=GameModelLibraryId(game);
+    const auto model=GamePreparedModel(game,libraries,false);
+    if(model=="jewel"||model=="ps1-jewel")return {142,125,14};
     for(const auto &library:libraries) if(library.id==id) {
         const auto preset=CaseProfiles::For(library.id,library.launcherId,library.extensions);
         return {static_cast<float>(library.caseWidthMm),static_cast<float>(library.caseHeightMm),
-                static_cast<float>(library.caseThicknessMm),preset.sidewaysSleeve,preset.sidewaysDefaultSleeve};
+                static_cast<float>(library.caseThicknessMm),model!="dvd"&&preset.sidewaysSleeve,preset.sidewaysDefaultSleeve};
     }
+    if(model=="dvd")return {135,190,14};
     const auto size=CaseProfiles::For(id,{},ExtensionLower(game.absolutePath));
     return {static_cast<float>(size.width),static_cast<float>(size.height),
             static_cast<float>(size.thickness),size.sidewaysSleeve,size.sidewaysDefaultSleeve};
@@ -683,7 +751,8 @@ void DrawGlassSurface(SDL_Renderer *renderer, SDL_Rect rect, int radius, Color a
         SDL_RenderGeometry(renderer,gGlassBackdrop,mesh.data(),(columns+1)*(rows+1),indices.data(),index);
     }
     // A light accent wash leaves the refracted background and white bevel clear.
-    FillRoundedRect(renderer,rect,radius,{accent.r,accent.g,accent.b,static_cast<Uint8>(opacity/5*reveal)});
+    FillRoundedRect(renderer,rect,radius,{246,250,247,static_cast<Uint8>(opacity*.42f*reveal)});
+    FillRoundedRect(renderer,rect,radius,{accent.r,accent.g,accent.b,static_cast<Uint8>(opacity/16*reveal)});
     gGlassMaterial.Draw(renderer, rect, false,static_cast<Uint8>(std::min(255,160+opacity)*reveal));
 }
 
@@ -888,7 +957,7 @@ void DrawText(SDL_Renderer *renderer, const std::string &text, int x, int y, int
     if(!gPopupTextGlow && gGlassOverVideo && color.r<160 && color.g<175 && color.b<190)
         color={241,248,253,color.a};
     if (UseSmoothText(text, scale)) {
-        const std::string key = std::to_string(gSwitchFont) + ":" + std::to_string(scale) + ":" + std::to_string(color.r) + ":" +
+        const std::string key = std::to_string(gSwitchFont) + ":" + std::to_string(gMenuFont) + ":" + std::to_string(scale) + ":" + std::to_string(color.r) + ":" +
                                 std::to_string(color.g) + ":" + std::to_string(color.b) + ":" + text;
         auto found = gSmoothTextCache.find(key);
         if (found == gSmoothTextCache.end()) {
@@ -986,10 +1055,10 @@ bool ValidArtworkSize(int width, int height) {
            static_cast<std::size_t>(width) * static_cast<std::size_t>(height) <= kMaxArtworkPixels;
 }
 int ArtworkDivisor(int width,int height,int targetEdge=0) {
-    // Bound source work separately from texture memory. Decode large scans to
-    // a smaller surface; never allocate a full-size RGBA copy of them.
-    if(width<=0 || height<=0 || width>8192 || height>8192 ||
-       static_cast<std::uint64_t>(width)*height>16*1024*1024) return 0;
+    // Source pixels do not determine texture allocation. Stream PNG rows and
+    // use JPEG DCT scaling (up to 1/8), retaining at most a 2048-edge surface.
+    // 16384 source edge is the JPEG 1/8 scaling ceiling for that output size.
+    if(width<=0 || height<=0 || width>16384 || height>16384) return 0;
     int divisor=1;
     while(!ValidArtworkSize((width+divisor-1)/divisor,(height+divisor-1)/divisor)) divisor*=2;
     if(targetEdge>0) divisor=std::max(divisor,std::max(width,height)/targetEdge);
@@ -1016,7 +1085,7 @@ SDL_Surface *LoadPng(const std::string &path,int targetEdge=0) {
     }
     png_init_io(png, file);
     png_set_sig_bytes(png, 8);
-    png_set_user_limits(png,8192,8192);
+    png_set_user_limits(png,16384,16384);
     png_read_info(png, info);
     const png_uint_32 width = png_get_image_width(png, info);
     const png_uint_32 height = png_get_image_height(png, info);
@@ -1236,13 +1305,20 @@ public:
     ~TextureCache() { worker_.reset(); Clear(); }
     void BeginFrame() { pending_.clear(); urgentThumbnails_.clear(); }
     std::uint64_t Revision() const {return revision_;}
+    std::uint64_t AssetRevision(const std::string &path) const {
+        if(path.empty())return 0;
+        auto value=clearRevision_;
+        for(const auto &key:{path,CoverKey(path,false),CoverKey(path,true)})
+            if(const auto it=assetRevisions_.find(key);it!=assetRevisions_.end())value=std::max(value,it->second);
+        return value;
+    }
     std::size_t Count() const { return textures_.size()+resident_.size(); }
     std::size_t Bytes() const { return bytes_+residentBytes_; }
     std::size_t Pending() const { return pending_.size(); }
     std::size_t ResidentCount() const { return resident_.size(); }
     std::size_t ResidentBytes() const { return residentBytes_; }
     bool NativeCovers() const { return packedCovers_.load(); }
-    int SharpLookAhead() const { return NativeCovers()?40:12; }
+    int SharpLookAhead() const { return 12; }
     // Every displayed cover gets a bounded resident thumbnail. Detailed artwork
     // uses the ordinary LRU and cannot evict these browsing fallbacks.
     // Preparation is asynchronous, including when the user skips its progress screen.
@@ -1259,6 +1335,7 @@ public:
     std::size_t IconsDone() const { return warmPaths_.size()-warming_.size(); }
     bool PreparingIcons() const { return !warming_.empty(); }
 #ifdef UFLOW_HOST_PREVIEW
+    static void UseNativeCoverRoutingForTest(){packedCovers_.store(true);}
     static unsigned SourceDecodes() { return sourceDecodes_.load(); }
     static bool CheckNativeCoverCache(const std::string &source) {
         const std::string path="native-cover-cache-check.jpg";
@@ -1269,39 +1346,34 @@ public:
         packedCovers_.store(true);
         const auto before=sourceDecodes_.load();
         auto *first=DecodeCover(path,1024);
-        if(!first || !CoverTextureCache::Packed(first))return false;
-        const unsigned w=CoverTextureCache::Width(first),h=CoverTextureCache::Height(first);
-        const bool dimensions=w && h && std::max(w,h)<=1024;
-        SDL_FreeSurface(first);
-        if(!dimensions || sourceDecodes_!=before+1 || !std::filesystem::is_regular_file(cached))return false;
+        if(!first || CoverTextureCache::Packed(first) || std::max(first->w,first->h)>1024)return false;
+        if(std::filesystem::exists(cached))return false;
+        // Seed an existing native cache to prove upgrades keep using it.
+        auto *packed=CoverTextureCache::Build(first,cached,1024);
+        SDL_FreeSurface(first);if(!packed)return false;SDL_FreeSurface(packed);
         auto *second=DecodeCover(path,1024);
-        if(!second || !CoverTextureCache::Packed(second))return false;SDL_FreeSurface(second);
-        if(sourceDecodes_!=before+1)return false;
-        const auto readBefore=CoverTextureCache::payloadBytesRead.load();
-        auto *thumb=Decode(std::string(kThumbnailPrefix)+"128|"+path);
-        if(!thumb || CoverTextureCache::Packed(thumb) || thumb->w>128 || thumb->h>128)return false;
-        SDL_FreeSurface(thumb);if(sourceDecodes_!=before+1)return false;
-        if(CoverTextureCache::payloadBytesRead-readBefore>48*1024)return false;
-        SDL_Log("Native preload payload: %zu bytes (full cache: %zu bytes)",
-            CoverTextureCache::payloadBytesRead.load()-readBefore,std::size_t(std::filesystem::file_size(cached)));
+        if(!second || !CoverTextureCache::Packed(second))return false;
+        SDL_FreeSurface(second);if(sourceDecodes_!=before+1)return false;
         auto *near=Decode(std::string(kNearbyPrefix)+path);
-        if(!near || !CoverTextureCache::Packed(near) || std::max(CoverTextureCache::Width(near),CoverTextureCache::Height(near))>512)return false;
-        SDL_FreeSurface(near);if(sourceDecodes_!=before+1)return false;
+        if(!near || CoverTextureCache::Width(near)!=1024)return false;
+        SDL_FreeSurface(near);
+        // Reproduce the previous 512px payload stored under the 1024 key.
+        auto *sourceSmall=DecodeSource(path,512);
+        auto *oldCache=CoverTextureCache::Build(sourceSmall,cached,512);
+        SDL_FreeSurface(sourceSmall);if(oldCache)SDL_FreeSurface(oldCache);
+        auto *upgraded=DecodeCover(path,1024);
+        if(!upgraded || CoverTextureCache::Packed(upgraded) || upgraded->w!=1024)return false;
+        SDL_FreeSurface(upgraded);
         auto *detail=DecodeCover(path,2048);
-        if(!detail || !CoverTextureCache::Packed(detail))return false;SDL_FreeSurface(detail);
-        if(sourceDecodes_!=before+2)return false;
+        if(!detail || CoverTextureCache::Packed(detail))return false;
+        SDL_FreeSurface(detail);
+        if(std::filesystem::exists(file+".native2048"))return false;
         FILE *broken=std::fopen(cached.c_str(),"wb");if(!broken)return false;
         std::fputs("bad",broken);std::fclose(broken);
         auto *repaired=DecodeCover(path,1024);
-        if(!repaired || !CoverTextureCache::Packed(repaired))return false;SDL_FreeSurface(repaired);
-        if(sourceDecodes_!=before+3)return false;
-        std::remove(cached.c_str());
-        auto *coldNearby=Decode(std::string(kNearbyPrefix)+path);
-        if(!coldNearby)return false;SDL_FreeSurface(coldNearby);
-        auto *coldFull=DecodeCover(path,1024);
-        if(!coldFull || CoverTextureCache::Width(coldFull)!=w || CoverTextureCache::Height(coldFull)!=h)return false;
-        SDL_FreeSurface(coldFull);if(sourceDecodes_!=before+4)return false;
-        SDL_Log("PASS: native compressed cover decode, cache reuse, preload mips, independent detail cache, corruption recovery");
+        if(!repaired || CoverTextureCache::Packed(repaired))return false;
+        SDL_FreeSurface(repaired);
+        SDL_Log("PASS: cold native covers skip compression, warm BC3 cache reused, spines use 1024px sleeves, corrupt cache falls back to source");
         return true;
     }
     static bool CheckThumbnailCache(const std::string &source) {
@@ -1349,6 +1421,7 @@ public:
         pinnedBackground_=path.empty()?std::string():std::string(kBackgroundPrefix)+path;
     }
     void SetCoverDetail(bool enabled) { highDetail_=enabled; }
+    void SetThumbnailView(bool enabled) { thumbnailView_=enabled; }
     void PinCover(const std::string &path) { if(path!=pinnedCover_)lastCoverChange_=SDL_GetTicks(); pinnedCover_=path; nearbyCovers_.clear(); }
     void PinNearbyCover(const std::string &path) {
         if(!path.empty() && nearbyCovers_.size()<6)nearbyCovers_.push_back(path);
@@ -1366,9 +1439,20 @@ public:
         return HasTexture(CoverKey(path,detail)) || (detail && HasTexture(CoverKey(path,false))) ||
             (resident_.contains(path) && resident_.at(path).texture);
     }
+    // Match the texture actually used for resting console cases, including
+    // the native nearby-cover tier. Focused cases still wait for full detail.
+    bool RenderCoverKnown(const std::string &path,bool detail) const {
+        detail=detail && highDetail_;
+        return CoverDetailKnown(path,detail) || (!detail && NativeCovers() && DetailKnown(std::string(kNearbyPrefix)+path));
+    }
+    bool HasRenderCover(const std::string &path,bool detail) const {
+        detail=detail && highDetail_;
+        return HasCover(path,detail) || (!detail && NativeCovers() && HasTexture(std::string(kNearbyPrefix)+path));
+    }
     TextureInfo GetCover(const std::string &path,bool detail) {
         detail=detail && highDetail_;
         if(path.empty())return {};
+        if(thumbnailView_ && !highDetail_)return GetBrowseThumbnail(path);
         // The next/previous originals are already decoded: use them during the
         // approach animation too, before the selected styling threshold flips.
         if(detail || path==pinnedCover_ || std::find(nearbyCovers_.begin(),nearbyCovers_.end(),path)!=nearbyCovers_.end()) {
@@ -1384,7 +1468,7 @@ public:
             auto result=Get(std::string(kNearbyPrefix)+path);
             if(result.texture)return result;
             const auto fallback=resident_.find(path);
-            return fallback!=resident_.end()?fallback->second:result;
+            return fallback!=resident_.end()?fallback->second:GetBrowseThumbnail(path);
         }
         auto result=Get(CoverKey(path,detail));
         if(detail && CoverDetailKnown(path,true) && result.texture && textures_.at(CoverKey(path,true)).info.texture)return result;
@@ -1402,9 +1486,12 @@ public:
             }
         }
         const auto found=resident_.find(path);
-        return found!=resident_.end()?found->second:result;
+        return found!=resident_.end()?found->second:GetBrowseThumbnail(path);
     }
     void PrefetchCover(const std::string &path,bool detail,bool distant=false) {
+        if(path.empty())return;
+        const auto smallKey=std::string(kBrowseThumbnailPrefix)+path;
+        if(thumbnailView_ && !highDetail_) {Prefetch(smallKey);return;}
         if(distant && NativeCovers()) {
             if(!HasTexture(CoverKey(path,false)))Prefetch(path.empty()?path:std::string(kNearbyPrefix)+path);
             return;
@@ -1418,6 +1505,40 @@ public:
         }
         Prefetch(CoverKey(path,detail));
     }
+    TextureInfo GetBrowseThumbnail(const std::string &path) {
+        if(path.empty())return {};
+        const auto small=Get(std::string(kBrowseThumbnailPrefix)+path);
+        if(small.texture)return small;
+        const auto resident=resident_.find(path);
+        return resident!=resident_.end()?resident->second:small;
+    }
+    TextureInfo GetShelf(const std::string &path) {
+        return path.empty()?TextureInfo{}:Get(std::string(kShelfPrefix)+path);
+    }
+    void PrefetchShelf(const std::string &path) {
+        if(!path.empty())Prefetch(std::string(kShelfPrefix)+path);
+    }
+#ifdef UFLOW_HOST_PREVIEW
+    static bool CheckShelfCache(const std::string &path) {
+        const auto job=std::string(kShelfPrefix)+path;
+        auto *first=Decode(job);if(!first)return false;
+        const bool bounded=first->w<=256&&first->h<=256;SDL_FreeSurface(first);
+        const auto count=SourceDecodes();auto *second=Decode(job);
+        const bool reused=second&&SourceDecodes()==count;
+        if(second)SDL_FreeSurface(second);
+        for(bool native:{false,true}) {
+            const bool previous=packedCovers_.exchange(native);
+            auto *small=Decode(std::string(kBrowseThumbnailPrefix)+path);
+            const bool valid=small&&small->w<=512&&small->h<=512;
+            if(small)SDL_FreeSurface(small);
+            const auto before=SourceDecodes();small=Decode(std::string(kBrowseThumbnailPrefix)+path);
+            const bool cached=small&&SourceDecodes()==before;
+            if(small)SDL_FreeSurface(small);packedCovers_.store(previous);
+            if(!valid||!cached)return false;
+        }
+        return bounded&&reused;
+    }
+#endif
     TextureInfo GetBackground(const std::string &path) {
         return path.empty()?TextureInfo{}:Get(std::string(kBackgroundPrefix)+path);
     }
@@ -1481,18 +1602,14 @@ public:
                 displayWritten_.insert(source);
                 std::erase(displayWrites_,source);
             }
-            else if(ready.path.starts_with(kPreparePrefix)) {
-                if(ready.surface)SDL_FreeSurface(ready.surface);
-                ++idleCoverCursor_;
-            }
             else if (ready.path.starts_with(kThumbnailPrefix)) {
                 const auto path=ready.path.substr(ready.path.find('|')+1);
                 if(!resident_.contains(path)) Upload(path,ready.surface,true);
                 else { warming_.erase(path); if(ready.surface) SDL_FreeSurface(ready.surface); }
             }
             else if (!textures_.contains(ready.path)) {
-                if(!packedCovers_.load() && ready.surface && ready.path.starts_with(kBrowsePrefix)) {
-                    const auto source=ready.path.substr(std::strlen(kBrowsePrefix));
+                if(ready.surface && !CoverTextureCache::Packed(ready.surface) && (ready.path.starts_with(kBrowsePrefix) || ready.path.starts_with(kNearbyPrefix))) {
+                    const auto source=ready.path.substr(std::strlen(ready.path.starts_with(kBrowsePrefix)?kBrowsePrefix:kNearbyPrefix));
                     if(!displayWritten_.contains(source) && std::find(displayWrites_.begin(),displayWrites_.end(),source)==displayWrites_.end()) {
                         if(displayWrites_.size()>=64)displayWrites_.erase(displayWrites_.begin());
                         displayWrites_.push_back(source);
@@ -1505,13 +1622,13 @@ public:
         }
     }
     void Clear() {
-        ++revision_;
+        clearRevision_=++revision_;assetRevisions_.clear();
         if (worker_) worker_->Reset();
         for (auto &[unused, cached] : textures_) if (cached.info.texture) SDL_DestroyTexture(cached.info.texture);
         textures_.clear();
         for (auto &[unused, info]:resident_) if(info.texture) SDL_DestroyTexture(info.texture);
         resident_.clear(); residentBytes_=0;
-        warmPaths_.clear(); warming_.clear(); warmCursor_=0;idleCoverCursor_=0;
+        warmPaths_.clear(); warming_.clear(); warmCursor_=0;
         pending_.clear();urgentThumbnails_.clear();displayWrites_.clear();displayWritten_.clear();
         pinnedBackground_.clear();
         pinnedCover_.clear();
@@ -1524,13 +1641,13 @@ private:
     static constexpr std::size_t kMaxBytes = 96 * 1024 * 1024;
     // Leave room for detailed artwork and the hardware video workspace.
     static constexpr std::size_t kResidentBytes = 48 * 1024 * 1024;
-    std::size_t idleCoverCursor_=0;
     Uint32 lastCoverChange_=0;
     static constexpr const char *kDisplayWritePrefix="@uflow-write-display:";
     std::vector<std::string> displayWrites_;
     std::unordered_set<std::string> displayWritten_;
-    static constexpr const char *kPreparePrefix="@uflow-prepare-cover:";
     static constexpr const char *kThumbnailPrefix = "@uflow-thumbnail:";
+    static constexpr const char *kBrowseThumbnailPrefix="@uflow-browse-thumbnail:";
+    static constexpr const char *kShelfPrefix = "@uflow-shelf:";
     static constexpr const char *kBackgroundPrefix = "@uflow-background:";
     static constexpr const char *kBrowsePrefix = "@uflow-browse-cover:";
     static constexpr const char *kNearbyPrefix = "@uflow-nearby-cover:";
@@ -1574,9 +1691,19 @@ private:
         return file.empty()?file:file+".thumb"+std::to_string(edge);
     }
     static SDL_Surface *Decode(const std::string &path) {
-        if(path.starts_with(kNearbyPrefix))return DecodeCover(path.substr(std::strlen(kNearbyPrefix)),512);
+        if(path.starts_with(kShelfPrefix) || path.starts_with(kBrowseThumbnailPrefix)) {
+            const bool shelf=path.starts_with(kShelfPrefix);
+            const unsigned edge=shelf?256:512;
+            const auto source=path.substr(std::strlen(shelf?kShelfPrefix:kBrowseThumbnailPrefix));
+            const auto file=CoverDisplayCache::File(source,edge);
+            if(auto *ready=CoverDisplayCache::Read(file,edge))return ready;
+            // Cards never prepare/compress a full-size cover, even on GX2.
+            auto *small=DecodeSource(source,edge);
+            if(small)CoverDisplayCache::Save(file,small);
+            return small;
+        }
+        if(path.starts_with(kNearbyPrefix))return DecodeCover(path.substr(std::strlen(kNearbyPrefix)),1024);
         if(path.starts_with(kDisplayWritePrefix))return DecodeCover(path.substr(std::strlen(kDisplayWritePrefix)),1024,false,true);
-        if(path.starts_with(kPreparePrefix))return DecodeCover(path.substr(std::strlen(kPreparePrefix)),1,true);
         // Cached mip levels keep side cards sharp without decoding whole scans.
         if(path.starts_with(kBrowsePrefix) || path.starts_with(kDetailPrefix)) {
             const bool detail=path.starts_with(kDetailPrefix);
@@ -1599,10 +1726,8 @@ private:
                 const auto file=CoverTextureCache::File(sourcePath);
                 if(!file.empty())packed=CoverTextureCache::Read(file+".native1024",edge);
                 if(!packed)packed=CoverTextureCache::Read(file,edge);
-                if(!packed) {
-                    auto *sharp=DecodeCover(sourcePath,1024);if(sharp)SDL_FreeSurface(sharp);
-                    if(!file.empty())packed=CoverTextureCache::Read(file+".native1024",edge);
-                }
+                // Cold preload icons must not generate a full native cover.
+                // Sharp textures are prepared only when the layout requests them.
             }
             if(!packed)packed=CoverTextureCache::Read(thumb,edge);
             if(!packed)packed=CoverTextureCache::Read(CoverTextureCache::File(sourcePath),edge);
@@ -1628,11 +1753,23 @@ private:
         if(packedCovers_.load() && !prepareOnly) {
             const auto original=CoverTextureCache::File(path);
             const auto cached=original.empty()?std::string():original+(edge>1024?".native2048":".native1024");
-            if(auto *ready=CoverTextureCache::Read(cached,edge))return ready;
-            if(auto *ready=CoverTextureCache::Read(original,edge))return ready;
-            auto *decoded=DecodeSource(path,edge>1024?2048:1024);if(!decoded)return nullptr;
-            auto *ready=CoverTextureCache::Build(decoded,cached,edge);SDL_FreeSurface(decoded);
-            return ready;
+            // Older nearby requests wrote 512px data into .native1024. Do not
+            // mistake that cache (or an undersized legacy cache) for sharp art.
+            for(const auto &candidate:{cached,original}) {
+                if(auto *ready=CoverTextureCache::Read(candidate,edge)) {
+                    if(std::max(CoverTextureCache::Width(ready),CoverTextureCache::Height(ready))>=edge)return ready;
+                    SDL_FreeSurface(ready);
+                }
+            }
+            // Never BC3-compress a cold scan on the visible artwork queue.
+            // Warm native caches stay fast; misses use bounded RGBA immediately.
+            // Persisting display textures is an idle-only job below.
+            const auto display=CoverDisplayCache::File(path,edge);
+            if(auto *ready=CoverDisplayCache::Read(display,edge))return ready;
+            if(!persist)return DecodeSource(path,edge);
+            auto *decoded=DecodeSource(path,edge);
+            if(decoded)CoverDisplayCache::Save(display,decoded);
+            return decoded;
         }
         const auto display=CoverDisplayCache::File(path,edge);
         if(!prepareOnly)if(auto *ready=CoverDisplayCache::Read(display,edge))return ready;
@@ -1687,7 +1824,7 @@ private:
     }
     TextureInfo Load(const std::string &path) { return Upload(path, Decode(path)); }
     TextureInfo Upload(const std::string &path, SDL_Surface *surface,bool thumbnail=false) {
-        ++revision_;
+        assetRevisions_[path]=++revision_;
         TextureInfo result;
         std::size_t bytes = 0;
         if(CoverTextureCache::Packed(surface)) {
@@ -1734,8 +1871,10 @@ private:
         textures_[path] = {result, SDL_GetTicks(), bytes};
         return result;
     }
-    std::uint64_t revision_=0;
+    std::uint64_t revision_=0,clearRevision_=0;
+    std::unordered_map<std::string,std::uint64_t> assetRevisions_;
     bool highDetail_=true;
+    bool thumbnailView_=false;
     SDL_Renderer *renderer_;
     std::unique_ptr<ArtworkWorker> worker_;
     std::unordered_map<std::string, CachedTexture> textures_;
@@ -1751,7 +1890,7 @@ private:
 };
 
 class Dashboard {
-    enum class DraftExit { None, Editor, Text, Category, Settings, Support };
+    enum class DraftExit { None, Editor, Text, Category, Settings, Support, Controllers };
 public:
     Dashboard(SDL_Renderer *renderer, std::vector<GameEntry> &games)
         : renderer_(renderer), games_(games), textures_(renderer), preferences_(LoadSettings()),
@@ -1807,7 +1946,7 @@ public:
         tab_ = StartupLibraryIndex(LibraryTabs(),preferences_);
         if(preferences_.startLibrary.empty())preferences_.startLibrary=CurrentLibraryId();
         visualTab_ = static_cast<float>(tab_);
-        RebuildVisible();
+        RebuildVisible(true);
         PrepareBuiltInIcons();
 #ifndef UFLOW_HOST_PREVIEW
         startupIntroPending_=preferences_.startupVideo;
@@ -1815,6 +1954,11 @@ public:
         ApplyMusic();
 #endif
     }
+    static uint64_t ProfileClock(){return uint64_t(1000000.0*SDL_GetPerformanceCounter()/SDL_GetPerformanceFrequency());}
+    void ProfileControllerInput(bool proSample,bool padSample,bool padTrigger,bool padAccepted){
+        frameProfile_.ControllerInput(proSample,padSample,padTrigger,padAccepted);
+    }
+    void ProfileInput(uint64_t elapsed){profileInputUs_=elapsed;}
     ~Dashboard() {
 #ifndef UFLOW_HOST_PREVIEW
         if(networkInitialized_)ACFinalize();
@@ -1824,12 +1968,18 @@ public:
         browserWorker_.reset(); // join directory I/O before storage teardown
         video_.Stop();detailsVideo_.Stop();
         glassBackground_.Stop();
-        FlushSettingsSave(true);
+        FinishSettingsSave();
+#ifndef UFLOW_HOST_PREVIEW
+        frameProfile_.Write("fs:/vol/external01/wiiu/apps/uFlow/frame-profile.log");
+#endif
         music_.Stop();
         menuSounds_.Stop();
         ClearSideCases();
         for (auto *texture : caseTextures_) if (texture) SDL_DestroyTexture(texture);
         if (bookshelfTexture_) SDL_DestroyTexture(bookshelfTexture_);
+        if (mediaMovingTexture_) SDL_DestroyTexture(mediaMovingTexture_);
+        for(auto &entry:mediaSpines_)SDL_DestroyTexture(entry.second.texture);
+        for(auto &entry:mediaCards_)SDL_DestroyTexture(entry.second.texture);
         if (lensTexture_) SDL_DestroyTexture(lensTexture_);
         if (blurScratch_) SDL_DestroyTexture(blurScratch_);
         if (blurTexture_) SDL_DestroyTexture(blurTexture_);
@@ -1839,14 +1989,15 @@ public:
         if (startupFrame_) SDL_DestroyTexture(startupFrame_);
     }
 
-    void ReplaceGames(std::vector<GameEntry> games) {
+    void ReplaceGames(std::vector<GameEntry> games,bool keepArtwork=false) {
+
         StopVideo(); videoSelection_ = nullptr; videoTrigger_.Focus("");
-        ClearSideCases();
+        if(!keepArtwork)ClearSideCases();
         detailsBackdropReady_ = false;
         coverInspectOpen_ = coverInspectBack_ = false;
         coverInspectProgress_ = coverInspectBackProgress_ = 0.f;
-        textures_.Clear(); games_ = std::move(games); RefreshInstallStatus(); selected_ = 0; visualSelected_ = 0.0f; RebuildVisible();
-        PrepareBuiltInIcons();
+        if(!keepArtwork)textures_.Clear(); games_ = std::move(games); RefreshInstallStatus(); selected_ = 0; visualSelected_ = 0.0f; RebuildVisible(!mediaRefresh_);
+        if(!keepArtwork)PrepareBuiltInIcons();
     }
     void PrepareBuiltInIcons() {
         if (!preferences_.preloadBuiltInCovers) return;
@@ -1931,7 +2082,7 @@ public:
         settingsSidebar_=screen=="settings";
         settingsEditing_=false;
         defaultFileBrowser_=false;
-        launcherEditor_=launcherBrowse_=false;vcMapMode_=0;typeManager_=typeEditor_=typeText_=false;
+        launcherEditor_=launcherBrowse_=false;vcMapMode_=0;boxColorOpen_=false;typeManager_=typeEditor_=typeText_=false;
         if(screen.rfind("launcher",0)==0){settings_=true;settingsCategory_=5;launcherRow_=0;
             if(screen!="launchers"){launcherEditor_=true;launcherRow_=5;
                 // The built-in list no longer holds VC presets; build the DS injector page.
@@ -1987,11 +2138,6 @@ public:
         return true;
     }
     bool PreviewActive() const { return preview_; }
-    void IsolateVideo(bool enabled) {
-        // Authenticated A/B check only. Automatically restore the full UI;
-        // no saved preferences, files, decoder settings or clocks change.
-        videoIsolationUntil_=enabled?SDL_GetTicks()+45000:0;
-    }
     std::string VideoStats() const {
         const auto stats=video_.Statistics();
         const auto *game=Selected();
@@ -2049,7 +2195,63 @@ public:
         SDL_Log("Startup animation PASS: real packaged clip, single reveal, dissolve, library fade, decoder release and skip");
         return true;
     }
+    bool CheckSettingsHelp(const std::string &output){
+        if(!VisualPreview("settings"))return false;
+        settingsSidebar_=false;settingsCategory_=0;settingsRow_=10;preferences_.demoMode=false;
+        preferences_.alphabetFilterMode=false;settingsProgress_=1;
+        for(int skin=0;skin<4;++skin){preferences_.skin=skin;Render(0);
+            ToggleSettingsHelp();if(!settingsHelpOpen_||settingsHelpTitle_!="DEFAULT A-Z MODE"||settingsHelpBody_.find("Browse jumps")==std::string::npos)return false;
+            SettingsInput(1,1);if(settingsRow_!=10||preferences_.alphabetFilterMode)return false;
+            if(!Render(0,output+"-"+std::to_string(skin)+".png"))return false;
+            SettingsInput(0,0,false,true);if(settingsHelpOpen_||!settings_)return false;
+        }
+        FocusSettingsActions();SettingsInput(1,0);
+        if(settingsAction_!=3)return false;SettingsInput(0,0,true);if(!settingsHelpOpen_)return false;
+        SettingsInput(0,0,false,true);if(settingsAction_!=3)return false;settingsAction_=-1;
+        SettingsTouch(880,594);if(!settingsHelpOpen_)return false;SettingsTouch(900,490);if(settingsHelpOpen_)return false;
+        settingsCategory_=4;settingsRow_=int(ControlAction::SettingsHelp);ToggleSettingsHelp();
+        if(settingsHelpTitle_!="SETTINGS HELP")return false;ToggleSettingsHelp();
+        preferences_.bindings[int(ControlAction::SettingsHelp)]=0x1000;
+        if(!ButtonPressed(ControlAction::SettingsHelp,0x1000)||ButtonPressed(ControlAction::SettingsHelp,4))return false;
+        bindingCapture_=int(ControlAction::SettingsHelp);ToggleSettingsHelp();if(settingsHelpOpen_)return false;bindingCapture_=-1;
+        settingsCategory_=1;sourceManager_=true;typeManager_=typeEditor_=true;settingsSidebar_=false;settingsAction_=-1;
+        std::set<std::string> helpBodies;
+        for(typeRow_=0;typeRow_<15;++typeRow_){
+            ToggleSettingsHelp();
+            if(settingsHelpTitle_!=SettingsHelp::ContentTypeLabel(typeRow_) || settingsHelpBody_!=SettingsHelp::ContentTypeText(typeRow_))return false;
+            if(!helpBodies.insert(settingsHelpBody_).second)return false;
+            if(typeRow_==8 && !Render(0,output+"-media-model.png"))return false;
+            ToggleSettingsHelp();
+        }
+        typeManager_=typeEditor_=false;sourceManager_=false;launcherEditor_=true;launcherRow_=0;
+        ToggleSettingsHelp();if(settingsHelpTitle_!="NAME")return false;ToggleSettingsHelp();launcherEditor_=false;
+        SDL_Log("PASS: all 15 content-type fields have distinct contextual help, including models/view/layout; launcher help uses selected row");
+        ResetControlBindings(preferences_);return preferences_.bindings[int(ControlAction::SettingsHelp)]==4;
+    }
+    bool CheckGlassFooter(const std::string &output){
+        if(!VisualPreview("library"))return false;
+        preferences_.skin=1;preferences_.skinId="";
+        for(auto &binding:preferences_.bindings)binding=0;
+        for(auto &combos:preferences_.combos)combos.clear();
+        FocusSystemButtons();if(dockFocus_!=0)return false;
+        HomeNavigate(1,0,false,false);if(dockFocus_!=1)return false;
+        if(!Render(0,output+"-focused.png"))return false;
+        HomeNavigate(0,0,true,false);if(!details_)return false;CloseOverlay();
+        FocusSystemButtons();HomeNavigate(0,0,true,false);if(!ConsumeDetailsLaunch())return false;
+        FocusSystemButtons();FocusSystemButtons();if(dockFocus_!=-1)return false;
+        FocusSystemButtons();HomeNavigate(0,-1,false,false);if(dockFocus_!=-1)return false;
+        const auto power=GlassFooterRect(6);if(!HomeTouch(power.x+20,power.y+20)||!powerPrompt_||powerConfirm_)return false;
+        if(!Render(0,output+"-power.png"))return false;
+        HomeNavigate(0,0,true,false);if(powerPrompt_||ConsumeShutdown())return false;
+        HomeTouch(power.x+20,power.y+20);HomeNavigate(1,0,true,false);if(!ConsumeShutdown())return false;
+        ResetControlBindings(preferences_);return Render(0,output+"-bar.png");
+    }
     bool CheckAlphabet(const std::string &output) {
+        preferences_.alphabetFilterMode=true;OpenAlphabet();if(!alphabetModeFilter_)return false;
+        AlphabetInput(0,0,0,true,true,false,false);if(alphabetModeFilter_||!preferences_.alphabetFilterMode)return false;
+        OpenAlphabet();if(!alphabetModeFilter_)return false;
+        preferences_.alphabetFilterMode=false;alphabetOpen_=false;
+
         if(!VisualPreview("library"))return false;
         const auto fixture=games_.front();games_.assign(6,fixture);
         const char *names[]={"Alpha","  apple","Bomberman","Zelda","007 Legends","Mario"};
@@ -2065,14 +2267,14 @@ public:
         AlphabetInput(0,0,110,false,false,false,false);
         if(Selected()->name!="  apple" || visible_!=originalList)return false;
         OpenAlphabet();AlphabetInput(0,0,120,true,true,false,false);
-        if(!preferences_.alphabetFilterMode)return false;
+        if(!alphabetModeFilter_)return false;
         AlphabetInput(0,0,130,true,false,false,false,3);
         AlphabetInput(0,0,140,false,false,false,false);
         if(alphabetFilter_!=3 || visible_.size()!=1 || Selected()->name!="Bomberman")return false;
         OpenSearch();searchBuffer_="Alpha";ApplySearch();if(!visible_.empty())return false;
-        OpenAlphabet();AlphabetInput(0,0,150,true,false,false,false,0);AlphabetInput(0,0,160,false,false,false,false);
+        OpenAlphabet();if(alphabetModeFilter_)return false;AlphabetInput(0,0,149,true,true,false,false);AlphabetInput(0,0,150,true,false,false,false,0);AlphabetInput(0,0,160,false,false,false,false);
         if(alphabetFilter_ || visible_.size()!=1 || searchQuery_!="Alpha")return false;
-        OpenAlphabet(false);AlphabetInput(0,0,170,false,false,true,false,27);
+        OpenAlphabet(false);AlphabetInput(0,0,169,false,true,false,false);AlphabetInput(0,0,170,false,false,true,false,27);
         if(AlphabetOpen() || !visible_.empty())return false;
         FindOrClearSearch();if(alphabetFilter_ || searchQuery_!="Alpha" || visible_.size()!=1)return false;
         FindOrClearSearch();if(visible_.size()!=6)return false;
@@ -2081,14 +2283,14 @@ public:
         tab_=static_cast<int>(favorite-libraryTabs_.begin());RebuildVisible();
         OpenAlphabet();AlphabetInput(0,0,180,true,false,false,false,0);AlphabetInput(0,0,190,false,false,false,false);
         if(CurrentLibraryId()!=kFavoritesLibraryId || visible_.size()!=1)return false;
-        tab_=0;RebuildVisible();preferences_.alphabetFilterMode=false;alphabetChoice_=1;
+        tab_=0;RebuildVisible();alphabetModeFilter_=false;alphabetChoice_=1;
         OpenAlphabet();AlphabetInput(0,-1,200,true,false,false,false);if(alphabetChoice_!=27)return false;
         AlphabetInput(0,0,201,true,false,false,true);if(AlphabetOpen())return false;
         OpenAlphabet();if(alphabetChoice_!=27)return false;
         AlphabetInput(0,0,202,true,true,false,false);alphabetChoice_=0;AlphabetInput(0,-1,203,true,false,false,false);
         if(alphabetChoice_!=27)return false;
         for(int skin=0;skin<2;++skin)for(int mode=0;mode<2;++mode){
-            preferences_.skin=skin;preferences_.alphabetFilterMode=mode!=0;OpenAlphabet();
+            preferences_.skin=skin;OpenAlphabet();if(mode)AlphabetInput(0,0,209,true,true,false,false);
             alphabetChoice_=3;alphabetVisual_=3;alphabetProgress_=1;
             if(!Render(0,output+"-alphabet-"+std::to_string(skin)+"-"+std::to_string(mode)+".png"))return false;
             AlphabetInput(0,0,210,true,false,false,true);alphabetProgress_=0;
@@ -2236,12 +2438,12 @@ public:
         if(!preparationLogo_ || !preparationLogoGlow_)return false;
         int logoW=0,logoH=0;SDL_QueryTexture(preparationLogo_,nullptr,nullptr,&logoW,&logoH);
         if(logoW!=310 || logoH!=310)return false;
-        settingsCategory_=3;settingsRow_=12;audioSettings_=false;
+        settingsCategory_=3;settingsRow_=13;audioSettings_=false;
         preferences_.preloadBuiltInCovers=true;
-        if(SettingsRowCount()!=16 || !SettingsSelectorRow(12))return false;
+        if(SettingsRowCount()!=17 || !SettingsSelectorRow(13))return false;
         SettingsAdjust(1);if(preferences_.preloadBuiltInCovers)return false;
         SettingsAdjust(-1);if(!preferences_.preloadBuiltInCovers)return false;
-        settingsRow_=13;preferences_.startupVideo=true;
+        settingsRow_=14;preferences_.startupVideo=true;
         SettingsAdjust(1);if(preferences_.startupVideo || !preferences_.preloadBuiltInCovers)return false;
         SettingsAdjust(-1);if(!preferences_.startupVideo)return false;
         VisualPreview("settings");settingsCategory_=3;sourceManager_=false;settingsRow_=13;
@@ -2559,8 +2761,9 @@ public:
         SDL_Log("PASS: 198 MiB source working set, 33 focus changes with original-resolution neighbors, stable idle decode count, pinned focus/background, 96 MiB cache bound and cleanup");
         return true;
     }
+
     bool CheckArtworkPolish(const std::string &output) {
-        if(ArtworkDivisor(3260,1370)!=2 || ArtworkDivisor(9000,20)!=0 || ArtworkDivisor(8192,8192)!=0) return false;
+        if(ArtworkDivisor(3260,1370)!=2 || ArtworkDivisor(9000,20)!=8 || ArtworkDivisor(8192,8192)!=4) return false;
         // Verify streamed PNG sampling exactly, including Adam7 and odd sizes.
         for(const auto dims:std::array<std::array<int,2>,3>{{{17,9},{4097,17},{3260,1370}}}) for(int interlaced:{0,1}) {
             const int w=dims[0],h=dims[1];
@@ -2928,7 +3131,7 @@ public:
             settings_=true;settingsProgress_=1;details_=false;detailsProgress_=0;
             settingsCategory_=3;settingsSidebar_=false;settingsRow_=15;sourceManager_=false;
             preferences_.backgroundTransparency=50;
-            if(SettingsRowCount()!=16 || SettingsFirstRow()!=10 || !SettingsSelectorSelected())return failed(__LINE__);
+            if(SettingsRowCount()!=17 || SettingsFirstRow()!=10 || !SettingsSelectorSelected())return failed(__LINE__);
             SettingsInput(0,0,true);SettingsInput(1,0);
             if(preferences_.backgroundTransparency!=55)return failed(__LINE__);
             SettingsInput(0,0,false,true);SettingsTouch(900,187+5*62+10);
@@ -2981,6 +3184,35 @@ public:
         StopMusic();
         if(glassBackground_.Active())return false;
         SDL_Log("PASS Glass background: silent playback, motion pause/resume, settings, inspection, preview handoff, Pixel isolation, system release and shutdown");
+        return true;
+    }
+    bool CheckHomeVideoTransition() {
+        const char *fixture=std::getenv("UFLOW_HOME_VIDEO_TEST");if(!fixture)return false;
+        VisualPreview("library");preferences_.musicEnabled=false;
+        SDL_setenv("UFLOW_VIDEO_TEST_CLEANUP_DELAY_MS","400",1);
+        for(int kind=0;kind<3;++kind){
+            if(kind==2)SDL_setenv("UFLOW_GLASS_BACKGROUND_VIDEO",fixture,1);
+            VideoPlayer *player=kind==0?&video_:&detailsVideo_;
+            if(kind<2&&!player->Start(fixture,70))return false;
+            const auto start=SDL_GetTicks();
+            bool ready=false;
+            while(!ready&&SDL_GetTicks()-start<5000){
+                if(kind==2){glassBackground_.Update(true,false,false,true);ready=glassBackground_.Ready();}
+                else{player->Update();ready=player->Ready();}
+                SDL_Delay(3);
+            }
+            if(!ready)return false;
+            PrepareSystemBackground();
+            // Cancellation returned but the deliberately delayed worker still
+            // owns decoder state: releasing foreground now is forbidden.
+            if(SystemBackgroundReady())return false;
+            const auto stopped=SDL_GetTicks();unsigned polls=0;
+            while(!SystemBackgroundReady()&&SDL_GetTicks()-stopped<3000){++polls;SDL_Delay(4);}
+            if(!polls||!SystemBackgroundReady())return false;
+            ResumeSystemForeground();
+        }
+        SDL_setenv("UFLOW_VIDEO_TEST_CLEANUP_DELAY_MS","0",1);
+        SDL_Log("PASS HOME release waits for library/details/theme workers, audible previews, delayed retirement and resume");
         return true;
     }
     bool CheckVideoSettings(const std::string &output) {
@@ -3169,25 +3401,68 @@ public:
         const auto failed=[](int line){SDL_Log("Content media check failed at %d",line);return false;};
         for(int skin:{0,1}){
             VisualPreview("settings");preferences_.skin=skin;settingsCategory_=1;settingsSidebar_=false;
-            sourceManager_=false;typeManager_=typeEditor_=true;typeRow_=9;
+            sourceManager_=false;typeManager_=typeEditor_=true;typeRow_=6;
             typeDraft_={"snes","SNES",Platform::Files,GameLauncher::WiiFlow,".sfc",true,1,"snes-retroarch",178,125,25};
             GameEntry styled;styled.mediaLibraryId="snes";
             const auto shape=CaseProfileForGame(styled,{typeDraft_});
             if(shape.widthMm!=178||shape.heightMm!=125||shape.thicknessMm!=25)return failed(__LINE__);
-            if(TypeRowCount()!=12)return failed(__LINE__);
+            if(TypeRowCount()!=17)return failed(__LINE__);
             SettingsInput(0,0,true);if(!settingsEditing_||typeDraft_.mediaByContentType)return failed(__LINE__);
             SettingsInput(1,0);if(!typeDraft_.mediaByContentType)return failed(__LINE__);
             if(!Render(0,output+"-"+std::to_string(skin)+".png"))return failed(__LINE__);
             SettingsInput(-1,0);if(typeDraft_.mediaByContentType)return failed(__LINE__);
-            SettingsInput(0,1);SettingsInput(1,0);
-            if(typeRow_!=9||settingsAction_!=1||settingsEditing_||SettingsActions()[1]!=SettingsAction::Save)return failed(__LINE__);
+            SettingsInput(0,1);
+            if(typeRow_!=7||settingsEditing_||settingsAction_>=0)return failed(__LINE__);
+            // Dimensions and material color now follow the media fields.
+            typeRow_=SettingsContentCount()-1;SettingsInput(0,1);SettingsInput(1,0);
+            if(settingsAction_!=1||settingsEditing_||SettingsActions()[1]!=SettingsAction::Save)return failed(__LINE__);
         }
         std::puts("PASS: content type media selector, both skins, edit/cancel and fixed Save button navigation");return true;
+    }
+    bool CheckNumberDefaults(const std::string &output) {
+        const auto fail=[](int line){SDL_Log("Numeric/default check failed at %d",line);return false;};
+        VisualPreview("settings");settingsSidebar_=false;settingsAction_=-1;settingsEditing_=true;
+        settingsCategory_=3;settingsRow_=3;
+        if(!NumericSettingsField())return fail(__LINE__);
+        if(SettingsHeldHorizontal(1,true,100)!=1||SettingsHeldHorizontal(1,false,459)!=0||SettingsHeldHorizontal(1,false,460)!=1)return fail(__LINE__);
+        settingsRow_=0;if(NumericSettingsField()||SettingsHeldHorizontal(1,false,600))return fail(__LINE__);
+        typeEditor_=true;
+        for(int row=0;row<15;++row){typeRow_=row;if(bool(NumericSettingsField())!=(row==5||(row>=11&&row<=13)))return fail(__LINE__);}
+        typeEditor_=false;settingsCategory_=0;preferences_.demoMode=true;settingsRow_=10;if(!NumericSettingsField())return fail(__LINE__);
+        audioSettings_=true;for(int row=0;row<8;++row){settingsRow_=row;if(bool(NumericSettingsField())!=(row==2||row==5))return fail(__LINE__);}
+        audioSettings_=false;settingsCategory_=3;settingsRow_=3;settingsHelpOpen_=true;if(NumericSettingsField())return fail(__LINE__);settingsHelpOpen_=false;
+        settingsRow_=0;settingsSidebar_=true;settingsEditing_=false;preferences_.inspectionZoom=2;
+        if(!SettingsNumericTouch(1050,507,100,true)||settingsRow_!=5||settingsSidebar_||preferences_.inspectionZoom!=3)return fail(__LINE__);
+        if(!SettingsNumericTouch(1050,507,459,false)||preferences_.inspectionZoom!=3)return fail(__LINE__);
+        if(!SettingsNumericTouch(1050,507,460,false)||preferences_.inspectionZoom!=4)return fail(__LINE__);
+        if(!SettingsNumericTouch(1050,507,560,false)||preferences_.inspectionZoom!=5)return fail(__LINE__);
+        if(!SettingsNumericTouch(500,507,660,false)||preferences_.inspectionZoom!=5)return fail(__LINE__);
+        settingsRow_=0;settingsSidebar_=true;settingsEditing_=false;
+        if(SettingsNumericTouch(500,507,700,true)||SettingsNumericTouch(1050,372,700,true)||SettingsNumericTouch(1050,308,700,true)||settingsRow_!=0||!settingsSidebar_||settingsEditing_)return fail(__LINE__);
+        settingsHelpOpen_=true;if(SettingsNumericTouch(1050,507,800,true)||settingsRow_!=0||!settingsSidebar_)return fail(__LINE__);settingsHelpOpen_=false;
+        // Row six scrolls into a new position after selection; the held target stays captured.
+        typeEditor_=true;typeRow_=10;settingsSidebar_=false;settingsEditing_=false;
+        if(!SettingsNumericTouch(1050,505,900,true)||typeRow_!=11||!settingsEditing_)return fail(__LINE__);
+        if(!SettingsNumericTouch(1050,505,1260,false)||typeRow_!=11||numberTouchHold_.next!=1360)return fail(__LINE__);
+        typeEditor_=false;audioSettings_=true;settingsRow_=0;preferences_.menuSoundsVolume=20;
+        if(!SettingsNumericTouch(1050,437,1400,true)||settingsRow_!=5||preferences_.menuSoundsVolume!=25)return fail(__LINE__);
+        if(!SettingsNumericTouch(1050,437,1760,false)||preferences_.menuSoundsVolume!=30)return fail(__LINE__);
+        audioSettings_=false;
+        VisualPreview("library");ClearSideCases();preferences_.coverType=CoverPresentation::Media;preferences_.mediaLayout=4;
+        GameEntry game=games_.front();game.libraryId="gb";game.mediaLibraryId.clear();game.vcSystem.clear();
+        LibraryDefinition type;type.id="gb";type.boxModel="cardboard";type.mediaModel="auto";type.caseWidthMm=127;type.caseHeightMm=127;type.caseThicknessMm=25;libraries_={type};
+        DrawCachedShelfCartridge(game,640,525,1.85f,45,{80,180,210,255});
+        const auto before=mediaSpines_.size();if(!before)return fail(__LINE__);
+        libraries_[0].caseHeightMm=175;
+        DrawCachedShelfCartridge(game,640,525,1.85f,45,{80,180,210,255});
+        if(mediaSpines_.size()!=before+1)return fail(__LINE__);
+        ClearSideCases();if(!mediaSpines_.empty())return fail(__LINE__);
+        SDL_Log("PASS: numeric editing contexts, repeat timing, GB shelf dimension cache and invalidation");return true;
     }
     bool CheckVCSortSettings(const std::string &output) {
         for(int skin:{0,1}){
             VisualPreview("settings");preferences_.skin=skin;settingsCategory_=0;settingsSidebar_=false;sourceManager_=false;audioSettings_=false;
-            settingsRow_=4;preferences_.autoSortInstalledVC=false;
+            settingsRow_=5;preferences_.autoSortInstalledVC=false;
             SettingsInput(0,0,true);if(!settingsEditing_||preferences_.autoSortInstalledVC)return false;
             SettingsInput(1,0);if(!preferences_.autoSortInstalledVC||!preferences_.showInstalled)return false;
             if(!Render(0,output+"-installed-"+std::to_string(skin)+".png"))return false;
@@ -3248,7 +3523,7 @@ public:
         SettingsTouch(500,290,-70); if(sourceRow_!=previousMediaRow+1 || sourceEditor_) return failed(__LINE__);
         SettingsTouch(200,210); if(settingsCategory_!=0) return failed(__LINE__);
         SettingsInput(1,0);
-        for(int i=0;i<5;++i) SettingsInput(0,1);
+        for(int i=0;i<6;++i) SettingsInput(0,1);
         SettingsInput(0,0,true); if(!audioSettings_ || settingsCategory_!=0) return failed(__LINE__);
         // Empty music library must not leave the switch falsely ON.
         musicTracks_.clear(); preferences_.musicTrack.clear(); preferences_.musicEnabled=false;
@@ -3271,8 +3546,8 @@ public:
         SettingsInput(0,0,false,true); if(settingsEditing_ || !audioSettings_ || settingsRow_!=2) return failed(__LINE__);
         SettingsInput(-1,0); if(!settingsSidebar_) return failed(__LINE__);
         SettingsInput(1,0); if(settingsSidebar_ || settingsEditing_) return failed(__LINE__);
-        SettingsInput(0,0,false,true); if(!settings_ || audioSettings_ || settingsRow_!=5) return failed(__LINE__);
-        SettingsInput(0,1); if(settingsRow_!=6) return failed(__LINE__);
+        SettingsInput(0,0,false,true); if(!settings_ || audioSettings_ || settingsRow_!=6) return failed(__LINE__);
+        SettingsInput(0,1); if(settingsRow_!=7) return failed(__LINE__);
         SettingsInput(0,0,true); if(!settingsEditing_) return failed(__LINE__);
         SettingsInput(1,0); if(!preferences_.startOnBoot) return failed(__LINE__);
         SettingsInput(-1,0); if(preferences_.startOnBoot) return failed(__LINE__);
@@ -3409,8 +3684,8 @@ public:
         games_.resize(1);RebuildVisible();selected_=0;visualSelected_=0;Render(0);
         if(carouselCards_.size()!=1 || carouselCards_[0].first!=0)return false;
         VisualPreview("settings");settingsCategory_=3;sourceManager_=false;settingsSidebar_=false;
-        settingsRow_=12;preferences_.preloadBuiltInCovers=true;
-        SettingsTouch(1100,520);if(preferences_.preloadBuiltInCovers || settingsRow_!=12)return false;
+        settingsRow_=13;preferences_.preloadBuiltInCovers=true;
+        SettingsTouch(1100,520);if(preferences_.preloadBuiltInCovers || settingsRow_!=13)return false;
         if(!Render(0,output+"-display.png"))return false;
         SDL_Log("Wrap/display PASS: first/last neighbors on/off, all layouts, seam animation, singleton, scrolled touch mapping");
         return true;
@@ -3523,7 +3798,7 @@ public:
             VisualPreview("settings");preferences_.skin=skin;preferences_.coverZoom=120;
             settingsCategory_=3;settingsRow_=3;settingsSidebar_=false;settingsEditing_=false;
             sourceManager_=false;audioSettings_=false;
-            SettingsInput(0,1);if(settingsRow_!=4 || SettingsRowCount()!=16)return false;
+            SettingsInput(0,1);if(settingsRow_!=4 || SettingsRowCount()!=17)return false;
             SettingsInput(0,0,true);SettingsInput(1,0);
             if(preferences_.coverZoom!=125)return false;
             SettingsAdjust(100);if(preferences_.coverZoom!=200)return false;
@@ -3540,15 +3815,15 @@ public:
             if(!Render(0,output+"-settings-"+std::to_string(skin)+".png"))return false;
             VisualPreview("library");preferences_.skin=skin;preferences_.backgroundMotion=false;
             const auto selected=selected_;
-            for(int layout=0;layout<4;++layout)for(int zoom:{40,120,200})for(bool box:{true,false}) {
-                preferences_.coverLayout=layout;preferences_.coverZoom=zoom;preferences_.useBoxArt=box;
+            for(int layout=0;layout<4;++layout)for(int zoom:{40,120,200}) {
+                preferences_.coverLayout=layout;preferences_.coverZoom=zoom;
                 const auto origin=FocusCoverRect(),inspection=InspectCoverRect();
                 if(inspection.w<=origin.w || inspection.h<=origin.h)return false;
                 if(!Render(0,output+"-"+std::to_string(skin)+"-"+std::to_string(layout)+"-"+
-                    std::to_string(zoom)+(box?"-box":"-flat")+".png") || selected_!=selected || SDL_RenderIsClipEnabled(renderer_))return false;
+                    std::to_string(zoom)+"-box"+".png") || selected_!=selected || SDL_RenderIsClipEnabled(renderer_))return false;
             }
             for(bool back:{false,true}) {
-                preferences_.coverLayout=0;preferences_.coverZoom=200;preferences_.useBoxArt=true;
+                preferences_.coverLayout=0;preferences_.coverZoom=200;
                 OpenCoverInspect(back);coverInspectProgress_=1;coverInspectBackProgress_=back?1.f:0.f;
                 if(!Render(0,output+"-inspect-"+std::to_string(skin)+(back?"-back":"-front")+".png"))return false;
                 CloseCoverInspect();coverInspectProgress_=coverInspectBackProgress_=0;
@@ -3559,7 +3834,7 @@ public:
     }
     bool CheckStartView(const std::string &output) {
         for(int skin:{0,1}) {
-            VisualPreview("settings");preferences_.skin=skin;settingsSidebar_=false;settingsRow_=1;
+            VisualPreview("settings");preferences_.skin=skin;settingsSidebar_=false;settingsRow_=2;
             libraryTabs_={"__all","wiiu","wii","gamecube","ds","snes","nes","gba","__favorites"};
             preferences_.startLibrary="__all";preferences_.startTab=0;tab_=1;
             SettingsInput(0,0,true);SettingsInput(1,0);
@@ -3567,9 +3842,9 @@ public:
             SettingsInput(1,0);
             if(preferences_.startLibrary!="wii" || tab_!=1)return false;
             SettingsInput(0,0,false,true);
-            SettingsTouch(1030,267);
+            SettingsTouch(1030,329);
             if(preferences_.startLibrary!="gamecube" || tab_!=1)return false;
-            SettingsTouch(900,267);
+            SettingsTouch(900,329);
             if(preferences_.startLibrary!="wii")return false;
             SettingsAdjust(5);
             if(preferences_.startLibrary!="gba" || StartupLibraryIndex(LibraryTabs(),preferences_)!=7)return false;
@@ -3601,7 +3876,7 @@ public:
                 if(settingsAction_!=-1 || row!=last)return fail(__LINE__);
                 SettingsInput(0,1);
                 for(int n=0;n<4;++n)SettingsInput(1,0);
-                if(settingsAction_!=3)return fail(__LINE__);
+                if(settingsAction_!=4)return fail(__LINE__);
                 if(!Render(0,output+"-"+page+"-"+std::to_string(skin)+".png"))return false;
                 SettingsInput(0,0,true);
                 if(settingsAction_!=-1)return fail(__LINE__);
@@ -3615,16 +3890,27 @@ public:
                 SettingsContentRow()=SettingsContentCount()-1;SettingsInput(0,1);SettingsInput(1,0);
                 if(settingsAction_!=1)return fail(__LINE__);
                 SettingsInput(1,0);if(settingsAction_!=2)return fail(__LINE__);
-                SettingsTouch(390+3*185+80,594);
+                SettingsTouch(390+4*146+70,594);
                 if(sourceEditor_ || launcherEditor_)return fail(__LINE__);
             }
             VisualPreview("sources");preferences_.skin=skin;settingsSidebar_=false;sourceRow_=0;SourceActivate();
             typeRow_=1;TypeActivate();
-            if(SettingsActions()[1]!=A::Save || SettingsActions()[2]!=A::Delete || SettingsContentCount()!=10)return fail(__LINE__);
-            typeRow_=9;SettingsInput(0,1);SettingsInput(1,0);
+            if(SettingsActions()[1]!=A::Save || SettingsActions()[2]!=A::Delete || SettingsContentCount()!=15)return fail(__LINE__);
+            typeRow_=14;SettingsInput(0,1);SettingsInput(1,0);
             if(settingsAction_!=1)return fail(__LINE__);
             if(!Render(0,output+"-type-"+std::to_string(skin)+".png"))return false;
             SettingsInput(0,-1);typeRow_=0;TypeActivate();
+            typeBuffer_="ABC";typeKey_=7;
+            SettingsInput(0,0,false,false,true);
+            if(typeBuffer_!="AB" || typeKey_!=7 || settingsAction_!=-1)return fail(__LINE__);
+            SettingsInput(0,0,true);
+            if(typeBuffer_!="ABH" || typeKey_!=7)return fail(__LINE__);
+            settingsAction_=0;
+            for(int erase=0;erase<4;++erase)SettingsInput(0,0,false,false,true);
+            if(!typeBuffer_.empty() || settingsAction_!=0 || typeKey_!=7)return fail(__LINE__);
+            settingsAction_=2;typeBuffer_="AB";SettingsInput(0,0,true);
+            if(typeBuffer_!="A" || settingsAction_!=2)return fail(__LINE__);
+            SettingsInput(0,-1);
             typeKey_=static_cast<int>(std::strlen(TypeKeys))-1;
             SettingsInput(0,1);SettingsInput(1,0);
             if(settingsAction_!=1 || SettingsActions()[1]!=A::Done)return fail(__LINE__);
@@ -3634,7 +3920,7 @@ public:
             VisualPreview("sources");settingsSidebar_=false;sourceRow_=SourceListCount()-1;
             SettingsInput(0,1);SettingsInput(0,0,true);
             if(!sourceEditor_ || editingSourceIndex_!=-1 || SettingsActions()[2]!=A::None)return fail(__LINE__);
-            SettingsTouch(390+3*185+80,594);if(sourceEditor_)return fail(__LINE__);
+            SettingsTouch(390+4*146+70,594);if(sourceEditor_)return fail(__LINE__);
             SettingsTouch(450,594);if(!sourceEditor_ || editingSourceIndex_!=-1)return fail(__LINE__);
         }
         SDL_Log("Settings actions PASS: all four skins, every page, controller/touch, footer reachability, fixed save/delete, keyboard and disabled actions");
@@ -3676,7 +3962,7 @@ public:
         }
         preferences_.bindings[az]=oldAz;preferences_.combos[az]=oldCombos;
 
-        settingsCategory_=3;settingsRow_=13;SettingsAdjust(1);
+        settingsCategory_=3;settingsRow_=12;SettingsAdjust(1);
         if(preferences_.previewDelaySeconds!=1)return fail(__LINE__);
         SettingsAdjust(-1);if(preferences_.previewDelaySeconds!=0)return fail(__LINE__);
         for(int skin:{2,3}) {
@@ -3773,6 +4059,116 @@ public:
         }
         SDL_Log("PASS: square details/showcase, center-following 2D grid navigation, dock and safe power prompt, inspection zoom, additive/clear mappings, radial logo tilt and curved 3D box fan");return true;
     }
+    bool CheckWiiUMenuReference(const std::string &output) {
+#ifdef UFLOW_HOST_PREVIEW
+        VisualPreview("library");preferences_.coverType=CoverPresentation::Thumbnails;preferences_.thumbnailLayout=2;
+        preferences_.usePreviews=false;preferences_.backgroundMotion=false;
+        games_.clear();visible_.clear();
+        for(int i=0;i<165;++i){GameEntry game;game.name=i==9?"LEGOÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â® BatmanÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ 2":"Reference icon";
+            game.coverPath="/output/icon-"+std::to_string(i%15)+".png";games_.push_back(game);visible_.push_back(i);}
+        selected_=9;wiiuMenuPage_=-1;wiiuFocusIndex_=-1;UpdateWiiUMenu(1);
+        for(int i=0;i<80;++i){Render(0);SDL_Delay(10);}
+        if(!Render(0,output+"-in-skin.png"))return false;
+        selected_=10;UpdateWiiUMenu(1);
+        if(!Render(0,output+"-bottom-row.png"))return false;
+        selected_=9;UpdateWiiUMenu(1);
+        SDL_SetRenderTarget(renderer_,nullptr);SDL_RenderSetViewport(renderer_,nullptr);SDL_RenderSetScale(renderer_,1,1);
+        SetColor(renderer_,{220,230,222,255});SDL_RenderClear(renderer_);
+        SetSwitchFont(true);gSmoothText=true;gGlassTextHalo=false;
+        DrawWiiUMenuContent();
+        if(!SaveVisualFrame(renderer_,output+"-registered.png"))return false;
+        for(int skin:{2,3}){preferences_.skin=skin;UpdateWiiUMenu(1);if(!Render(0,output+"-switch-"+std::to_string(skin)+".png"))return false;}
+        SDL_Log("PASS reference fixture: 127px tiles, 161px columns, 151px rows, 157px focus frame; screenshot artwork is fixture-only");
+        return true;
+#else
+        return false;
+#endif
+    }
+    bool CheckWiiUMenu(const std::string &output) {
+        const auto fail=[](int line){SDL_Log("Wii U Menu FAIL at %d",line);return false;};
+        VisualPreview("library");preferences_.coverType=CoverPresentation::Thumbnails;
+        if(WiiUMenuPageOpacity(0,0)!=255||WiiUMenuPageOpacity(1,0)!=100||WiiUMenuPageOpacity(0,.5f)!=WiiUMenuPageOpacity(1,.5f))return fail(__LINE__);
+        preferences_.thumbnailLayout=2;preferences_.usePreviews=false;preferences_.wrapNavigation=false;
+        while(visible_.size()<32){auto game=games_[visible_[0]];game.name="Game "+std::to_string(visible_.size()+1);games_.push_back(game);visible_.push_back(games_.size()-1);}
+        for(auto &game:games_)game.coverPath="/project/app/content/ui/logo.png";
+        selected_=9;wiiuMenuPage_=-1;
+        for(int i=0;i<20;++i){Render(0);SDL_Delay(10);}
+        if(!Render(0,output+"-page1.png"))return fail(__LINE__);
+        HomeNavigate(1,0,false,false);if(selected_!=20)return fail(__LINE__);
+        HomeNavigate(-1,0,false,false);if(selected_!=9)return fail(__LINE__);
+        WiiUMenuPage(1);if(selected_!=24)return fail(__LINE__);
+        UpdateWiiUMenu(.04f);if(!Render(0,output+"-slide.png"))return fail(__LINE__);
+        UpdateWiiUMenu(1);if(!Render(0,output+"-page2.png"))return fail(__LINE__);
+        const auto leftArrow=WiiUMenuArrowRect(-1,true);
+        HomeTouch(leftArrow.x+leftArrow.w/2,leftArrow.y+leftArrow.h/2);if(selected_!=9)return fail(__LINE__);
+        const auto rightArrow=WiiUMenuArrowRect(1,true);
+        HomeTouch(rightArrow.x+rightArrow.w/2,rightArrow.y+rightArrow.h/2);if(selected_!=24)return fail(__LINE__);
+        const auto firstCell=WiiUMenuCell(0),nextCell=WiiUMenuCell(1),nextRow=WiiUMenuCell(5);
+        for(float focus:{0.f,.25f,.5f,.75f,1.f}){
+            const auto icon=WiiUMenuIcon(firstCell,focus);
+            if(icon.w!=icon.h)return fail(__LINE__);
+            if(focus==0 && icon.x-firstCell.x!=10)return fail(__LINE__);
+        }
+        if(firstCell.w<=109||nextCell.x-firstCell.x-firstCell.w!=34||nextRow.y-firstCell.y-firstCell.h!=24)return fail(__LINE__);
+
+        WiiUMenuPage(1);if(selected_!=31)return fail(__LINE__);
+        UpdateWiiUMenu(1);if(!Render(0,output+"-partial.png"))return fail(__LINE__);
+        WiiUMenuPage(1);if(selected_!=31)return fail(__LINE__);
+        preferences_.wrapNavigation=true;WiiUMenuPage(1);if(selected_!=1)return fail(__LINE__);
+        WiiUMenuSelect(10);HomeNavigate(0,1,false,false);if(dockFocus_!=-1||selected_!=10)return fail(__LINE__);
+        preferences_.skin=2;HomeNavigate(0,1,false,false);if(dockFocus_!=0)return fail(__LINE__);
+        HomeNavigate(0,-1,false,false);if(dockFocus_!=-1)return fail(__LINE__);
+        preferences_.skin=1;UpdateWiiUMenu(1);auto r=WiiUMenuToScreen(WiiUMenuCell(6));HomeTouch(r.x+r.w/2,r.y+r.h/2);if(selected_!=6)return fail(__LINE__);
+        HomeTouch(r.x+r.w/2,r.y+r.h/2);if(!ConsumeDetailsLaunch())return fail(__LINE__);
+        games_[visible_[6]].name="A very long game title with a subtitle that must stay inside the screen";
+        if(!Render(0,output+"-long-title.png"))return fail(__LINE__);
+        for(int skin=0;skin<4;++skin){
+            preferences_.skin=skin;UpdateWiiUMenu(1);
+            if(!Render(0,output+"-skin-"+std::to_string(skin)+".png"))return fail(__LINE__);
+            float sx,sy;SDL_RenderGetScale(renderer_,&sx,&sy);if(sx!=1.f||sy!=1.f||gMenuFont)return fail(__LINE__);
+            const auto cell=WiiUMenuToScreen(WiiUMenuCell(0)),viewport=WiiUMenuViewport();
+            if(cell.y<viewport.y||cell.y+cell.h>viewport.y+viewport.h)return fail(__LINE__);
+            auto bottomCell=WiiUMenuCell(10);
+            const auto bottom=WiiUMenuToScreen({bottomCell.x-15,bottomCell.y-13,bottomCell.w+30,bottomCell.h+34});
+            if(bottom.y+bottom.h>viewport.y+viewport.h)return fail(__LINE__);
+            for(int direction:{-1,1}){
+                const auto arrow=WiiUMenuArrowRect(direction,true);
+                if(arrow.x<0||arrow.x+arrow.w>1280)return fail(__LINE__);
+            }
+            if(SwitchSkin()){
+                if(cell.w<130 || bottom.y+bottom.h>HomeDockY()-36)return fail(__LINE__);
+                // The relocated dock must still receive touch input below the grid.
+                const auto &skinSpec=SkinSpec();
+                if(!HomeTouch(skinSpec.dockX+4*skinSpec.dockGap,HomeDockY()))return fail(__LINE__);
+                settings_=false;settingsProgress_=0;dockFocus_=-1;
+            }
+            if(WiiUMenuTouch(20,30))return fail(__LINE__);
+        }
+        preferences_.skin=1;
+        visible_.clear();selected_=0;UpdateWiiUMenu(1);
+        if(!Render(0,output+"-empty.png"))return fail(__LINE__);
+        WiiUMenuNavigate(1,1);WiiUMenuPage(1);HomeTouch(250,150);if(ConsumeDetailsLaunch())return fail(__LINE__);
+        for(int skin:{0,1})for(int layout:{0,1,2}){
+            VisualPreview("library");preferences_.skin=skin;
+            preferences_.coverType=layout==2?CoverPresentation::Box:CoverPresentation::Thumbnails;
+            preferences_.thumbnailLayout=layout==2?0:layout;
+            if(!Render(0,output+"-chrome-"+std::to_string(skin)+"-"+std::to_string(layout)+".png"))return fail(__LINE__);
+        }
+        while(visible_.size()<900)visible_.push_back(visible_[0]);
+        preferences_.skin=0;preferences_.coverType=CoverPresentation::Thumbnails;preferences_.thumbnailLayout=2;selected_=0;wiiuMenuPage_=-1;
+        int previous=-1;
+        for(int page=0;page<WiiUMenuPages();++page){
+            selected_=page*15;const int dot=WiiUMenuActiveDot();
+            if(dot<previous||dot>=WiiUMenuDotCount())return fail(__LINE__);previous=dot;
+        }
+        if(previous!=WiiUMenuDotCount()-1||WiiUMenuDotPage(0)!=0||WiiUMenuDotPage(11)!=59)return fail(__LINE__);
+        for(int dot:{0,5,11}){
+            const auto hit=WiiUMenuToScreen({468-12*23/2+dot*23+9,9,1,1});
+            if(!WiiUMenuTouch(hit.x,hit.y)||int(selected_/15)!=WiiUMenuDotPage(dot)||WiiUMenuActiveDot()!=dot)return fail(__LINE__);
+        }
+        wiiuMenuPage_=-1;if(!Render(0,output+"-last-dot.png"))return fail(__LINE__);
+        SDL_Log("PASS: Wii U Menu paging, edges, partial page, wrap, dock, touch launch, long titles and empty library");return true;
+    }
     bool CheckSwitch(const std::string &output) {
         for(int skin:{2,3}) {
             VisualPreview("library");preferences_.skin=skin;preferences_.coverType=CoverPresentation::Thumbnails;
@@ -3785,8 +4181,8 @@ public:
             settings_=true;settingsProgress_=1;settingsCategory_=3;settingsSidebar_=false;settingsRow_=0;
             detailsBackdropReady_=false;
             if(!Render(0,output+"-settings-"+std::to_string(skin)+".png"))return false;
-            SettingsAdjust(1);if(preferences_.coverType!=CoverPresentation::Box)return false;
-            SettingsAdjust(-1);if(preferences_.coverType!=CoverPresentation::Thumbnails)return false;
+            SettingsAdjust(1);if(ViewType()!=CoverPresentation::Box)return false;
+            SettingsAdjust(-1);if(ViewType()!=CoverPresentation::Thumbnails)return false;
             settingsCategory_=0;settingsRow_=0;
             if(!Render(0,output+"-general-"+std::to_string(skin)+".png"))return false;
         }
@@ -3796,16 +4192,16 @@ public:
         const auto fail=[](int line){SDL_Log("Demo FAILED at %d",line);return false;};
         for(int skin:{0,1}) {
             VisualPreview("settings");preferences_.skin=skin;settingsSidebar_=false;
-            preferences_.demoMode=false;settingsRow_=8;
-            if(SettingsRowCount()!=9)return fail(__LINE__);
+            preferences_.demoMode=false;settingsRow_=9;
+            if(SettingsRowCount()!=11)return fail(__LINE__);
             SettingsAdjust(1);
-            if(!preferences_.demoMode || SettingsRowCount()!=10)return fail(__LINE__);
+            if(!preferences_.demoMode || SettingsRowCount()!=12)return fail(__LINE__);
             SettingsMoveRow(1);preferences_.demoIdleSeconds=30;SettingsAdjust(1);
-            if(settingsRow_!=9 || preferences_.demoIdleSeconds!=35)return fail(__LINE__);
+            if(settingsRow_!=10 || preferences_.demoIdleSeconds!=35)return fail(__LINE__);
             if(!Render(0,output+"-settings-"+std::to_string(skin)+".png"))return fail(__LINE__);
-            SettingsInput(0,1);if(settingsAction_<0)return fail(__LINE__);
-            settingsAction_=-1;settingsRow_=8;SettingsAdjust(1);
-            if(preferences_.demoMode || SettingsRowCount()!=9)return fail(__LINE__);
+            SettingsInput(0,1);SettingsInput(0,1);if(settingsAction_<0)return fail(__LINE__);
+            settingsAction_=-1;settingsRow_=9;SettingsAdjust(1);
+            if(preferences_.demoMode || SettingsRowCount()!=11)return fail(__LINE__);
             if(!Render(0,output+"-off-"+std::to_string(skin)+".png"))return fail(__LINE__);
         }
         VisualPreview("library");demoTest_=videoTest_=true;startupIntroPending_=false;
@@ -3816,6 +4212,7 @@ public:
         preferences_.demoMode=true;preferences_.demoIdleSeconds=5;preferences_.usePreviews=false;
         demo_.Reset(SDL_GetTicks()-5000);VideoInput(false);Render(0);
         if(!demo_.Active() || Selected()->previewPath.empty())return fail(__LINE__);
+        if(visualSelected_!=float(selected_))return fail(__LINE__);
         const auto first=selected_;bool presented=false,ended=false,advanced=false;
         const auto started=SDL_GetTicks();
         while(SDL_GetTicks()-started<15000) {
@@ -3841,8 +4238,22 @@ public:
         const auto missingAt=SDL_GetTicks();
         while(demo_.Active() && SDL_GetTicks()-missingAt<8000){Render(.1f);SDL_Delay(10);}
         if(demo_.Active())return fail(__LINE__);
+        if(!demoFailed_.count("/fixture/missing-demo.mp4"))return fail(__LINE__);
+        demo_.Reset(SDL_GetTicks()-5000);Render(0);
+        if(demo_.Active())return fail(__LINE__); // Do not repeat a failed idle tour.
         games_[1].previewPath.clear();demo_.Reset(SDL_GetTicks()-5000);Render(0);
         if(demo_.Active())return fail(__LINE__);
+        games_.resize(1400);
+        for(std::size_t i=0;i<games_.size();++i){games_[i].absolutePath="demo-"+std::to_string(i);games_[i].name="Demo "+std::to_string(i);games_[i].previewPath="/fixture/demo-1.mp4";}
+        mediaSources_.back().defaultFile="demo-1.mp4";
+        games_.back().previewPath="/fixture/demo-2.mp4";
+        RebuildVisible();selected_=0;visualSelected_=0;
+        for(int layout:{0,1,2}){
+            preferences_.coverType=CoverPresentation::Thumbnails;preferences_.thumbnailLayout=layout;
+            demo_.Reset(SDL_GetTicks()-5000);UpdateDemo();
+            if(!demo_.Active()||Selected()->absolutePath!="demo-1399"||visualSelected_!=float(selected_))return fail(__LINE__);
+            DemoInput(true);
+        }
         demoTest_=videoTest_=false;preferences_.demoMode=false;StopVideo();
         SDL_Log("Demo PASS: both-skin conditional settings/footer, video-only random selection, complete playback before advancing, input/menu exit restores original game by identity, stale/empty video library, preview-toggle independence");return true;
     }
@@ -3899,10 +4310,17 @@ public:
                 Render(0);Render(0);const auto builds=bookshelfBuilds_,hits=bookshelfCacheHits_;
                 for(int frame=0;frame<40;++frame)if(!Render(0))return false;
                 if(bookshelfBuilds_!=builds || bookshelfCacheHits_<hits+40 || bookshelfVertices_!=0)return false;
+                const auto unrelatedRevision=textures_.Revision();
+                textures_.Get("/project/app/data/icon.png");
+                if(textures_.Revision()<=unrelatedRevision)return false;
+                const auto unrelatedHits=bookshelfCacheHits_;
+                if(!Render(0) || bookshelfBuilds_!=builds || bookshelfCacheHits_<=unrelatedHits)return false;
                 textures_.Clear();if(!Render(0) || bookshelfBuilds_==builds)return false;
             }
+            const auto geometryBuilds=boxShelfGeometryBuilds_;
             for(float move:{.10f,.25f,.4f,.5f,.6f,.75f,.90f}){visualSelected_=90+move;if(!Render(0,name+"-move"+std::to_string(int(move*100))+".png"))return false;
                 if(bookshelfVertices_>12000)return false;}
+            if(boxShelfGeometryBuilds_!=geometryBuilds)return false;
             if(skin==1 && !mixed)for(int direction:{-1,1}) {
                 selected_=90+direction;visualSelected_=90;
                 for(int frame=0;frame<=20;++frame) {
@@ -3930,22 +4348,469 @@ public:
         CaseView av({0,0,220,314},p,yaw,pitch,0,2.5f,&a),bv({0,0,220,314},p,yaw,pitch,0,2.5f,&b);
         for(float y:{-.5f,.5f}){const auto left=av(-.5f,y,.5f).point,right=bv(-.5f,y,-.5f).point;
             if(std::hypot(left.x-right.x,left.y-right.y)>.01f)return false;}
-        SDL_Log("Bookshelf PASS: physical slot insertion, roll clears shelf, full visible turn at 15/30/60 fps in both directions, shared perspective, both skins, mixed sizes, 40 idle cached frames, artwork invalidation, bounded geometry, zoom/spacing, ends and singleton");return true;
+        SDL_Log("Bookshelf PASS: physical slot insertion, roll clears shelf, full visible turn at 15/30/60 fps in both directions, shared perspective, both skins, mixed sizes, 40 idle cached frames, scoped artwork invalidation, cached geometry, bounded geometry, zoom/spacing, ends and singleton");return true;
+    }
+    bool CheckNesCartridge(const std::string &output) {
+        VisualPreview("library");preferences_.skin=1;preferences_.coverType=CoverPresentation::Media;
+        preferences_.usePreviews=false;preferences_.useBackgrounds=false;preferences_.coverZoom=120;
+        const char *names[]={"Galaga","Super Mario Bros.","Duck Hunt","Bad Dudes","1943 - The Battle of Midway","Hogan's Alley","Rampage","The Legend of Zelda","Zelda II - The Adventure of Link"};
+        const auto seed=games_.front();games_.assign(45,seed);
+        for(int i=0;i<45;++i){auto &g=games_[i];g.name="Adventure Island IV";g.libraryId="nes";g.mediaLibraryId="nes";g.vcSystem.clear();
+            g.platform=Platform::Files;g.absolutePath=std::string("/roms/")+names[i%9]+".nes";
+            g.physicalMediaPath.clear();g.previewPath.clear();g.backgroundPath.clear();g.logoPath.clear();
+            g.cartridgeLabelPath="/project/artifacts/nes-labels/Adventure Island IV cartridge label.png";
+            textures_.Prefetch(g.cartridgeLabelPath);
+        }
+        tab_=0;RebuildVisible();selected_=1;visualSelected_=1;
+        for(int i=0;i<300 && textures_.Pending();++i){textures_.BeginFrame();textures_.PumpOne();SDL_Delay(5);}
+        for(int layout:{0,1,2,3,4}) {preferences_.mediaLayout=layout;
+            if(!Render(0,output+"-layout-"+std::to_string(layout)+".png"))return false;
+        }
+        preferences_.mediaLayout=2;
+        if(std::abs(PresentationCard(2.f).roll)<.2f || PresentationCard(2.f).y<=PresentationCard(0.f).y)return false;
+        preferences_.mediaLayout=4;
+        for(int frame=0;frame<5;++frame){visualSelected_=1.f+frame*.25f;selected_=2;
+            if(!Render(0,output+"-shelf-motion-"+std::to_string(frame)+".png"))return false;}
+        visualSelected_=2.f;Render(0);Render(0);
+        if(bookshelfTexture_){const auto hits=bookshelfCacheHits_;Render(0);if(bookshelfCacheHits_<=hits)return false;}
+        SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);
+        for(int i=0;i<3;++i)NesCartridge::Draw(renderer_,{80+i*400,110,330,490},textures_.Get(games_[i].cartridgeLabelPath).texture,nesMaterial_,true);
+        if(!SaveVisualFrame(renderer_,output+"-models.png"))return false;
+        for(int step=0;step<=4;++step){
+            SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);
+            NesCartridge::Draw(renderer_,{400,80,480,560},textures_.Get(games_[1].cartridgeLabelPath).texture,nesMaterial_,true,1.f,step*1.57079633f);
+            if(!SaveVisualFrame(renderer_,output+"-turn-"+std::to_string(step)+".png"))return false;
+        }
+        SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);
+        const char *systems[]={"nes","snes","n64","gba","ds"};
+        for(int i=0;i<5;++i){auto game=games_.front();game.libraryId=game.mediaLibraryId=systems[i];game.absolutePath=std::string("/roms/test.")+systems[i];
+            DrawShelfCartridge(game,150.f+i*245.f,530.f,1.f,0.f,1.5f,1.5707963f,false,{80,180,210,255});}
+        SetColor(renderer_,{80,180,210,255});SDL_RenderDrawLine(renderer_,0,531,1280,531);
+        if(!SaveVisualFrame(renderer_,output+"-mixed-baseline.png"))return false;
+        SDL_Log("NES cartridge: five layouts, shelf motion/cache and mixed cartridge baseline rendered");return true;
+    }
+    bool CheckSnesCartridge(const std::string &output) {
+        VisualPreview("library");preferences_.skin=1;preferences_.coverType=CoverPresentation::Media;
+        preferences_.usePreviews=false;preferences_.useBackgrounds=false;preferences_.coverZoom=120;
+        const auto seed=games_.front();games_.assign(45,seed);
+        for(int i=0;i<45;++i){auto &g=games_[i];g.name="Doom";g.libraryId=g.mediaLibraryId="snes";g.vcSystem.clear();
+            g.platform=Platform::Files;g.absolutePath="/roms/doom-"+std::to_string(i)+".sfc";
+            g.physicalMediaPath.clear();g.previewPath.clear();g.backgroundPath.clear();g.logoPath.clear();
+            g.cartridgeLabelPath="/project/artifacts/snes-model/doom-label.png";textures_.Prefetch(g.cartridgeLabelPath);
+        }
+        tab_=0;RebuildVisible();selected_=1;visualSelected_=1;
+        for(int i=0;i<300&&textures_.Pending();++i){textures_.BeginFrame();textures_.PumpOne();SDL_Delay(5);}
+        for(int layout:{0,1,2,3,4}){preferences_.mediaLayout=layout;if(!Render(0,output+"-layout-"+std::to_string(layout)+".png"))return false;}
+        for(int frame=0;frame<5;++frame){visualSelected_=1.f+frame*.25f;selected_=2;
+            if(!Render(0,output+"-shelf-motion-"+std::to_string(frame)+".png"))return false;}
+        visualSelected_=2.f;Render(0);Render(0);
+        if(bookshelfTexture_){const auto hits=bookshelfCacheHits_;Render(0);if(bookshelfCacheHits_<=hits)return false;}
+        ToggleDetails();detailsProgress_=1;detailsBackdropReady_=false;
+        if(!Render(0,output+"-details.png"))return false;
+        ToggleDetails();detailsProgress_=0;detailsBackdropReady_=false;
+        if(SDL_SetRenderTarget(renderer_,sceneTexture_))return false;
+        SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);showcaseProgress_=1;gGlassBackdrop=nullptr;
+        DrawShowcase(*Selected(),AccentFor(Selected()->platform,preferences_.theme));
+        if(!SaveVisualFrame(renderer_,output+"-video-preview.png"))return false;
+        SDL_SetRenderTarget(renderer_,nullptr);showcaseProgress_=0;
+        for(int step=0;step<12;++step){SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);
+            SnesCartridge::Draw(renderer_,{280,80,720,560},textures_.Get(Selected()->cartridgeLabelPath).texture,snesMaterial_,true,1.f,step*.5235988f,.18f,.05f);
+            if(!SaveVisualFrame(renderer_,output+"-turn-"+std::to_string(step)+".png"))return false;
+        }
+        SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);
+        const char *systems[]={"nes","snes","n64","gba","ds"};
+        for(int i=0;i<5;++i){auto game=*Selected();game.libraryId=game.mediaLibraryId=systems[i];game.cartridgeLabelPath.clear();game.absolutePath=std::string("/roms/test.")+systems[i];
+            DrawShelfCartridge(game,150.f+i*245.f,530.f,1.f,0.f,1.5f,1.5707963f,false,{80,180,210,255});}
+        if(!SaveVisualFrame(renderer_,output+"-mixed-baseline.png"))return false;
+        SDL_Log("PASS: SNES five layouts, shelf/cache, details, video showcase, twelve rotation angles and mixed cartridge baseline");return true;
+    }
+    bool CheckGlassPopups(const std::string &output) {
+        const char *names[]={"launch","search","sort","alphabet","scan","update","welcome","injection","power","discard","help"};
+        for(int i=0;i<11;++i){
+            VisualPreview(i>=9?"settings":"library");preferences_.skin=1;preferences_.usePreviews=false;
+            settings_=i>=9;settingsProgress_=settings_?1.f:0.f;details_=false;detailsProgress_=0;
+            launchOptionsOpen_=searchOpen_=sortOpen_=alphabetOpen_=scanOpen_=updateOpen_=welcomeOpen_=powerPrompt_=settingsHelpOpen_=false;
+            alphabetProgress_=0;draftExit_=DraftExit::None;injectionDialog_={};status_.clear();detailsBackdropReady_=false;
+            if(i==0){launchOptionsOpen_=true;launchOptionsName_="Mario Kart DS";launchOptions_=WiiVCLaunchOptions();launchOptionsFooter_=-1;launchOptionsChoice_=0;}
+            if(i==1)searchOpen_=true;
+            if(i==2)sortOpen_=true;
+            if(i==3){alphabetOpen_=true;alphabetProgress_=1;}
+            if(i==4){scanOpen_=true;scanApplied_=true;scanState_.progress.stage="UPDATING MEDIA";}
+            if(i==5){updateOpen_=true;updateState_.state=UFlowUpdate::State::Available;updateState_.version="Test update";}
+            if(i==6)welcomeOpen_=true;
+            if(i==7)injectionDialog_.Ask("Mario Kart DS");
+            if(i==8)powerPrompt_=true;
+            if(i==9)draftExit_=DraftExit::Settings;
+            if(i==10){settingsHelpOpen_=true;settingsHelpTitle_="DISPLAY";settingsHelpBody_="Choose the layout and artwork presentation for your library.";}
+            if(!Render(0,output+"-"+names[i]+".png")||!detailsBackdropReady_)return false;
+        }
+        SDL_Log("PASS: 11 Glass popups share the blurred backdrop and frosted lens");return true;
+    }
+    bool CheckUForcePopups(const std::string &output) {
+        const char *names[]={"launch","search","sort","alphabet","scan","update","welcome","injection","power","discard","help"};
+        for(int i=0;i<11;++i){
+            VisualPreview(i>=9?"settings":"library");preferences_.skin=4;preferences_.skinId="uforce";preferences_.usePreviews=false;
+            settings_=i>=9;settingsProgress_=settings_?1.f:0.f;details_=false;detailsProgress_=0;
+            launchOptionsOpen_=searchOpen_=sortOpen_=alphabetOpen_=scanOpen_=updateOpen_=welcomeOpen_=powerPrompt_=settingsHelpOpen_=false;
+            alphabetProgress_=0;draftExit_=DraftExit::None;injectionDialog_={};status_.clear();detailsBackdropReady_=false;
+            if(i==0){launchOptionsOpen_=true;launchOptionsName_="Mario Kart DS";launchOptions_=WiiVCLaunchOptions();launchOptionsFooter_=-1;launchOptionsChoice_=0;}
+            if(i==1)searchOpen_=true;
+            if(i==2)sortOpen_=true;
+            if(i==3){alphabetOpen_=true;alphabetProgress_=1;}
+            if(i==4){scanOpen_=true;scanApplied_=true;scanState_.progress.stage="UPDATING MEDIA";}
+            if(i==5){updateOpen_=true;updateState_.state=UFlowUpdate::State::Available;updateState_.version="Test update";}
+            if(i==6)welcomeOpen_=true;
+            if(i==7)injectionDialog_.Ask("Mario Kart DS");
+            if(i==8)powerPrompt_=true;
+            if(i==9)draftExit_=DraftExit::Settings;
+            if(i==10){settingsHelpOpen_=true;settingsHelpTitle_="DISPLAY";settingsHelpBody_="Choose the layout and artwork presentation for your library.";}
+            if(!Render(0,output+"-"+names[i]+".png"))return false;
+        }
+        SDL_Log("PASS: 11 uForce popups render with shared charcoal/green UI palette");return true;
+    }
+    bool CheckContentTypeSave(const std::string &output){
+#ifndef UFLOW_HOST_PREVIEW
+        return false;
+#else
+        VisualPreview("sources");settingsSidebar_=false;sourceRow_=0;SourceActivate();
+        const auto fail=[](int line){SDL_Log("Content-type save failed line %d",line);return false;};
+        auto path=std::string("fs:/vol/external01/wiiu/apps/uFlow/libraries.cfg");
+        std::filesystem::create_directories("fs:/vol/external01/wiiu/apps/uFlow");
+        std::filesystem::copy_file("/project/artifacts/ps1-save-hang/libraries.cfg",path,std::filesystem::copy_options::overwrite_existing);
+        // An unusable old staging path must not block every later save.
+        std::filesystem::create_directory(path+".tmp");
+        libraries_=LoadLibraries();
+        for(int mode=0;mode<2;++mode){
+            auto found=std::find_if(libraries_.begin(),libraries_.end(),[](const auto &l){return l.id=="custom_1";});
+            if(found==libraries_.end())return fail(__LINE__);
+            typeRow_=int(found-libraries_.begin())+1;TypeActivate();
+            typeDraft_.boxModel="ps1-jewel";typeDraft_.mediaModel="ps1-jewel";
+            if(mode)typeDraft_.name="PlayStation";
+            if(mode){settingsAction_=1;SettingsInput(0,0,true);}else SettingsInput(0,0,false,false,false,false,true);
+            if(typeEditor_||status_!="CONTENT TYPE SAVED")return fail(__LINE__);
+            const auto saved=LoadLibraries();auto ps=std::find_if(saved.begin(),saved.end(),[](const auto &l){return l.id=="custom_1";});
+            if(ps==saved.end()||ps->boxModel!="ps1-jewel"||ps->mediaModel!="ps1-jewel"||(mode&&ps->name!="PlayStation"))return fail(__LINE__);
+        }
+        auto invalid=libraries_;invalid.front().name.clear();std::string error;
+        if(SaveLibraries(invalid,false,&error)||error.empty()||LoadLibraries().front().name.empty())return fail(__LINE__);
+        for(const char *system:{"nes","snes","n64","gba"}){
+            GameEntry game;game.libraryId=game.mediaLibraryId=system;game.defaultSleevePath=std::string("/project/native-installer/assets/default-covers/")+system+".png";
+            textures_.PrefetchCover(game.defaultSleevePath,true);for(int i=0;i<300&&textures_.Pending();++i){textures_.BeginFrame();textures_.PumpOne();SDL_Delay(5);}
+            auto profile=CaseProfileForGame(game,libraries_);
+            if(GamePreparedModel(game,libraries_,false)!="cardboard")return fail(__LINE__);
+            SDL_SetRenderTarget(renderer_,nullptr);SetColor(renderer_,{28,32,38,255});SDL_RenderClear(renderer_);
+            DrawCardboardArt(game,CaseView({320,70,640,560},profile,.48f,-.15f,.05f),profile);
+            if(!SaveVisualFrame(renderer_,output+"-cardboard-"+system+".png"))return false;
+        }
+        SDL_Log("PASS: real console content types, stale staging path, + and footer save, model/name persistence, rejected save preservation, cardboard defaults");return true;
+#endif
+    }
+    bool CheckContentLayouts(const std::string &output){
+#ifdef UFLOW_HOST_PREVIEW
+        VisualPreview("library");preferences_.coverType=CoverPresentation::Box;preferences_.coverLayout=2;
+        LibraryDefinition type;type.id="gba";type.name="GBA";type.parser=Platform::Files;type.extensions=".gba";
+        libraries_={type};libraryTabs_={"__all","gba","__favorites"};tab_=1;
+        if(ViewType()!=CoverPresentation::Box||PresentationLayout()!=2)return false;
+        libraries_[0].viewType=CoverPresentation::Media;libraries_[0].viewLayout=4;
+        if(ViewType()!=CoverPresentation::Media||PresentationLayout()!=4||WallLayout())return false;
+        preferences_.coverLayout=7;
+        if(PresentationLayout()!=4)return false;
+        tab_=0;if(ViewType()!=CoverPresentation::Box||PresentationLayout()!=7)return false;
+        tab_=2;if(ViewType()!=CoverPresentation::Box||PresentationLayout()!=7)return false;
+        tab_=1;NextLayout();if(PresentationLayout()!=0||preferences_.coverLayout!=7||preferences_.coverType!=CoverPresentation::Box)return false;
+        const auto saved=LoadLibraries();if(saved[0].viewType!=CoverPresentation::Media||saved[0].viewLayout!=0)return false;
+        libraries_[0].viewType=-1;if(ViewType()!=CoverPresentation::Box||PresentationLayout()!=7)return false;
+        typeEditor_=true;typeDraft_=libraries_[0];typeRow_=9;TypeAdjust(1);TypeAdjust(1);TypeAdjust(1);
+        if(typeDraft_.viewType!=CoverPresentation::Media)return false;
+        typeRow_=10;TypeAdjust(-1);if(typeDraft_.viewLayout!=4)return false;
+        SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);DrawTypes(400,{80,180,210,255},false);
+        if(!SaveVisualFrame(renderer_,output+"-editor.png"))return false;
+        SDL_Log("PASS: content type layout overrides, All/Favorites global defaults, Display settings unchanged, hotkey persistence, editor controls");return true;
+#else
+        return false;
+#endif
+    }
+    bool CheckCartridgePerformance(const std::string &output){
+#ifdef UFLOW_HOST_PREVIEW
+        const auto fail=[](int line){SDL_Log("Cartridge performance check failed: %d",line);return false;};
+        VisualPreview("library");preferences_.coverType=CoverPresentation::Media;preferences_.mediaLayout=3;
+        preferences_.usePreviews=false;preferences_.useBackgrounds=false;
+        GameEntry game=games_.front();game.name="GBA performance";game.libraryId="gba";game.mediaLibraryId.clear();game.vcSystem.clear();
+        game.logoPath.clear();game.cartridgeLabelPath.clear();game.physicalMediaPath.clear();
+        LibraryDefinition type;type.id="gba";type.mediaModel="gba";libraries_={type};
+        const auto start=mediaModelBuilds_;
+        for(int frame=0;frame<40;++frame){
+            DrawPreparedCartridge(game,CartridgeModels::Model::GBA,{50+frame,60,240,180},false,1,0,0,0);
+            DrawPreparedCartridge(game,CartridgeModels::Model::GBA,{500-frame,220,320,240},true,1,0,0,0);
+        }
+        if(mediaModelBuilds_!=start+2||mediaModelHits_<78||mediaCardBytes_>24*1024*1024)return fail(__LINE__);
+        const auto stamp=MediaArtworkStamp(game);
+        textures_.Get("/project/native-installer/assets/default-covers/snes.png");
+        if(MediaArtworkStamp(game)!=stamp)return fail(__LINE__);
+        DrawPreparedCartridge(game,CartridgeModels::Model::GBA,{60,60,240,180},false,1,0,0,0);
+        if(mediaModelBuilds_!=start+2)return fail(__LINE__);
+        preferences_.mediaLayout=4;
+        DrawCachedShelfCartridge(game,640,525,1.85f,45,{80,180,210,255});const auto spines=mediaSpines_.size();
+        textures_.Get("/project/native-installer/assets/default-covers/nes.png");
+        DrawCachedShelfCartridge(game,645,525,1.85f,45,{80,180,210,255});
+        if(mediaSpines_.size()!=spines)return fail(__LINE__);
+        const auto beforeLabel=mediaModelBuilds_;
+        preferences_.mediaLayout=3;game.cartridgeLabelPath="/project/native-installer/assets/default-covers/snes.png";
+        DrawPreparedCartridge(game,CartridgeModels::Model::GBA,{60,60,240,180},false,1,0,0,0);
+        if(mediaModelBuilds_!=beforeLabel+1)return fail(__LINE__);
+        if(!SaveVisualFrame(renderer_,output+"-cache.png"))return fail(__LINE__);
+        SDL_Log("PASS: 80 translated GBA draws use 2 mesh builds; unrelated uploads preserve wall/spine caches; changed artwork rebuilds one card; bounded cache");
+        return true;
+#else
+        return false;
+#endif
+    }
+    bool CheckBoxColor(const std::string &output){
+#ifdef UFLOW_HOST_PREVIEW
+        VisualPreview("library");typeDraft_=LibraryDefinition{};typeDraft_.boxColor=-1;typeRow_=14;
+        OpenBoxColor();BoxColorInput(1,0,false,false);if(typeDraft_.boxColor!=0x181818)return false;
+        BoxColorInput(0,0,false,true);if(typeDraft_.boxColor!=-1||boxColorOpen_)return false;
+        OpenBoxColor();BoxColorTouch(500,355);if(typeDraft_.boxColor!=0x008080)return false;
+        BoxColorTouch(860,400);if(typeDraft_.boxColor!=0x00ff80)return false;
+        BoxColorTouch(860,445);if(typeDraft_.boxColor!=0x00ffff)return false;
+        BoxColorInput(0,0,false,false,true);if(boxColorOpen_||typeDraft_.boxColor!=0x00ffff)return false;
+        LibraryDefinition type;type.id="ds";type.boxColor=0x123456;libraries_={type};
+        GameEntry game;game.libraryId="wiiu";game.navigationLibraryId="ds";
+        const auto c=BoxModelColor(game,{1,2,3,125});if(c.r!=0x12||c.g!=0x34||c.b!=0x56||c.a!=125)return false;
+        game.navigationLibraryId.clear();game.libraryId="wiiu";
+        game.defaultSleevePath="/project/native-installer/assets/default-covers/wiiu.png";
+        textures_.PrefetchCover(game.defaultSleevePath,true);
+        for(int i=0;i<300&&textures_.Pending();++i){textures_.BeginFrame();textures_.PumpOne();SDL_Delay(5);}
+        if(!textures_.GetCover(game.defaultSleevePath,true).texture)return false;
+        for(const std::string model:{"dvd","cardboard"}){
+            type.id="wiiu";type.boxModel=model;libraries_={type};
+            std::vector<Uint32> first;
+            for(int rgb:{0x008fba,0x181818}){
+                libraries_[0].boxColor=rgb;SetColor(renderer_,{30,35,40,255});SDL_RenderClear(renderer_);
+                DrawBoxDirect(game,{420,110,320,480},0,true,{80,180,210,255},0,0,0,CaseView::kCamera,CaseProfileForGame(game,libraries_),true);
+                std::vector<Uint32> pixels(1280*720);if(SDL_RenderReadPixels(renderer_,nullptr,SDL_PIXELFORMAT_RGBA32,pixels.data(),1280*4))return false;
+                if(first.empty())first=pixels;
+                else{int changed=0;for(size_t i=0;i<pixels.size();++i)changed+=pixels[i]!=first[i];if(changed<10)return false;
+                    for(int y=250;y<350;++y)for(int x=540;x<620;++x)if(pixels[y*1280+x]!=first[y*1280+x])return false;}
+                if(!SaveVisualFrame(renderer_,output+"-"+model+"-"+std::to_string(rgb)+".png"))return false;
+            }
+        }
+        typeDraft_.boxModel="dvd";OpenBoxColor();SetColor(renderer_,{30,35,40,255});SDL_RenderClear(renderer_);
+        DrawBoxColor(390,{30,160,190,255},false);return SaveVisualFrame(renderer_,output+"-picker.png");
+#else
+        return false;
+#endif
+    }
+    bool CheckMediaBoxFallback(const std::string &output) {
+#ifdef UFLOW_HOST_PREVIEW
+        VisualPreview("library");preferences_.coverType=CoverPresentation::Media;
+        preferences_.usePreviews=false;preferences_.useBackgrounds=false;
+        GameEntry game=games_.front();game.vcSystem.clear();game.mediaLibraryId.clear();
+        game.libraryId="wiiu";game.physicalMediaPath="missing-disc.png";
+        LibraryDefinition type;type.id="wiiu";type.boxModel=type.mediaModel="auto";
+        if(GamePreparedModel(game,{type},true)!="dvd"||!MediaUsesBoxModel(game,{type}))return false;
+        type.id=game.libraryId="snes";
+        if(GamePreparedModel(game,{type},true)!="cardboard")return false;
+        type.id=game.libraryId="custom";type.boxModel="ps1-jewel";
+        if(GamePreparedModel(game,{type},true)!="ps1-jewel"||!MediaUsesBoxModel(game,{type}))return false;
+        type.mediaModel="nes";
+        if(GamePreparedModel(game,{type},true)!="nes"||MediaUsesBoxModel(game,{type}))return false;
+        // Installed and raw VC injections share Wii U artwork but models belong
+        // to their navigation type, independently of mediaByContentType.
+        const auto originalGame=game;
+        // Explicit DVD geometry must honor saved dimensions, not reset to 14mm.
+        for(int depth:{14,30,50}){
+            LibraryDefinition genesis;genesis.id="custom-genesis";genesis.boxModel="dvd";
+            genesis.caseWidthMm=128;genesis.caseHeightMm=191;genesis.caseThicknessMm=depth;
+            game.libraryId=genesis.id;game.navigationLibraryId.clear();game.mediaLibraryId.clear();
+            const auto p=CaseProfileForGame(game,{genesis});
+            if(p.widthMm!=128||p.heightMm!=191||p.thicknessMm!=depth)return false;
+            libraries_={genesis};game.defaultSleevePath="/project/native-installer/assets/default-covers/genesis.png";
+            game.coverPath.clear();game.fullCoverPath.clear();game.backCoverPath.clear();game.spinePath.clear();
+            textures_.PrefetchCover(game.defaultSleevePath,true);
+            for(int i=0;i<300&&textures_.Pending();++i){textures_.BeginFrame();textures_.PumpOne();SDL_Delay(5);}
+            SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);
+            DrawBoxDirect(game,{420,110,320,480},0,true,{80,180,210,255},.65f,-.1f,0,CaseView::kCamera,p,true);
+            if(!SaveVisualFrame(renderer_,output+"-genesis-depth-"+std::to_string(depth)+".png"))return false;
+        }
+        game=originalGame;
+        LibraryDefinition wiiu;wiiu.id="wiiu";wiiu.boxModel="jewel";wiiu.mediaModel="disc";
+        for(const char *system:{"snes","gba","n64"})for(bool installed:{false,true})for(bool ownMedia:{false,true}){
+            LibraryDefinition target;target.id=system;target.boxModel="cardboard";target.mediaModel=system;target.mediaByContentType=ownMedia;
+            const auto dimensions=CaseProfiles::For(system,{},{});target.caseWidthMm=dimensions.width;target.caseHeightMm=dimensions.height;target.caseThicknessMm=dimensions.thickness;
+            game.libraryId="wiiu";game.platform=Platform::WiiU;game.installed=installed;game.vcSystem=system;game.navigationLibraryId=system;game.mediaLibraryId="wiiu";
+            for(const char *nativeModel:{"jewel","dvd","cardboard"}){
+                wiiu.boxModel=nativeModel;
+                if(GamePreparedModel(game,{wiiu,target},false)!="cardboard"||GamePreparedModel(game,{wiiu,target},true)!=system||MediaUsesBoxModel(game,{wiiu,target}))return false;
+                const auto profile=CaseProfileForGame(game,{wiiu,target});if(profile.widthMm!=dimensions.width||profile.heightMm!=dimensions.height)return false;
+            }
+            target.mediaModel="auto";
+            if(GamePreparedModel(game,{wiiu,target},true)!="cardboard"||!MediaUsesBoxModel(game,{wiiu,target}))return false;
+            // Missing categorized definition must not inherit native settings.
+            if(GamePreparedModel(game,{wiiu},false)!="cardboard")return false;
+        }
+        game=originalGame;
+        game.defaultSleevePath="/project/native-installer/assets/default-covers/wiiu.png";
+        game.fullCoverPath.clear();game.coverPath.clear();game.backCoverPath.clear();game.spinePath.clear();
+        textures_.PrefetchCover(game.defaultSleevePath,true);
+        for(int i=0;i<300&&textures_.Pending();++i){textures_.BeginFrame();textures_.PumpOne();SDL_Delay(5);}
+        for(const char *model:{"dvd","cardboard","jewel","ps1-jewel"}){
+            type.boxModel=model;type.mediaModel="auto";libraries_={type};
+            if(GamePreparedModel(game,libraries_,true)!=model)return false;
+            SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);
+            DrawPresentation(game,{350,90,580,520},false,{80,180,210,255},1,0,.4f,-.12f,.05f);
+            if(!SaveVisualFrame(renderer_,output+"-"+model+".png"))return false;
+        }
+        {
+            auto blank=game;blank.fullCoverPath.clear();blank.coverPath.clear();blank.backCoverPath.clear();blank.spinePath.clear();blank.defaultSleevePath.clear();
+            type.boxModel="cardboard";libraries_={type};preferences_.coverType=CoverPresentation::Box;
+            const auto target=SDL_GetRenderTarget(renderer_);
+            int frame=0;
+            for(float yaw:{0.f,.055f,.82f,-.82f})for(bool selected:{true,false}){
+                SDL_SetRenderTarget(renderer_,nullptr);SetColor(renderer_,{0,0,0,255});SDL_RenderClear(renderer_);
+                DrawBox(blank,{400,120,480,480},selected?0.f:1.f,selected,{80,180,210,255},yaw,0,0,true);
+                if(!SaveVisualFrame(renderer_,output+"-carton-corner-"+std::to_string(frame++)+".png"))return false;
+                if(SDL_GetRenderTarget(renderer_)!=nullptr)return false;
+            }
+            SDL_SetRenderTarget(renderer_,target);preferences_.coverType=CoverPresentation::Media;
+        }
+        // An installed VC title uses its assigned content type's model even when
+        // the native Wii U library explicitly selects discs.
+        LibraryDefinition native;native.id="wiiu";native.mediaModel="disc";
+        LibraryDefinition pce;pce.id="pce";pce.mediaModel="hucard";pce.boxModel="jewel";
+        libraries_={native,pce};game.libraryId="wiiu";game.mediaLibraryId="pce";
+        game.cartridgeLabelPath.clear();game.physicalMediaPath=game.defaultSleevePath;
+        if(GamePreparedModel(game,libraries_,true)!="hucard"||MediaUsesBoxModel(game,libraries_))return false;
+        if(GamePreparedModel(game,libraries_,false)!="jewel")return false;
+        auto builds=mediaModelBuilds_;
+        SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);
+        DrawPresentation(game,{350,90,580,520},true,{80,180,210,255},1,0,.4f,-.12f,.05f);
+        if(mediaModelBuilds_!=builds+1)return false;
+        if(!SaveVisualFrame(renderer_,output+"-installed-hucard.png"))return false;
+        builds=mediaModelBuilds_;
+        DrawShelfCartridge(game,640,600,1,.4f,-.12f,.05f,true,{80,180,210,255});
+        if(mediaModelBuilds_!=builds+1)return false;
+        libraries_[1].id=game.mediaLibraryId="genesis";libraries_[1].mediaModel="genesis";
+        if(GamePreparedModel(game,libraries_,true)!="genesis"||MediaUsesBoxModel(game,libraries_))return false;
+        builds=mediaModelBuilds_;
+        SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);
+        DrawPresentation(game,{350,90,580,520},true,{80,180,210,255},1,0,.4f,-.12f,.05f);
+        if(mediaModelBuilds_!=builds+1)return false;
+        if(!SaveVisualFrame(renderer_,output+"-installed-genesis.png"))return false;
+        libraries_[1].mediaModel="auto";
+        if(!MediaUsesBoxModel(game,libraries_)||GamePreparedModel(game,libraries_,true)!="jewel")return false;
+        game.mediaLibraryId.clear();
+        if(GamePreparedModel(game,libraries_,true)!="disc")return false;
+        SDL_Log("PASS: unspecified media inherits box model; explicit cartridge remains; inherited jewel uses cover not disc");
+        return true;
+#else
+        return false;
+#endif
+    }
+    bool CheckPreparedModels(const std::string &output) {
+        VisualPreview("library");preferences_.usePreviews=false;
+        auto game=games_.front();game.libraryId=game.mediaLibraryId="ps1";game.physicalMediaPath.clear();
+        textures_.Prefetch(game.coverPath);
+        for(int i=0;i<300&&textures_.Pending();++i){textures_.BeginFrame();textures_.PumpOne();SDL_Delay(5);}
+        if(Ps1Jewel::DiscAngle(3000)!=0||std::abs(Ps1Jewel::DiscAngle(750)-1.5707963f)>.001f)return false;
+        for(int mode=0;mode<2;++mode)for(int turn=0;turn<4;++turn){
+            SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);
+            const CaseView view({350,90,580,520},{142,125,14},turn*.8f+.3f,-.12f,.05f);
+            DrawJewelArt(game,view,mode==1,true,1.f,Ps1Jewel::DiscAngle(turn*750));
+            if(!SaveVisualFrame(renderer_,output+(mode?"-media-":"-box-")+std::to_string(turn)+".png"))return false;
+        }
+        // Unselected jewel cases must show their vertical spine beside carts.
+        const std::string spineFile=output+"-spine-fixture.png";
+        std::vector<unsigned char> pixels(32*256*4,255);
+        for(int y=0;y<256;++y)for(int x=0;x<32;++x){auto *p=&pixels[(y*32+x)*4];
+            p[0]=y<40?255:30;p[1]=y<40?40:180;p[2]=y<40?40:230;}
+        png_image im{};im.version=PNG_IMAGE_VERSION;im.width=32;im.height=256;im.format=PNG_FORMAT_RGBA;
+        if(!png_image_write_to_file(&im,spineFile.c_str(),0,pixels.data(),32*4,nullptr))return false;
+        png_image_free(&im);
+        game.fullCoverPath.clear();game.defaultSleevePath.clear();game.spinePath=spineFile;
+        textures_.PrefetchCover(spineFile,true);
+        for(int i=0;i<300&&textures_.Pending();++i){textures_.BeginFrame();textures_.PumpOne();SDL_Delay(5);}
+        preferences_.coverType=CoverPresentation::Media;preferences_.mediaLayout=4;preferences_.skin=1;
+        preferences_.useBackgrounds=false;preferences_.coverZoom=120;
+        games_.assign(15,game);
+        for(int i=0;i<15;++i){auto &g=games_[i];g.absolutePath="/roms/ps1-"+std::to_string(i)+".cue";g.name="Crash Bandicoot";g.vcSystem.clear();g.platform=Platform::Files;}
+        games_[7].libraryId=games_[7].mediaLibraryId="nes";games_[7].absolutePath="/roms/NES.nes";games_[7].name="NES cartridge";
+        tab_=0;RebuildVisible();
+        for(size_t i=0;i<visible_.size();++i)if(games_[visible_[i]].libraryId=="nes")selected_=i;
+        visualSelected_=float(selected_);
+        if(!Render(0,output+"-mixed-shelf.png"))return false;
+        auto types=LoadLibraries();if(types.empty())return false;
+        types.front().boxModel="ps1-jewel";types.front().mediaModel="gba";
+        if(!SaveLibraries(types,false))return false;
+        const auto restored=LoadLibraries();if(restored.front().boxModel!="ps1-jewel"||restored.front().mediaModel!="gba")return false;
+        VisualPreview("settings");typeEditor_=true;typeText_=false;typeDraft_=types.front();typeRow_=8;
+        SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);DrawTypes(400,{90,190,210,255},false);
+        if(!SaveVisualFrame(renderer_,output+"-selector.png"))return false;
+        SDL_Log("PASS: prepared model persistence, selector preview, PS1 box/media rotation, three-second disc period");return true;
+    }
+    bool CheckAdditionalCartridges(const std::string &output) {
+        using S=CoverPresentation::MediaShape;
+        if(CoverPresentation::Shape("gbc")!=S::GB||CoverPresentation::Shape("custom","/game.gb")!=S::GB)return false;
+        const char *systems[]={"n64","gba","gb","ds"};
+        for(const auto *system:systems){
+            VisualPreview("library");preferences_.skin=1;preferences_.coverType=CoverPresentation::Media;
+            preferences_.usePreviews=false;preferences_.useBackgrounds=false;preferences_.coverZoom=120;
+            const auto seed=games_.front();games_.assign(45,seed);
+            for(int i=0;i<45;++i){auto &g=games_[i];g.name=std::string(system)+" cartridge preview";g.libraryId=g.mediaLibraryId=system;g.vcSystem.clear();g.platform=Platform::Files;
+                g.absolutePath="/roms/preview-"+std::to_string(i)+"."+system;g.physicalMediaPath.clear();g.previewPath.clear();g.backgroundPath.clear();
+                g.cartridgeLabelPath=std::string("/project/artifacts/cartridge-models/")+system+"-label.png";g.logoPath="/project/artifacts/cartridge-models/logo.png";
+                textures_.Prefetch(g.cartridgeLabelPath);textures_.Prefetch(g.logoPath);
+            }
+            tab_=0;RebuildVisible();selected_=1;visualSelected_=1;
+            for(int i=0;i<300&&textures_.Pending();++i){textures_.BeginFrame();textures_.PumpOne();SDL_Delay(5);}
+            const auto base=output+"-"+system;
+            for(int layout:{0,1,2,3,4}){preferences_.mediaLayout=layout;if(!Render(0,base+"-layout-"+std::to_string(layout)+".png"))return false;}
+            const auto geometryBuilds=mediaShelfGeometryBuilds_;
+            for(int frame=0;frame<5;++frame){visualSelected_=1.f+frame*.25f;selected_=2;if(!Render(0,base+"-motion-"+std::to_string(frame)+".png"))return false;}
+            if(mediaShelfGeometryBuilds_!=geometryBuilds)return false;
+            visualSelected_=2.f;Render(0);Render(0);if(bookshelfTexture_){const auto hits=bookshelfCacheHits_;Render(0);if(bookshelfCacheHits_<=hits)return false;}
+            for(auto &g:games_){g.cartridgeLabelPath.clear();g.logoPath.clear();}
+            ++bookshelfEpoch_;bookshelfCached_=false;
+            if(!Render(0,base+"-no-art.png"))return false;
+            preferences_.reflections=false;if(!Render(0,base+"-floor-off.png"))return false;
+            preferences_.reflections=true;if(!Render(0,base+"-floor-on.png"))return false;
+            if(!CartridgeTitleLogo(*Selected()))return false;
+            const auto cachedSpines=mediaSpines_.size();Render(0);if(mediaSpines_.size()!=cachedSpines)return false;
+            selected_=12;visualSelected_=5.3f;bookshelfMotion_.rapid=true;
+            if(!Render(0,base+"-rapid.png"))return false;
+            selected_=2;visualSelected_=2.f;bookshelfMotion_={};
+            ToggleDetails();detailsProgress_=1;detailsBackdropReady_=false;if(!Render(0,base+"-details.png"))return false;
+            ToggleDetails();detailsProgress_=0;detailsBackdropReady_=false;
+            if(SDL_SetRenderTarget(renderer_,sceneTexture_))return false;SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);
+            showcaseProgress_=1;gGlassBackdrop=nullptr;DrawShowcase(*Selected(),AccentFor(Selected()->platform,preferences_.theme));
+            if(!SaveVisualFrame(renderer_,base+"-video-preview.png"))return false;SDL_SetRenderTarget(renderer_,nullptr);showcaseProgress_=0;
+            for(int step=0;step<12;++step){SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);
+                DrawPresentation(*Selected(),{280,80,720,560},true,{80,180,210,255},1.f,0,step*.5235988f,.18f,.05f);
+                if(!SaveVisualFrame(renderer_,base+"-turn-"+std::to_string(step)+".png"))return false;
+            }
+        }
+        SetColor(renderer_,{27,31,37,255});SDL_RenderClear(renderer_);const char *mixed[]={"nes","snes","n64","gba","gb","ds"};
+        for(int i=0;i<6;++i){auto g=*Selected();g.libraryId=g.mediaLibraryId=mixed[i];g.absolutePath=std::string("/roms/test.")+mixed[i];g.cartridgeLabelPath.clear();
+            DrawShelfCartridge(g,110.f+i*210.f,530.f,1.f,0,1.5f,1.5707963f,false,{80,180,210,255});}
+        if(!SaveVisualFrame(renderer_,output+"-mixed-baseline.png"))return false;
+        SDL_Log("PASS: N64/GBA/GB/DS five layouts, shelf motion/cache, details/video, 48 rotation frames, GB aliases and six-system baseline");return true;
     }
     bool CheckPresentations(const std::string &output) {
         const auto check=[&](bool ok,int line){if(!ok)SDL_Log("Presentation FAIL line %d",line);return ok;};
         for(int skin:{0,1}) {
             VisualPreview("settings");preferences_.skin=skin;settingsCategory_=3;sourceManager_=false;
             settingsSidebar_=false;settingsRow_=0;
-            if(!check(SettingsRowCount()==16 && SettingsSelectorRow(0),__LINE__))return false;
+            if(!check(SettingsRowCount()==17 && SettingsSelectorRow(0),__LINE__))return false;
             preferences_.coverLayout=8;SettingsAdjust(1);
-            if(!check(preferences_.coverType==CoverPresentation::Logo && PresentationLayout()==0,__LINE__))return false;
+            if(!check(ViewType()==CoverPresentation::Logo && PresentationLayout()==0,__LINE__))return false;
             settingsRow_=1;SettingsAdjust(-1);
-            if(!check(preferences_.logoLayout==6,__LINE__))return false;
+            if(!check(ViewLayout(CoverPresentation::Logo)==6,__LINE__))return false;
             settingsRow_=0;SettingsAdjust(1);settingsRow_=1;SettingsAdjust(-1);
-            if(!check(preferences_.mediaLayout==3,__LINE__))return false;
+            if(!check(ViewLayout(CoverPresentation::Media)==4,__LINE__))return false;
             settingsRow_=0;SettingsAdjust(1);
-            if(!check(preferences_.coverType==CoverPresentation::Box && PresentationLayout()==8,__LINE__))return false;
+            if(!check(ViewType()==CoverPresentation::Thumbnails,__LINE__))return false;
+            SettingsAdjust(1);
+            if(!check(ViewType()==CoverPresentation::Box && PresentationLayout()==8,__LINE__))return false;
             if(!check(SettingsZoomTouch(870,400) && preferences_.coverSpacing==50,__LINE__))return false;
             if(!check(SettingsZoomTouch(1050,400,true) && preferences_.coverSpacing==200,__LINE__))return false;
             if(!check(SettingsZoomTouch(930,400,true) && preferences_.coverSpacing==100,__LINE__))return false;
@@ -3960,7 +4825,7 @@ public:
                 caseDraws_=0;
                 const auto name=output+"-"+std::to_string(skin)+"-"+std::to_string(type)+"-"+std::to_string(layout);
                 if(!Render(0,name+".png"))return false;
-                if(type!=CoverPresentation::Box || layout==2)if(!check(caseDraws_==0,__LINE__))return false;
+                if(type==CoverPresentation::Logo||type==CoverPresentation::Thumbnails||(type==CoverPresentation::Box&&layout==2))if(!check(caseDraws_==0,__LINE__))return false;
                 for(float pos:{14.25f,14.5f,14.75f}){visualSelected_=pos;if(!Render(0))return false;}
                 visualSelected_=14;
                 if(type!=CoverPresentation::Box) {
@@ -3968,7 +4833,7 @@ public:
                     if(!Render(0))return false;
                     CloseCoverInspect();coverInspectProgress_=coverInspectBackProgress_=0;
                     if(!BeginLaunchAnimation() || !DrawLaunchAnimation(.3f))return false;
-                    EndLaunchAnimation();if(!check(caseDraws_==0,__LINE__))return false;
+                    EndLaunchAnimation();if(type!=CoverPresentation::Media&&!check(caseDraws_==0,__LINE__))return false;
                 }
             }
         }
@@ -4133,11 +4998,26 @@ public:
             LaunchOptionsInput(-1,false,false);LaunchOptionsInput(0,false,false,-1,-1,true);
             if(gameLaunchers_.count(launchOptionsKey_)||LoadLauncherOverrides().count(launchOptionsKey_))return false;
             if(launchOptions_[0].note.find("(default)")==std::string::npos||status_.find("(CONTENT TYPE)")==std::string::npos)return false;
+            LaunchOptionsInput(1,false,false); // final launcher
+            gameLaunchers_[launchOptionsKey_]="noods";
+            LaunchOptionsInput(1,false,false); // footer
+            LaunchOptionsInput(0,false,false,-1,-1,false,1);
+            LaunchOptionsInput(0,false,false,-1,-1,false,1);
+            if(launchOptionsFooter_!=2)return false;
+            LaunchOptionsInput(0,true,false);
+            const auto persisted=LoadLibraries();
+            const auto saved=std::find_if(persisted.begin(),persisted.end(),[](const auto &l){return l.id=="ds";});
+            if(saved==persisted.end()||saved->launcherId!="ds-vc"||gameLaunchers_[launchOptionsKey_]!="noods"||!LaunchOptionsOpen())return false;
+            if(!Render(0,path+"-system-default-"+std::to_string(skin)+".png"))return false;
+            LaunchOptionsInput(-1,false,false);
+            if(launchOptionsFooter_!=-1||launchOptionsChoice_!=1)return false;
+            LaunchOptionsInput(0,false,false,-1,-1,false,0,true);
+            if(launchOptionsFooter_!=-1||!LaunchOptionsOpen()||launchOptionsChoice_!=1)return false;
             launchOptionsOpen_=false;status_.clear();
             // Wii VC methods have no saved default: + changes nothing there.
             launchOptions_=WiiVCLaunchOptions();launchOptionsOpen_=true;launchOptionsChoice_=1;
             if(LaunchOptionsCanSetDefault()||LaunchOptionsInput(0,false,false,-1,-1,true)!=LaunchMethod::Default||!status_.empty())return false;
-            launchOptionsOpen_=false;gameLaunchers_=savedLaunchers;libraries_=savedLibraries;
+            launchOptionsOpen_=false;gameLaunchers_=savedLaunchers;libraries_=savedLibraries;SaveLibraries(libraries_,false);
             if(!SaveLauncherOverrides(gameLaunchers_))return false;
             // More than five compatible launchers must remain reachable. The
             // viewport scrolls; neither the list nor a later default is cut off.
@@ -4197,6 +5077,7 @@ public:
     // end; held repeats stop there.
     static constexpr int kPageSize = 10;
     void Page(int direction, bool wrapAtEnd) {
+        if(WiiUMenuLayout()){if(wrapAtEnd || (direction<0?selected_/15>0:selected_/15+1<size_t(WiiUMenuPages())))WiiUMenuPage(direction);return;}
         DemoInput(true);
         if (visible_.empty() || libraryFadePhase_ || direction == 0) return;
         detailsBackdropReady_ = false;
@@ -4236,6 +5117,8 @@ public:
     }
     bool CheckLibraryFade() {
         if(!VisualPreview("library"))return false;
+        games_.front().mediaLibraryId="stale-appearance";
+        mediaRefreshPending_=false;
         const int oldTab=tab_;const auto oldVisible=visible_;
         ChangeTab(1);
         if(tab_!=oldTab || visible_!=oldVisible || libraryFade_!=1.f)return false;
@@ -4250,9 +5133,11 @@ public:
         if(libraryFade_!=1 || libraryFadePhase_ || pendingTab_!=-1)return false;
         for(int i=0;i<static_cast<int>(LibraryTabs().size())+1;++i) {
             ChangeTab(1);AdvanceLibraryFade(1.f);AdvanceLibraryFade(1.f);
-            if(libraryFadePhase_ || libraryFade_!=1)return false;
+            if(libraryFadePhase_ || libraryFade_!=1 || mediaRefreshPending_)return false;
         }
-        std::puts("PASS: old library retained through fade-out, swap at zero, fade-in, rapid retarget, empty libraries and wrap");
+        RebuildVisible(true);if(!mediaRefreshPending_)return false;
+        mediaRefreshPending_=false;
+        std::puts("PASS: navigation does not schedule media work; explicit category reconciliation does. Old library retained through fade-out, swap at zero, fade-in, rapid retarget, empty libraries and wrap");
         return true;
     }
     void ToggleFavorite() {
@@ -4363,7 +5248,7 @@ public:
             const auto key=Selected()?Selected()->absolutePath:std::string{};
             // Also reconcile partial jobs: a base game remains installed if a later DLC fails.
             if(RefreshInstallStatus()) {
-                MergeInstalledPackages(games_);ClearSideCases();RebuildVisible();
+                MergeInstalledPackages(games_);ClearSideCases();RebuildVisible(true);
                 for(size_t i=0;i<visible_.size();++i)if(games_[visible_[i]].absolutePath==key){selected_=i;break;}
                 visualSelected_=selected_;
                 if(!SaveLibraryCache(games_))installMessage_+=" Library cache could not be saved.";
@@ -4373,30 +5258,30 @@ public:
 #endif
         }
     }
-    void DrawInstallBadge(const GameEntry &g,SDL_Rect rect){
+    void DrawInstallBadge(const GameEntry &g,SDL_Rect rect,Uint8 opacity=255){
         if(g.installPackages.empty())return;
         const bool installed=std::all_of(g.installPackages.begin(),g.installPackages.end(),[](const auto&p){return p.Installed(0)||p.Installed(1);});
         const int side=std::clamp(rect.w/5,22,44),x=rect.x+rect.w-side-5,y=rect.y+5;
-        FillRoundedRect(renderer_,{x,y,side,side},side/4,installed?Color{44,153,103,245}:Color{37,139,188,245});
-        SetColor(renderer_,{255,255,255,255});
+        FillRoundedRect(renderer_,{x,y,side,side},side/4,installed?Color{44,153,103,Uint8(245*opacity/255)}:Color{37,139,188,Uint8(245*opacity/255)});
+        SetColor(renderer_,{255,255,255,opacity});
         if(installed){SDL_RenderDrawLine(renderer_,x+side/4,y+side/2,x+side/2,y+side*3/4);SDL_RenderDrawLine(renderer_,x+side/2,y+side*3/4,x+side*4/5,y+side/4);}
         else{SDL_RenderDrawLine(renderer_,x+side/2,y+side/5,x+side/2,y+side*3/5);SDL_RenderDrawLine(renderer_,x+side/4,y+side*2/5,x+side/2,y+side*3/5);SDL_RenderDrawLine(renderer_,x+side*3/4,y+side*2/5,x+side/2,y+side*3/5);SDL_RenderDrawLine(renderer_,x+side/4,y+side*4/5,x+side*3/4,y+side*4/5);}
     }
     void DrawInstallDetails(const GameEntry &g,Color accent,float progress){
         const auto pose=CoverTransition(progress);
         const int shift=int((1-pose.travel)*1200);const bool glass=preferences_.skin==1;
-        const Color ink=glass?Color{43,63,74,255}:Color{232,241,249,255};
+        const Color ink=glass?UIShade(Color{43,63,74,255}):UIShade(Color{232,241,249,255});
         const auto interpolate=[&](int from,int to){return int(from+(to-from)*pose.travel);};
         DrawBox(g,{interpolate(FocusCoverRect().x,48),interpolate(FocusCoverRect().y,98),interpolate(FocusCoverRect().w,310),interpolate(FocusCoverRect().h,465)},
                 -1.f,true,accent,pose.yaw,pose.pitch,pose.roll,true);
         if(glass)DrawGlassSurface(renderer_,{370+shift,102,850,520},28,accent,96,true);
-        else FillRoundedRect(renderer_,{370+shift,102,850,520},20,{22,34,50,250});
+        else FillRoundedRect(renderer_,{370+shift,102,850,520},20,UIShade(Color{22,34,50,250}));
         const int x=400+shift;
         const auto button=[&](SDL_Rect rect,bool active){
             if(glass)DrawDetailGlassButton(renderer_,rect,active,accent);
-            else FillRoundedRect(renderer_,rect,8,active?accent:Color{28,42,60,255});
+            else FillRoundedRect(renderer_,rect,8,active?accent:UIShade(Color{28,42,60,255}));
         };
-        const auto buttonInk=[&](bool active){return glass?Color{43,63,74,255}:active?AccentInk(accent):ink;};
+        const auto buttonInk=[&](bool active){return glass?UIShade(Color{43,63,74,255}):active?AccentInk(accent):ink;};
         DrawFittedText(renderer_,g.name,x,125,780,3,ink);
         DrawText(renderer_,"INSTALL CONTENT  /  "+g.titleId,x,174,1,ink);
         button({x,208,780,48},installRow_==0);
@@ -4412,7 +5297,7 @@ public:
         }
         if(state.busy||installStartPending_){
             double ratio=state.total?std::min(1.,double(state.done)/state.total):0;
-            FillRoundedRect(renderer_,{x,493,780,13},6,{110,130,145,80});
+            FillRoundedRect(renderer_,{x,493,780,13},6,UIShade(Color{110,130,145,80}));
             if(ratio>0)FillRoundedRect(renderer_,{x,493,int(780*ratio),13},6,accent);
             DrawText(renderer_,(installStartPending_?std::string("Finishing media activity"):state.message)+"  "+std::to_string(int(ratio*100))+"%",x,519,2,ink);
             std::string transfer=TitleInstall::Size(state.done)+" / "+TitleInstall::Size(state.total);
@@ -4429,7 +5314,7 @@ public:
             const bool launchable=InstalledLaunchGame()!=nullptr;
             const int width=launchable?380:780;
             button({x,535,width,48},canInstall&&installRow_==int(g.installPackages.size())+1);
-            DrawFittedText(renderer_,canInstall?"INSTALL SELECTED CONTENT":alreadyInstalled?"ALREADY INSTALLED":"SELECT CONTENT ABOVE",x+16,550,width-32,2,canInstall?buttonInk(installRow_==int(g.installPackages.size())+1):Color{140,154,165,255});
+            DrawFittedText(renderer_,canInstall?"INSTALL SELECTED CONTENT":alreadyInstalled?"ALREADY INSTALLED":"SELECT CONTENT ABOVE",x+16,550,width-32,2,canInstall?buttonInk(installRow_==int(g.installPackages.size())+1):UIShade(Color{140,154,165,255}));
             if(launchable){
                 const bool active=installRow_==int(g.installPackages.size())+2;
                 button({x+400,535,380,48},active);
@@ -4440,6 +5325,7 @@ public:
     }
     void ToggleDetails() {
         if (!Selected() || InstallBusy()) return;
+
         if(!details_&&IsInstall(Selected())){RefreshInstallStatus();installRow_=0;installMessage_.clear();InstallSpace();}
         coverInspectOpen_ = false;
         detailsBackdropReady_ = false;
@@ -4448,14 +5334,16 @@ public:
         savedInjectionState_.erase(LauncherGameKey(*Selected()));
     }
     int DetailsGameRows() const {return Selected()&&!InjectionModule(*Selected()).empty()?3:2;}
+    bool DetailsMediaIsVideo() const {return ((detailsPage_%8)+8)%8==0;}
     const char *DetailsAction() const {
         if(detailsRow_==2&&detailsPanelFocus_)return detailsPanelRow_==0?"SELECT LAUNCHER":detailsPanelRow_==DetailsGameRows()-1?"LAUNCHER SETTINGS":"INJECT / RE-INJECT";
-        if(detailsRow_==4)return detailsPanelFocus_?(detailsPanelRow_==0?"PREVIOUS":detailsPanelRow_==2?"NEXT":detailsVideo_.Active()?"STOP VIDEO":"PLAY / VIEW"):"BROWSE MEDIA";
+        if(detailsRow_==4)return detailsPanelFocus_?(detailsPanelRow_==3?"CHECK MEDIA":detailsPanelRow_==0?"PREVIOUS":detailsPanelRow_==2?"NEXT":detailsVideo_.Active()?"STOP VIDEO":"PLAY / VIEW"):"BROWSE MEDIA";
         static constexpr const char *actions[]={"TOGGLE FAVORITE","LAUNCH","EDIT LAUNCHER","LIBRARY SETTINGS","BROWSE MEDIA","RATE GAME"};
         return actions[detailsRow_];
     }
     void DetailsInput(int horizontal, int vertical, bool accept, bool back, bool more, bool toggle=false) {
         if (!details_ || !Selected()) return;
+
         if(toggle){ToggleDetails();return;}
         if(back)MenuSound(MenuSounds::Back);
         else if(accept || more)MenuSound(MenuSounds::Confirm);
@@ -4468,6 +5356,14 @@ public:
         }
         if(back) {if(detailsPanelFocus_){detailsPanelFocus_=false;return;}details_=false;return;}
         if(horizontal){
+            if(detailsRow_==4&&detailsPanelFocus_){
+                if(horizontal<0&&detailsPanelRow_==0){detailsPanelFocus_=false;return;}
+                if(detailsPanelRow_==3){if(horizontal<0)detailsPanelFocus_=false;else detailsPanelRow_=0;return;}
+                const int count=DetailsMediaIsVideo()?3:2;
+                const int column=DetailsMediaIsVideo()?detailsPanelRow_:(detailsPanelRow_==2?1:0);
+                const int next=(column+horizontal+count)%count;
+                detailsPanelRow_=DetailsMediaIsVideo()?next:(next==0?0:2);return;
+            }
             if(horizontal<0&&detailsPanelFocus_){detailsPanelFocus_=false;return;}
             if(horizontal>0&&(detailsRow_==2||detailsRow_==4)){detailsPanelFocus_=true;return;}
             if(detailsRow_==0||detailsRow_==3||detailsRow_==5)detailsPage_+=horizontal;
@@ -4476,15 +5372,17 @@ public:
         if(vertical) {
             if(detailsPanelFocus_) {
                 if(detailsRow_==2)detailsPanelRow_=(detailsPanelRow_+vertical+DetailsGameRows())%DetailsGameRows();
-                else if(detailsRow_==4)detailsPanelRow_=(detailsPanelRow_+vertical+3)%3;
+                else if(detailsRow_==4){
+                    detailsPanelFocus_=false;detailsPanelRow_=0;
+                }
             } else {detailsRow_=(detailsRow_+vertical+6)%6;detailsPage_=0;detailsPanelRow_=0;}
         }
         if(accept&&detailsRow_==4&&!more){
-            if(!detailsPanelFocus_){detailsPanelFocus_=true;detailsPanelRow_=1;return;}
+            if(!detailsPanelFocus_){detailsPanelFocus_=true;detailsPanelRow_=DetailsMediaIsVideo()?1:0;return;}
+
             if(detailsPanelRow_==0)--detailsPage_;
             else if(detailsPanelRow_==2)++detailsPage_;
             else if(((detailsPage_%8)+8)%8==0)ToggleDetailsVideo();
-            else ++detailsPage_;
             return;
         }
         if(accept&&detailsRow_==2&&!more) {
@@ -4648,9 +5546,12 @@ public:
             InstallInput(0,0,true,false);return;
         }
         const int contentX=preferences_.skin==1?512:490;
+
+
         if(detailsRow_==4&&x>=contentX&&x<contentX+620&&y>=490&&y<528){
-            const int column=(x-contentX)/210;if((x-contentX)%210>=200)return;
-            detailsPanelFocus_=true;detailsPanelRow_=column;DetailsInput(0,0,true,false,false);return;
+            const int stride=DetailsMediaIsVideo()?210:315;
+            const int column=(x-contentX)/stride;if((x-contentX)%stride>=stride-10)return;
+            detailsPanelFocus_=true;detailsPanelRow_=DetailsMediaIsVideo()?column:(column==0?0:2);DetailsInput(0,0,true,false,false);return;
         }
         if(detailsRow_==2&&x>=contentX&&x<contentX+620&&y>=283&&y<449) {
             const int row=(y-283)/56;
@@ -4681,9 +5582,11 @@ public:
     }
     void ToggleSettings() {
         if(settings_ && ConfirmDraftExit(DraftExit::Settings))return;
+        if(controllersOpen_)controllers_.Close();controllersOpen_=controllersFocus_=controllersConfirm_=false;
         supportOpen_=supportFocus_=supportConfirm_=false;
         settingsAction_=-1;
         detailsBackdropReady_ = false;
+        if(settings_){Trace("settings-toggle-exit-save-begin");FlushSettingsSave(true);settingsExitPending_=true;Trace("settings-toggle-exit-save-complete");}
         settings_=!settings_; details_=false;
         MenuSound(settings_?MenuSounds::Confirm:MenuSounds::Back);
         settingsSidebar_=true;
@@ -4743,13 +5646,16 @@ public:
         if(scanOpen_ && scanState_.finished && close){scanOpen_=false;detailsBackdropReady_=false;ApplyMusic();}
     }
     void PollScan() {
+
+
+
         if((mediaRefreshPending_||sourceMediaRefreshPending_)&&!scanOpen_&&!settings_&&!details_&&!InstallBusy()&&!preview_){
             mediaRefreshPending_=false;mediaRefresh_=true;
             mediaRefreshSelection_=Selected()?Selected()->absolutePath:"";
             FlushSettingsSave(true);DismissVideo();StopMusic();
             scanState_={};scanState_.progress.stage=sourceMediaRefreshPending_?"UPDATING MEDIA":"UPDATING CONTENT TYPE MEDIA";scanApplied_=false;scanCancelling_=false;
             scanOpen_=true;scanStarted_=SDL_GetTicks();scanElapsed_=0;detailsBackdropReady_=false;
-            scanRefreshSources_=sourceMediaRefreshPending_;scanStartPending_=true;
+            scanRefreshSources_=sourceMediaRefreshPending_;scanKeepArtwork_=scanRefreshSources_&&MediaRefreshIsScoped();scanStartPending_=true;
             scanFirstFrame_=true;
             sourceMediaRefreshPending_=false;
         }
@@ -4780,7 +5686,7 @@ public:
             if(scanState_.error.empty()){
                 auto result=scanWorker_.Take();
                 scanInvalid_=result.invalidWiiU;
-                ReplaceGames(std::move(result.games));
+                ReplaceGames(std::move(result.games),mediaRefresh_&&scanKeepArtwork_);
                 if(mediaRefresh_){
                     for(size_t i=0;i<visible_.size();++i)if(games_[visible_[i]].absolutePath==mediaRefreshSelection_){selected_=i;visualSelected_=float(i);break;}
                     scanOpen_=false;ApplyMusic();
@@ -4828,7 +5734,7 @@ public:
         if(!game||OverlayOpen())return false;
         auto options=LaunchOptionsFor(*game);
         if(options.size()<2){SetStatus("NO OTHER LAUNCH METHODS FOR THIS TITLE",4000);return false;}
-        launchOptionsChoice_=0;
+        launchOptionsChoice_=0;launchOptionsFooter_=-1;
         for(std::size_t i=0;i<options.size();++i)if(options[i].note.find("(default)")!=std::string::npos)launchOptionsChoice_=static_cast<int>(i);
         launchOptions_=std::move(options);
         launchOptionsOpen_=true;launchOptionsName_=game->name;launchOptionsKey_=LauncherGameKey(*game);
@@ -4842,22 +5748,36 @@ public:
     }
     struct LaunchOptionsBox {int top,height,rows,step,row;};
     LaunchOptionsBox LaunchOptionsLayout() const {
-        const int count=std::max(1,static_cast<int>(std::min(launchOptions_.size(),kMaxLaunchOptions))),step=84,height=170+count*step;
+        const int count=std::max(1,static_cast<int>(std::min(launchOptions_.size(),kMaxLaunchOptions))),step=84,height=250+count*step;
         const int top=360-height/2;
         return {top,height,top+130,step,72};
     }
     // Returns the chosen method, or Default while open / after cancel.
     // `makeDefault` (+) saves the highlighted launcher as this title's default
     // and keeps the popup open.
-    LaunchMethod LaunchOptionsInput(int direction,bool accept,bool back,int x=-1,int y=-1,bool makeDefault=false){
+    LaunchMethod LaunchOptionsInput(int direction,bool accept,bool back,int x=-1,int y=-1,bool makeDefault=false,int horizontal=0,bool systemDefault=false){
         if(!launchOptionsOpen_)return LaunchMethod::Default;
+        if(systemDefault){SetLaunchOptionSystemDefault();return LaunchMethod::Default;}
         const int count=static_cast<int>(launchOptions_.size());
-        if(direction)launchOptionsChoice_=std::clamp(launchOptionsChoice_+(direction>0?1:-1),0,std::max(0,count-1));
+        if(direction) {
+            if(launchOptionsFooter_>=0) {if(direction<0)launchOptionsFooter_=-1;}
+            else if(direction>0&&launchOptionsChoice_==count-1)launchOptionsFooter_=0;
+            else launchOptionsChoice_=std::clamp(launchOptionsChoice_+(direction>0?1:-1),0,std::max(0,count-1));
+        }
+        const int footerCount=LaunchOptionsCanSetDefault()?4:2;
+        if(horizontal&&launchOptionsFooter_>=0)launchOptionsFooter_=std::clamp(launchOptionsFooter_+(horizontal>0?1:-1),0,footerCount-1);
         const auto box=LaunchOptionsLayout();
         const int first=LaunchOptionsFirst();
         for(int row=0;row<static_cast<int>(kMaxLaunchOptions)&&first+row<count;++row)
-            if(x>=340&&x<940&&y>=box.rows+row*box.step&&y<box.rows+row*box.step+box.row){launchOptionsChoice_=first+row;accept=true;}
-        if(back){launchOptionsOpen_=false;detailsBackdropReady_=false;return LaunchMethod::Default;}
+            if(x>=340&&x<940&&y>=box.rows+row*box.step&&y<box.rows+row*box.step+box.row){launchOptionsChoice_=first+row;launchOptionsFooter_=-1;accept=true;}
+        const int footerY=box.top+box.height-102,footerWidth=600/footerCount;
+        if(x>=340&&x<940&&y>=footerY&&y<footerY+54){launchOptionsFooter_=(x-340)/footerWidth;accept=true;}
+        if(accept&&launchOptionsFooter_>=0){
+            if(launchOptionsFooter_==footerCount-1)back=true;
+            else if(launchOptionsFooter_==1&&footerCount==4){SetLaunchOptionDefault();return LaunchMethod::Default;}
+            else if(launchOptionsFooter_==2&&footerCount==4){SetLaunchOptionSystemDefault();return LaunchMethod::Default;}
+        }
+        if(back){launchOptionsOpen_=false;launchOptionsFooter_=-1;detailsBackdropReady_=false;return LaunchMethod::Default;}
         if(makeDefault&&!accept){SetLaunchOptionDefault();return LaunchMethod::Default;}
         if(!accept||launchOptionsChoice_>=count)return LaunchMethod::Default;
         const auto &option=launchOptions_[launchOptionsChoice_];
@@ -4892,7 +5812,23 @@ public:
             if(marker!=std::string::npos)o.note.erase(marker);
             if(o.method==LaunchMethod::Launcher&&o.launcher==current)o.note+="  (default)";
         }
-        SetStatus(inherited?"DEFAULT: "+option.title+" (CONTENT TYPE)":"DEFAULT FOR THIS GAME: "+option.title,2500);
+        SetStatus(inherited?"DEFAULT RESTORED (CONTENT TYPE)":"DEFAULT FOR THIS GAME SAVED",2500);
+    }
+    void SetLaunchOptionSystemDefault() {
+        if(launchOptionsChoice_<0||launchOptionsChoice_>=static_cast<int>(launchOptions_.size()))return;
+        const auto option=launchOptions_[launchOptionsChoice_];const auto *game=Selected();
+        if(!game||LauncherGameKey(*game)!=launchOptionsKey_||option.method!=LaunchMethod::Launcher||!option.available)return;
+        auto next=libraries_;
+        const std::string id=game->libraryId.empty()?DefaultLibraryId(game->platform):game->libraryId;
+        auto library=std::find_if(next.begin(),next.end(),[&](const auto &l){return l.id==id;});
+        if(library==next.end()){SetStatus("CONTENT TYPE NOT FOUND",3000);return;}
+        library->launcherId=option.launcher;
+        if(!SaveLibraries(next,false)){SetStatus("COULD NOT SAVE SYSTEM DEFAULT",3000);return;}
+        libraries_=std::move(next);
+        const auto current=DefaultLauncherFor(*game,gameLaunchers_);
+        for(auto &o:launchOptions_){const auto marker=o.note.find("  (default)");if(marker!=std::string::npos)o.note.erase(marker);
+            if(o.launcher==current)o.note+="  (default)";}
+        SetStatus("SYSTEM DEFAULT SAVED\nGAME AND DIRECTORY OVERRIDES KEPT",3500);
     }
     // One-shot: the next main-loop pass launches the selected title this way.
     bool ConsumeLaunchOption(LaunchMethod &method){
@@ -4969,7 +5905,7 @@ public:
     }
     bool SettingsOpen() const { return settings_; }
     bool ButtonPressed(ControlAction action, std::uint32_t trigger) const {
-        if(controlTransitionBlocked_)return false;
+        trigger &= ~transitionHeld_;
         if(libraryFadePhase_ && action!=ControlAction::PreviousLibrary && action!=ControlAction::NextLibrary)return false;
         const auto routed=controlChordInput_.initialized?(trigger&controlChordInput_.liveTrigger):trigger;
         return ControlPressed(preferences_,action,controlHeld_,routed)||
@@ -4979,7 +5915,7 @@ public:
         // The active held selector owns its activation binding across the menu transition.
         if(action==ControlAction::Alphabet && alphabetOpen_ && alphabetHeldMode_)
             return ControlHeld(preferences_,action,hold);
-        if(controlTransitionBlocked_)return false;
+        hold &= ~transitionHeld_;
         if(libraryFadePhase_ && action!=ControlAction::PreviousLibrary && action!=ControlAction::NextLibrary)return false;
         const auto routed=controlChordInput_.initialized?(hold&controlChordInput_.liveHold):hold;
         return ControlHeld(preferences_,action,routed)||
@@ -4998,11 +5934,18 @@ public:
         bindingCapture_=-1;hintSkin_=-1;QueueSettingsSave();
     }
     void SetControlHeld(uint32_t held,uint32_t pressed){
-        controlHeld_=held;
         // Inspection is held input, not a modal input-context transition.
         const bool overlay=OverlayOpen(false);
-        if(overlay!=controlOverlayLast_){controlChordInput_.Reset();controlTransitionBlocked_=true;controlOverlayLast_=overlay;}
-        if(controlTransitionBlocked_){controlChordInput_.Reset();if(!held&&!pressed)controlTransitionBlocked_=false;return;}
+        if(overlay!=controlOverlayLast_){
+            controlChordInput_.Reset();
+            transitionHeld_ |= previousControlHeld_;
+            controlOverlayLast_=overlay;
+        }
+        previousControlHeld_=held;
+        transitionHeld_ &= held;
+        held &= ~transitionHeld_;
+        pressed &= ~transitionHeld_;
+        controlHeld_=held;
         if(CapturingBinding())controlChordInput_.Reset();else controlChordInput_.Update(preferences_,held,pressed);
     }
     bool DetailsOpen() const { return details_; }
@@ -5013,6 +5956,10 @@ public:
     bool ConsumeScanRequest() { const bool result = scanRequested_; scanRequested_ = false; return result; }
     void CloseOverlay() {
         if(draftExit_!=DraftExit::None){draftExit_=DraftExit::None;return;}
+        if(controllersOpen_){CloseControllers();return;}
+        controllersFocus_=false;
+
+
         if(supportOpen_){if(supportConfirm_)supportConfirm_=false;else {supportOpen_=false;supportFocus_=true;}return;}
         supportFocus_=false;
         settingsAction_=-1;
@@ -5029,20 +5976,27 @@ public:
         if(typeEditor_) { if(!ConfirmDraftExit(DraftExit::Editor))typeEditor_=false; return; }
         if(typeManager_) { typeManager_=false; return; }
         if(settingsEditing_) { settingsEditing_=false; return; }
-        if(audioSettings_) { audioSettings_=false; settingsRow_=5; return; }
+        if(audioSettings_) { audioSettings_=false; settingsRow_=6; return; }
         if (mediaHelp_) { mediaHelp_=false; return; }
         if (directoryBrowser_) { BrowserBack(); return; }
         if (sourceEditor_) { if(!ConfirmDraftExit(DraftExit::Editor))sourceEditor_=false; return; }
         if (sourceManager_) { sourceManager_ = false; settings_=false; return; }
         if (settings_ && settingsCategory_==2) { sourceManager_=true; return; }
+        if(settings_){
+            Trace("settings-exit-save-begin");
+            FlushSettingsSave(true);
+            Trace("settings-exit-save-complete");
+            settingsExitPending_=true;
+        }
         details_ = settings_ = false;
     }
 
     void SettingsChangeCategory(int amount) {
         if(amount && ConfirmDraftExit(DraftExit::Category)){draftExitCategory_=amount;return;}
+        if(controllersOpen_)controllers_.Close();controllersOpen_=controllersFocus_=controllersConfirm_=false;
         supportOpen_=supportFocus_=supportConfirm_=false;
         settingsAction_=-1;
-        typeManager_=typeEditor_=typeText_=false;
+        boxColorOpen_=false;typeManager_=typeEditor_=typeText_=false;
         launcherEditor_=launcherBrowse_=false;launcherRow_=vcMapMode_=0;
         launcherStatusCache_.clear();
         settingsEditing_=false;
@@ -5063,8 +6017,9 @@ public:
         detailsBackdropReady_ = false;
         if(audioSettings_) { AdjustMusic(amount); QueueSettingsSave(); return; }
         if (settingsCategory_ == 0) {
-            if (settingsRow_ == 0) {ChangeSkin(amount);}
-            else if (settingsRow_ == 1) {
+            if (settingsRow_==0) {ChangeSkin(amount);}
+            else if(settingsRow_==1){settingsHelpTitle_="SKIN HELP";settingsHelpBody_=SettingsHelp::Text("SKIN HELP");settingsHelpOpen_=true;return;}
+            else if (settingsRow_==2) {
                 const auto &tabs=LibraryTabs();
                 if(!tabs.empty()) {
                     const int count=static_cast<int>(tabs.size());
@@ -5072,14 +6027,15 @@ public:
                     preferences_.startLibrary=tabs[preferences_.startTab];
                 }
             }
-            else if (settingsRow_==2) preferences_.wrapNavigation = !preferences_.wrapNavigation;
-            else if(settingsRow_==3) { preferences_.showInstalled=!preferences_.showInstalled; RebuildVisible(); }
-            else if(settingsRow_==4) {preferences_.autoSortInstalledVC=!preferences_.autoSortInstalledVC;RebuildVisible();}
-            else if(settingsRow_==7) {preferences_.titleInstallerEnabled=!preferences_.titleInstallerEnabled;RebuildVisible();}
-            else if(settingsRow_==5) { audioSettings_=true; settingsRow_=0; }
-            else if(settingsRow_==8) {preferences_.demoMode=!preferences_.demoMode;DemoInput(true);}
-            else if(settingsRow_==9) {preferences_.demoIdleSeconds=std::clamp(preferences_.demoIdleSeconds+amount*5,DemoMode::MinSeconds,DemoMode::MaxSeconds);DemoInput(true);}
-            else if(settingsRow_==6) {
+            else if (settingsRow_==3) preferences_.wrapNavigation = !preferences_.wrapNavigation;
+            else if(settingsRow_==4) { preferences_.showInstalled=!preferences_.showInstalled; RebuildVisible(); }
+            else if(settingsRow_==5) {preferences_.autoSortInstalledVC=!preferences_.autoSortInstalledVC;RebuildVisible(true);}
+            else if(settingsRow_==8) {preferences_.titleInstallerEnabled=!preferences_.titleInstallerEnabled;RebuildVisible();}
+            else if(settingsRow_==6) { audioSettings_=true; settingsRow_=0; }
+            else if(settingsRow_==9) {preferences_.demoMode=!preferences_.demoMode;DemoInput(true);}
+            else if(settingsRow_==(preferences_.demoMode?11:10)) {preferences_.alphabetFilterMode=!preferences_.alphabetFilterMode;}
+            else if(settingsRow_==10) {preferences_.demoIdleSeconds=std::clamp(preferences_.demoIdleSeconds+amount*5,DemoMode::MinSeconds,DemoMode::MaxSeconds);DemoInput(true);}
+            else if(settingsRow_==7) {
                 const bool enabled=!preferences_.startOnBoot;
                 if(SetStartOnBoot(enabled)) {
                     preferences_.startOnBoot=enabled;
@@ -5092,12 +6048,13 @@ public:
                 RebuildVisible();
             }
         } else if (settingsCategory_ == 3) {
-            if(settingsRow_==17) preferences_.backgroundTransparency=std::clamp(preferences_.backgroundTransparency+amount*5,0,100);
-            else if (settingsRow_ == 16) {
+            if(settingsRow_==16) preferences_.backgroundTransparency=std::clamp(preferences_.backgroundTransparency+amount*5,0,100);
+            else if (settingsRow_ == 15) {
                 ApplySort((preferences_.sortMode+amount+LibrarySort::Count)%LibrarySort::Count);
             }
+            else if(settingsRow_<=1&&FixedShelfScene()){SetStatus("THIS SKIN USES BOX / BOOKSHELF");return;}
             else if(settingsRow_==0) {preferences_.coverType=(preferences_.coverType+amount%CoverPresentation::TypeCount+CoverPresentation::TypeCount)%CoverPresentation::TypeCount;ClearSideCases();}
-            else if(settingsRow_==1) {auto &layout=PresentationLayout();const int count=CoverPresentation::LayoutCount(preferences_.coverType);layout=(layout+amount%count+count)%count;}
+            else if(settingsRow_==1) {auto &layout=GlobalPresentationLayout();const int count=CoverPresentation::LayoutCount(preferences_.coverType);layout=(layout+amount%count+count)%count;}
             else if (settingsRow_ == 2) preferences_.animationSpeed = (preferences_.animationSpeed + amount + 3) % 3;
             else if (settingsRow_ == 3) preferences_.coverSpacing = std::clamp(preferences_.coverSpacing+amount*CoverSpacing::Step,CoverSpacing::Min,CoverSpacing::Max);
             else if (settingsRow_ == 4) preferences_.coverZoom=std::clamp(preferences_.coverZoom+amount*CoverZoom::Step,CoverZoom::Min,CoverZoom::Max);
@@ -5105,11 +6062,10 @@ public:
             else if (settingsRow_ == 6) preferences_.backgroundMotion = !preferences_.backgroundMotion;
             else if (settingsRow_ == 7) preferences_.reflections = !preferences_.reflections;
             else if(settingsRow_==8) preferences_.theme = (preferences_.theme + amount%AccentThemes::Count + AccentThemes::Count) % AccentThemes::Count;
-            else if(settingsRow_==13){preferences_.previewDelaySeconds=std::clamp(preferences_.previewDelaySeconds+amount,0,30);videoTrigger_.Reset();}
+            else if(settingsRow_==12){preferences_.previewDelaySeconds=std::clamp(preferences_.previewDelaySeconds+amount,0,30);videoTrigger_.Reset();}
             else {
-                if(settingsRow_==9 && preferences_.coverType!=CoverPresentation::Box)return;
-                bool *values[]={&preferences_.useBoxArt,&preferences_.useBackgrounds,&preferences_.useLogos,&preferences_.usePreviews,&preferences_.preloadBuiltInCovers,&preferences_.startupVideo};
-                const int index=settingsRow_-9-(settingsRow_>13?1:0);
+                bool *values[]={&preferences_.useBackgrounds,&preferences_.useLogos,&preferences_.usePreviews,&preferences_.preloadBuiltInCovers,&preferences_.startupVideo};
+                const int index=settingsRow_-9-(settingsRow_>12?1:0);
                 *values[index]=!*values[index];
             }
         }
@@ -5171,7 +6127,7 @@ public:
         return index==0?"ALL":index==1?"#":std::string(1,static_cast<char>('A'+index-2));
     }
     int AlphabetTouchIndex(int x) const {
-        const int first=preferences_.alphabetFilterMode?0:1,start=108+(first?19:0);
+        const int first=alphabetModeFilter_?0:1,start=108+(first?19:0);
         return x>=start && x<start+(28-first)*38?first+(x-start)/38:-1;
     }
     std::uint32_t AlphabetConsumedBinding() const {
@@ -5179,11 +6135,13 @@ public:
         uint32_t mask=preferences_.bindings[action];for(auto combo:preferences_.combos[action])if((controlHeld_&combo)==combo)mask|=combo;return mask;
     }
     bool AlphabetOpen() const { return alphabetOpen_; }
-    bool CanOpenAlphabet() const { return !OverlayOpen() && !libraryFadePhase_; }
+    bool CanOpenAlphabet() const { return !OverlayOpen() && dockFocus_<0 && !libraryFadePhase_; }
+    bool alphabetModeFilter_=false;
     void OpenAlphabet(bool held=true) {
+        alphabetModeFilter_=preferences_.alphabetFilterMode; // Saved General preference.
         DismissVideo();alphabetOpen_=true;alphabetHeldMode_=held;alphabetMoved_=false;
         alphabetDirection_=0;alphabetNext_=0;
-        alphabetChoice_=std::clamp(alphabetChoice_,preferences_.alphabetFilterMode?0:1,27);
+        alphabetChoice_=std::clamp(alphabetChoice_,alphabetModeFilter_?0:1,27);
         alphabetVisual_=static_cast<float>(alphabetChoice_);RefreshAlphabetCounts();
     }
     void RefreshAlphabetCounts() {
@@ -5191,7 +6149,7 @@ public:
         for(size_t i=0;i<games_.size();++i){
             const auto &game=games_[i];
             if(!MatchesLibrarySearch(game))continue;
-            if(!preferences_.alphabetFilterMode && alphabetFilter_ && AlphabetBucket(game.name)!=alphabetFilter_)continue;
+            if(!alphabetModeFilter_ && alphabetFilter_ && AlphabetBucket(game.name)!=alphabetFilter_)continue;
             ++alphabetCounts_[0];++alphabetCounts_[AlphabetBucket(game.name)];
         }
     }
@@ -5204,12 +6162,12 @@ public:
     void AlphabetInput(float stick,int digital,Uint32 now,bool held,bool toggle,bool accept,bool cancel,int touch=-1) {
         if(cancel){alphabetOpen_=false;return;}
         if(toggle){
-            preferences_.alphabetFilterMode=!preferences_.alphabetFilterMode;QueueSettingsSave();
-            alphabetChoice_=std::max(alphabetChoice_,preferences_.alphabetFilterMode?0:1);
-            RefreshAlphabetCounts();SetStatus(preferences_.alphabetFilterMode?"A-Z FILTER MODE":"A-Z BROWSE MODE",5000);
+            alphabetModeFilter_=!alphabetModeFilter_;
+            alphabetChoice_=std::max(alphabetChoice_,alphabetModeFilter_?0:1);
+            RefreshAlphabetCounts();SetStatus(alphabetModeFilter_?"A-Z FILTER MODE":"A-Z BROWSE MODE",5000);
         }
         const int direction=alphabetHeldMode_&&!held?0:SearchAxis(stick,digital,alphabetDirection_,alphabetNext_,now,250,90);
-        const int first=preferences_.alphabetFilterMode?0:1,count=28-first;
+        const int first=alphabetModeFilter_?0:1,count=28-first;
         if(direction){
             const int previous=alphabetChoice_;
             alphabetChoice_=first+(alphabetChoice_-first+direction+count)%count;
@@ -5220,7 +6178,7 @@ public:
         if((alphabetHeldMode_&&!held) || (!alphabetHeldMode_&&accept)) {
             alphabetOpen_=false;
             if(!alphabetMoved_)return;
-            if(preferences_.alphabetFilterMode){
+            if(alphabetModeFilter_){
                 alphabetFilter_=alphabetChoice_;searchBuffer_=searchQuery_;ApplySearch();
             }else{
                 const auto found=std::find_if(visible_.begin(),visible_.end(),[&](size_t i){return AlphabetBucket(games_[i].name)==alphabetChoice_;});
@@ -5311,11 +6269,14 @@ public:
         else musicStatus_="PLAYING: "+preferences_.musicTrack;
     }
     void PauseMusic(bool pause) { music_.Pause(pause); }
+    void FinishSettingsSave(){DrainSettingsSave();}
     void StopMusic() { StopVideo(false); glassBackground_.Stop(); music_.Stop(); menuSounds_.Stop(); }
     void MenuSound(MenuSounds::Cue cue) {
-        if(!preview_)menuSounds_.Play(cue,preferences_.menuSoundsEnabled,preferences_.menuSoundsVolume);
+        if(!preview_){const auto start=ProfileClock();menuSounds_.Play(cue,preferences_.menuSoundsEnabled,preferences_.menuSoundsVolume);frameProfile_.menuSoundMaxUs=std::max(frameProfile_.menuSoundMaxUs,ProfileClock()-start);}
     }
     void PrepareSystemBackground() {
+        FlushSettingsSave(true);
+
         CancelHomeSwipe();
         DemoInput(true);
         alphabetOpen_=false;alphabetProgress_=0;alphabetMoved_=false;
@@ -5336,6 +6297,14 @@ public:
         // Cancellation must not leave the decoder paused: it needs to unwind.
         videoTrigger_.Reset();
     }
+    bool SystemBackgroundReady() {
+        // Stop() only requests cancellation. Do not let the next SDL event pump
+        // release foreground hardware while h264.rpl or a reader is retiring.
+        const bool library=video_.CanStart();
+        const bool details=detailsVideo_.CanStart();
+        const bool theme=glassBackground_.Released();
+        return library&&details&&theme&&settingsWriter_.Idle();
+    }
     void ResumeSystemForeground() {
         DemoInput(true);
         SuspendVideo(false);
@@ -5345,13 +6314,17 @@ public:
         }
     }
     void StopVideo(bool resumeMusic = true) {
-        const bool detailsPlaying=detailsVideo_.Active();detailsVideoPending_=false;detailsVideo_.Stop();
+        const bool detailsPlaying=detailsVideo_.Active();detailsVideoPending_=false;
+        if(gPersistTrace)Trace("details-video-stop-begin");detailsVideo_.Stop();
+        if(gPersistTrace)Trace("details-video-stop-returned");
         if(detailsPlaying&&resumeMusic)music_.Pause(false);
         videoPending_=false;
         const bool wasActive = video_.Active();
         if (wasActive) ReportVideo(true);
+        if(gPersistTrace)Trace("library-video-stop-begin");
         video_.Stop(resumeMusic && videoOptions_.mode==VideoMode::Showcase &&
             showcaseProgress_>0.f && !OverlayOpen());
+        if(gPersistTrace)Trace("library-video-stop-returned");
         if (wasActive && resumeMusic) music_.Pause(false);
     }
     void DismissVideo() { videoTrigger_.Dismiss(); StopVideo(); }
@@ -5386,7 +6359,7 @@ public:
         if(!demoOriginPath_.empty()) {
             for(std::size_t i=0;i<visible_.size();++i) {
                 if(games_[visible_[i]].absolutePath!=demoOriginPath_)continue;
-                selected_=i;visualSelected_=static_cast<float>(i);bookshelfMotion_={};
+                selected_=i;visualSelected_=static_cast<float>(i);bookshelfMotion_={};gridCameraReady_=false;wiiuMenuPage_=-1;
                 detailsBackdropReady_=false;PrefetchArtwork();break;
             }
         }
@@ -5406,29 +6379,45 @@ public:
 
     bool SettingsSelectorRow(int row) const {
         if(audioSettings_) return row>=0 && row<6 && row!=3;
-        if(settingsCategory_==0) return (row>=0 && row<5) || (row>=6 && row<SettingsRowCount());
-        return settingsCategory_==3 && row>=0 && row<18 && (row!=9 || preferences_.coverType==CoverPresentation::Box);
+        if(settingsCategory_==0) return row==0 || (row>=2 && row<6) || (row>=7 && row<SettingsRowCount());
+        return settingsCategory_==3 && row>=0 && row<17;
     }
     bool SettingsSelectorSelected() const {
         if(settingsSidebar_ || directoryBrowser_ || mediaHelp_) return false;
         if(sourceEditor_) return SourceEditorSelector(sourceEditorRow_);
         return !sourceManager_ && SettingsSelectorRow(settingsRow_);
     }
-    enum class SettingsAction { None, Select, Save, Delete, Back, Add, Scan, Guide, Open, Use, Parent, Cancel, Space, Done, Erase, BindReplace, BindAdd, BindClear };
-    std::array<SettingsAction,4> SettingsActions() const {
+    #include "settings_help_members.hpp"
+    #include "number_settings_members.hpp"
+    enum class SettingsAction { None, Select, Save, Delete, Back, Add, Scan, Guide, Open, Use, Parent, Cancel, Space, Done, Erase, BindReplace, BindAdd, BindClear, Help };
+    std::array<SettingsAction,5> SettingsActions() const {
         using A=SettingsAction;
-        if(settingsCategory_==4 && !sourceManager_ && settingsRow_<int(ControlAction::Count))return {A::BindReplace,A::BindAdd,A::BindClear,A::Back};
-        if(typeText_)return {A::Space,A::Done,A::Erase,A::Cancel};
-        if(directoryBrowser_)return {A::Open,A::Use,A::Parent,A::Cancel};
-        if(mediaHelp_)return {A::None,A::None,A::None,A::Back};
-        if(launcherBrowse_ || vcMapMode_)return {launcherBrowse_&&launcherFiles_.empty()?A::None:A::Select,A::None,A::None,A::Back};
+        if(controllersOpen_)return {A::None,A::None,A::None,A::None,A::Back};
+        if(supportOpen_)return {A::None,A::None,A::None,A::Help,A::Back};
+        if(settingsCategory_==4 && !sourceManager_ && settingsRow_<int(ControlAction::Count))return {A::BindReplace,A::BindAdd,A::BindClear,A::Help,A::Back};
+        if(typeText_)return {A::Space,A::Done,A::Erase,A::Help,A::Cancel};
+        if(directoryBrowser_)return {A::Open,A::Use,A::Parent,A::Help,A::Cancel};
+        if(mediaHelp_)return {A::None,A::None,A::None,A::Help,A::Back};
+        if(launcherBrowse_ || vcMapMode_)return {launcherBrowse_&&launcherFiles_.empty()?A::None:A::Select,A::None,A::None,A::Help,A::Back};
         if(typeEditor_ || launcherEditor_ || sourceEditor_) {
             const bool saved=typeEditor_?typeIndex_>=0:launcherEditor_?launcherIndex_>=0:editingSourceIndex_>=0;
-            return {A::Select,A::Save,saved?A::Delete:A::None,A::Back};
+            return {A::Select,A::Save,saved?A::Delete:A::None,A::Help,A::Back};
         }
-        if(typeManager_ || settingsCategory_==5)return {A::Add,A::None,A::None,A::Back};
-        if(sourceManager_)return {A::Add,A::Scan,mediaMode_?A::Guide:A::None,A::Back};
-        return {A::Select,A::Save,A::None,A::Back};
+        if(typeManager_ || settingsCategory_==5)return {A::Add,A::None,A::None,A::Help,A::Back};
+        if(sourceManager_)return {A::Add,A::Scan,mediaMode_?A::Guide:A::None,A::Help,A::Back};
+        if(settingsCategory_==0 || settingsCategory_==3)return {A::Select,A::None,A::None,A::Help,A::Back};
+        return {A::Select,A::Save,A::None,A::Help,A::Back};
+    }
+    bool CompactSettingsActions() const {
+        return (settingsCategory_==0 || settingsCategory_==3) && !sourceEditor_ && !typeEditor_ && !launcherEditor_;
+    }
+    SDL_Rect SettingsActionRect(int x,int index) const {
+        if(!CompactSettingsActions())return {x+index*146,574,140,40};
+        const auto actions=SettingsActions();
+        if(actions[index]==SettingsAction::None)return {0,0,0,0};
+        int count=0,position=0;
+        for(int i=0;i<5;++i)if(actions[i]!=SettingsAction::None){++count;if(i<index)++position;}
+        return {x+(5-count+position)*146,574,140,40};
     }
     int SettingsContentCount() const {
         if(typeText_)return static_cast<int>(std::strlen(TypeKeys));
@@ -5452,11 +6441,12 @@ public:
     void FocusSettingsActions() {
         settingsEditing_=false;settingsSidebar_=false;settingsAction_=0;
         const auto actions=SettingsActions();
-        while(settingsAction_<3 && actions[settingsAction_]==SettingsAction::None)++settingsAction_;
+        while(settingsAction_<4 && actions[settingsAction_]==SettingsAction::None)++settingsAction_;
     }
     void ActivateSettingsAction(int index) {
         const auto action=SettingsActions()[index];
         if(action==SettingsAction::None)return;
+        if(action==SettingsAction::Help){ToggleSettingsHelp();return;}
         settingsAction_=-1;
         using A=SettingsAction;
         if(action==A::BindReplace||action==A::BindAdd){BeginBindingCapture(settingsRow_,action==A::BindAdd);return;}
@@ -5475,7 +6465,7 @@ public:
         if(action==A::Guide){mediaHelp_=true;return;}
         const bool save=action==A::Save;
         if(typeEditor_) {
-            const int row=typeRow_;typeRow_=save?10:11;TypeActivate();
+            const int row=typeRow_;typeRow_=save?15:16;TypeActivate();
             if(typeEditor_)typeRow_=row;
         } else if(launcherEditor_) {
             const int row=launcherRow_;launcherRow_=LauncherPhysicalRow(save?8:9);LauncherActivate();
@@ -5489,6 +6479,9 @@ public:
         VisualPreview("settings");settingsCategory_=5;settingsSidebar_=true;
         SettingsInput(0,1);if(!supportFocus_)return false;
         SettingsInput(0,0,true);if(!supportOpen_)return false;
+        const bool notifications=preferences_.freezeNotifications;
+        supportRow_=2;SettingsInput(0,0,true);if(preferences_.freezeNotifications==notifications)return false;
+        SettingsInput(0,0,true);if(preferences_.freezeNotifications!=notifications)return false;
         // The combined action requires consent even before a local report exists.
         supportRow_=1;SettingsInput(0,0,true);if(!supportConfirm_||supportYes_||support_.Poll().busy)return false;
         SettingsInput(0,0,true);if(supportConfirm_||support_.Poll().busy)return false;
@@ -5508,22 +6501,35 @@ public:
         if(!supportOpen_||sourceEditor_)return false;
         return true;
     }
+    #include "controller_settings_members.hpp"
+    void OfferFreezeReport(UFlowSupport::FreezeWatch &watch) {
+        freezeWatch_=&watch;
+        if(!watch.Pending())return;
+        if(!preferences_.freezeNotifications){watch.Acknowledge();return;}
+        settings_=true;settingsSidebar_=false;settingsProgress_=1;
+        supportOpen_=true;supportConfirm_=true;supportYes_=false;freezePrompt_=true;
+    }
+    void DismissFreezeReport() {
+        if(freezePrompt_ && freezeWatch_)freezeWatch_->Acknowledge();
+        freezePrompt_=false;
+    }
     void OpenSupport() {
         if(ConfirmDraftExit(DraftExit::Support))return;
         supportOpen_=true;supportFocus_=false;supportConfirm_=false;supportRow_=0;settingsAction_=-1;
     }
     void SupportInput(int horizontal,int vertical,bool accept,bool back) {
-        if(back){CloseOverlay();return;}
+        if(back){DismissFreezeReport();CloseOverlay();return;}
         const auto state=support_.Poll();
         if(supportConfirm_){
             if(horizontal || vertical)supportYes_=!supportYes_;
-            if(accept){supportConfirm_=false;if(supportYes_)support_.Send(games_.size(),sources_.size(),mediaSources_.size());}
+            if(accept){DismissFreezeReport();supportConfirm_=false;if(supportYes_)support_.Send(games_.size(),sources_.size(),mediaSources_.size());}
             return;
         }
-        if(vertical)supportRow_=(supportRow_+vertical+2)%2;
+        if(vertical)supportRow_=(supportRow_+vertical+3)%3;
         if(!accept || state.busy)return;
         if(supportRow_==0){support_.Record(!state.recording);support_.Event("Problem recording started");}
-        else {supportConfirm_=true;supportYes_=false;}
+        else if(supportRow_==1){supportConfirm_=true;supportYes_=false;}
+        else {preferences_.freezeNotifications=!preferences_.freezeNotifications;QueueSettingsSave();}
     }
     void DrawSupport(int x,Color accent,bool light) {
         const auto state=support_.Poll();
@@ -5531,43 +6537,72 @@ public:
         const Color muted=light?Color{64,83,96,255}:Color{160,180,198,255};
         DrawText(renderer_,"ABOUT & SUPPORT",x,195,3,ink);
         DrawText(renderer_,"uFlow",x,239,2,ink);
-        DrawText(renderer_,"Build "+std::to_string(UFlowUpdate::BuildSequence),x,270,2,muted);
+        DrawText(renderer_,std::string("Version ")+UFlowUpdate::ReleaseVersion,x,270,2,muted);
         DrawText(renderer_,"karotech.io",x,300,1,muted);
         if(supportConfirm_){
-            DrawText(renderer_,"SEND THIS REPORT TO KAROTECH?",x,350,2,ink);
-            DrawText(renderer_,"Includes build, counts, numeric settings and recent logs.",x,388,1,muted);
+            DrawText(renderer_,freezePrompt_?"UFLOW MAY HAVE STOPPED RESPONDING":"SAVE THIS REPORT ON THE SD CARD?",x,350,2,ink);
+            DrawText(renderer_,freezePrompt_?"Save a diagnostic report? Includes build, settings and recent logs.":"Includes build, counts, numeric settings and recent logs.",x,388,1,muted);
             DrawText(renderer_,"Path/address lines are omitted; logs may name games.",x,413,1,muted);
-            DrawText(renderer_,"Private to site admins. Deleted after 90 days. No ROMs or saves.",x,438,1,muted);
+            DrawText(renderer_,"Saved locally on your SD card. No ROMs or saves included.",x,438,1,muted);
             for(int i=0;i<2;++i){FillRoundedRect(renderer_,{x+i*370,474,350,44},10,
                 (supportYes_==(i==1))?Color{accent.r,accent.g,accent.b,100}:Color{80,100,120,35});
                 DrawText(renderer_,i?"YES":"NO",x+20+i*370,487,2,ink);}
         } else {
-            const std::string labels[]={state.recording?"STOP PROBLEM RECORDING":"START PROBLEM RECORDING","SEND REPORT"};
-            for(int i=0;i<2;++i){
+            const std::string labels[]={state.recording?"STOP PROBLEM RECORDING":"START PROBLEM RECORDING","SAVE REPORT",std::string("CRASH REPORT NOTIFICATIONS: ")+(preferences_.freezeNotifications?"ON":"OFF")};
+            for(int i=0;i<3;++i){
                 if(i==supportRow_)FillRoundedRect(renderer_,{x-12,350+i*46,748,42},10,{accent.r,accent.g,accent.b,65});
                 DrawText(renderer_,labels[i],x,362+i*46,2,state.busy?muted:ink);
             }
             DrawFittedText(renderer_,state.message,x,505,736,1,muted);
             if(!state.reportId.empty())DrawText(renderer_,"REPORT ID: "+state.reportId,x,534,2,ink);
-            else DrawText(renderer_,"If sending fails, the report stays on SD so you can send it from a PC.",x,536,1,muted);
+            else DrawText(renderer_,"Reports stay on SD. You can share the file yourself from a PC.",x,536,1,muted);
         }
-        FillRoundedRect(renderer_,{x+555,574,176,40},10,{accent.r,accent.g,accent.b,40});
-        DrawText(renderer_,"B BACK",x+591,587,2,ink);
+        DrawSettingsActions(x,accent);
     }
     void SettingsInput(int horizontal,int vertical,bool accept=false,bool back=false,
                        bool previous=false,bool useFolder=false,bool plus=false) {
         if (!settings_) return;
+        if(boxColorOpen_&&!settingsHelpOpen_){BoxColorInput(horizontal,vertical,accept,back,plus);return;}
+        if(settingsHelpOpen_){if(back||accept)settingsHelpOpen_=false;return;}
+
         if(draftExit_!=DraftExit::None){
             if(back)ResolveDraftExit(false);
             else {if(horizontal || vertical)draftExitYes_=!draftExitYes_;if(accept)ResolveDraftExit(draftExitYes_);}
             return;
         }
-        if(supportOpen_){SupportInput(horizontal,vertical,accept,back);return;}
+        // Keyboard shortcuts edit in place, independently of footer focus.
+        if(typeText_ && previous){TypeTextInput(0,0,false,false,true,false);return;}
+        if(settingsAction_>=0) {
+            const auto actions=SettingsActions();
+            if(back){settingsAction_=-1;SettingsInput(0,0,false,true);return;}
+            if(vertical<0){settingsAction_=-1;return;}
+            if(horizontal) {
+                int next=settingsAction_+horizontal;
+                while(next>=0 && next<5 && actions[next]==SettingsAction::None)next+=horizontal;
+                if(next<0){settingsAction_=-1;settingsSidebar_=true;}
+                else if(next<5)settingsAction_=next;
+            }
+            if(accept && settingsAction_>=0)ActivateSettingsAction(settingsAction_);
+            return;
+        }
+        if(controllersOpen_){ControllerInput(horizontal,vertical,accept,back);return;}
+        if(controllersFocus_){
+            if(back){controllersFocus_=false;CloseOverlay();}
+            else if(accept)OpenControllers();
+            else if(horizontal<0){controllersFocus_=false;supportFocus_=true;}
+            else if(vertical<0){controllersFocus_=false;settingsSidebar_=true;}
+            else if(vertical>0){controllersFocus_=false;FocusSettingsActions();}
+            return;
+        }
+
+
+        if(supportOpen_){if(!supportConfirm_&&vertical>0&&supportRow_>=2){FocusSettingsActions();return;}SupportInput(horizontal,vertical,accept,back);return;}
         if(supportFocus_){
             if(back){supportFocus_=false;CloseOverlay();}
             else if(accept)OpenSupport();
             else if(vertical<0){supportFocus_=false;settingsSidebar_=true;}
-            else if(horizontal>0 || vertical>0){supportFocus_=false;FocusSettingsActions();}
+            else if(horizontal>0){supportFocus_=false;controllersFocus_=true;}
+            else if(vertical>0){supportFocus_=false;FocusSettingsActions();}
             return;
         }
         if(back)MenuSound(MenuSounds::Back);
@@ -5585,18 +6620,6 @@ public:
                (useFolder && (action==SettingsAction::Scan || action==SettingsAction::Use))) {
                 ActivateSettingsAction(i);return;
             }
-        }
-        if(settingsAction_>=0) {
-            if(back){settingsAction_=-1;SettingsInput(0,0,false,true);return;}
-            if(vertical<0){settingsAction_=-1;return;}
-            if(horizontal) {
-                int next=settingsAction_+horizontal;
-                while(next>=0 && next<4 && actions[next]==SettingsAction::None)next+=horizontal;
-                if(next<0){settingsAction_=-1;settingsSidebar_=true;}
-                else if(next<4)settingsAction_=next;
-            }
-            if(accept && settingsAction_>=0)ActivateSettingsAction(settingsAction_);
-            return;
         }
         if(vertical>0 && settingsSidebar_ && settingsCategory_==5){supportFocus_=true;return;}
         if(vertical && !settingsSidebar_ && settingsAction_<0) {
@@ -5661,6 +6684,7 @@ public:
     }
 
     bool SettingsZoomTouch(int x,int y,bool dragging=false) {
+        if(settingsHelpOpen_)return false;
         if(!settings_ || settingsProgress_<.95f || settingsCategory_!=3 || sourceManager_ || audioSettings_)return false;
         int row=dragging?settingsRow_:SettingsFirstRow()+(y-187)/62;
         if((row!=3 && row!=4) || row<SettingsFirstRow() || row>=SettingsFirstRow()+6)return false;
@@ -5678,6 +6702,9 @@ public:
     }
     void SettingsTouch(int x,int y,int dragY=0) {
         if(!settings_ || settingsProgress_<.95f) return;
+        if(boxColorOpen_&&!settingsHelpOpen_){BoxColorTouch(x,y);return;}
+        if(settingsHelpOpen_){if(x>=835&&x<1045&&y>=474&&y<516)settingsHelpOpen_=false;return;}
+
         if(draftExit_!=DraftExit::None){
             if(std::abs(dragY)<30 && y>=414 && y<470){
                 if(x>=350 && x<630)ResolveDraftExit(false);
@@ -5685,22 +6712,29 @@ public:
             }
             return;
         }
+        if(std::abs(dragY)<30 && x>=390 && x<1121 && y>=574 && y<614) {
+            for(int slot=0;slot<5;++slot){
+                const auto rect=SettingsActionRect(390,slot);
+                if(rect.w && x>=rect.x && x<rect.x+rect.w){settingsSidebar_=false;settingsAction_=slot;ActivateSettingsAction(slot);break;}
+            }
+            return;
+        }
+        if(controllersOpen_){ControllerTouch(x,y,dragY);return;}
+        if(std::abs(dragY)<30&&x>=232&&x<280&&y>=574&&y<618){OpenControllers();return;}
+        controllersFocus_=false;
+
+
         if(supportOpen_){
             if(std::abs(dragY)>=30)return;
             if(supportConfirm_){
                 if(y>=474 && y<518 && x>=390 && x<1125){supportYes_=x>=760;SupportInput(0,0,true,false);}
                 else if(y>=574 && y<614)SupportInput(0,0,false,true);
             } else if(y>=574 && y<614)SupportInput(0,0,false,true);
-            else if(x>=390 && x<1125 && y>=350 && y<442){supportRow_=(y-350)/46;SupportInput(0,0,true,false);}
+            else if(x>=390 && x<1125 && y>=350 && y<488){supportRow_=(y-350)/46;SupportInput(0,0,true,false);}
             return;
         }
         if(std::abs(dragY)<30 && x>=118 && x<170 && y>=574 && y<618){OpenSupport();return;}
         supportFocus_=false;
-        if(std::abs(dragY)<30 && x>=390 && x<1121 && y>=574 && y<614) {
-            const int action=(x-390)/185;
-            if((x-390)%185<176){settingsSidebar_=false;ActivateSettingsAction(action);}
-            return;
-        }
         settingsAction_=-1;
         if(std::abs(dragY)<30 && SettingsZoomTouch(x,y))return;
         const bool wasEditing=settingsEditing_;
@@ -5724,7 +6758,7 @@ public:
             }
             if(y>=260&&y<548) { const int first=std::max(0,typeRow_-5); int row=first+(y-260)/40;
                 if(row<TypeRowCount()-(typeEditor_?2:0)){
-                    if(typeEditor_&&wasEditing&&row==typeRow_&&(row==1||(row>=3&&row<=9))){
+                    if(typeEditor_&&wasEditing&&row==typeRow_&&(row==1||(row>=3&&row<=13))){
                         TypeAdjust(x<760?-1:1);settingsEditing_=true;
                     }else{typeRow_=row;TypeActivate();}
                 } }
@@ -5799,6 +6833,17 @@ public:
         if(!ConfigureLaunch(native,executable).empty()||!executable.empty())return false;
         native.platform=Platform::Files;native.libraryId="unknown";
         if(ConfigureLaunch(native,executable).empty())return false;
+        launcherDraft_={"custom-snes","SNES core A",LauncherKind::Emulator,"SNES",".sfc","",true};
+        launcherEditor_=true;ApplyLauncherModule(kSharedRetroArchModule);
+        if(!IsRetroArchLauncher(launcherDraft_)||!launcherDraft_.executable.empty()||LauncherRowText(10).second!="RETROARCH")return false;
+        launcherDraft_.executable="retroarch/cores/snes9x_libretro.rpx";launchers_.push_back(launcherDraft_);
+        launcherDraft_.id="custom-snes-b";launcherDraft_.name="SNES core B";launcherDraft_.executable="retroarch/cores/another_libretro.rpx";launchers_.push_back(launcherDraft_);
+        native.absolutePath="fs:/vol/external01/roms/example.sfc";
+        const auto choices=GameLauncherChoices(native);
+        if(std::find(choices.begin(),choices.end(),"custom-snes")==choices.end()||std::find(choices.begin(),choices.end(),"custom-snes-b")==choices.end())return false;
+        launcherRow_=LauncherPhysicalRow(4);LauncherActivate();
+        if(!launcherBrowse_||launcherBrowseBundle_)return false;
+        SDL_Log("PASS: shared RetroArch choice, editable core picker and two same-system launcher choices");
         return true;
     }
     std::string LauncherLabel(const std::string &id) const {
@@ -5997,7 +7042,7 @@ public:
             case 3: return {"ROM EXTENSIONS",launcherDraft_.extensions+injectorNote};
             case 4:
                 if(injector)return {"VC BASE FOLDER",injectionDraft_.base.empty()?std::string("SELECT CODE / CONTENT / META BASE"):injectionDraft_.base};
-                return {IsRetroArchLauncher(launcherDraft_)?"CORE (.RPX)":"EXECUTABLE",launcherDraft_.executable};
+                return {IsRetroArchLauncher(launcherDraft_)?"CORE (.RPX)":"EXECUTABLE",launcherDraft_.executable.empty()?"A  SELECT CORE / EXECUTABLE":launcherDraft_.executable};
             case 5: return {"ENABLED",OnOff(launcherDraft_.enabled)};
             case 8: return {"SAVE LAUNCHER","A  SAVE"};
             case 9: return {"REMOVE ENTRY","FILES ARE NOT DELETED"};
@@ -6011,7 +7056,7 @@ public:
         }
         if(row==10) {
             const auto *module=fromModule?FindLauncherModule(launcherDraft_.moduleId):nullptr;
-            if(module)return {"LAUNCH MODULE",module->file+" - ONE-PRESS LAUNCH"};
+            if(module)return {"LAUNCH MODULE",module->protocol==kRetroArchProtocol?"RETROARCH":module->file+" - ONE-PRESS LAUNCH"};
             return {"LAUNCH MODULE",fromModule?launcherDraft_.moduleId+" - MODULE FILE MISSING":"NONE - OPENS THE EMULATOR"};
         }
         if(row==11)return {"RETROARCH (.WUHB)",launcherDraft_.contentBundle};
@@ -6049,9 +7094,10 @@ public:
     }
     // LAUNCH MODULE: NONE, or a module that can hand this launcher a game.
     void CycleLauncherModule(int direction) {
-        std::vector<std::string> choices={""};
-        for(const auto &m:InstalledLauncherModules())if(CompatibleLauncherModule(m,launcherDraft_))choices.push_back(m.id);
-        const auto found=std::find(choices.begin(),choices.end(),launcherDraft_.moduleId);
+        std::vector<std::string> choices={"",kSharedRetroArchModule};
+        for(const auto &m:InstalledLauncherModules())if(m.protocol!=kRetroArchProtocol&&CompatibleLauncherModule(m,launcherDraft_))choices.push_back(m.id);
+        const auto current=IsRetroArchLauncher(launcherDraft_)?std::string(kSharedRetroArchModule):launcherDraft_.moduleId;
+        const auto found=std::find(choices.begin(),choices.end(),current);
         const int count=static_cast<int>(choices.size());
         int pos=found==choices.end()?0:static_cast<int>(found-choices.begin());
         pos=(pos+direction+count)%count;
@@ -6134,7 +7180,10 @@ public:
             if(!launcherDraft_.moduleId.empty()&&!IsRetroArchLauncher(launcherDraft_)){SetStatus("ONE-PRESS NEEDS THIS EMULATOR'S OWN BUILD - SET LAUNCH MODULE TO NONE TO CHOOSE ANOTHER FILE",8000);return;}
             if(launcherDraft_.kind!=LauncherKind::Emulator){SetStatus("BUILT-IN ADAPTER - NO EXECUTABLE SELECTION NEEDED");return;}
             launcherBrowseBundle_=false;
-            launcherBrowse_=true;launcherBrowsePath_="fs:/vol/external01";RefreshLauncherFiles();return;
+            launcherBrowse_=true;launcherBrowsePath_="fs:/vol/external01";
+            if(IsRetroArchLauncher(launcherDraft_)){struct stat info{};const std::string cores=launcherBrowsePath_+"/retroarch/cores";
+                if(stat(cores.c_str(),&info)==0&&S_ISDIR(info.st_mode))launcherBrowsePath_=cores;}
+            RefreshLauncherFiles();return;
         }
         if(row==10&&launcherDraft_.kind==LauncherKind::Emulator){settingsEditing_=!settingsEditing_;return;}
         if(row==11&&IsRetroArchLauncher(launcherDraft_)) {
@@ -6154,7 +7203,7 @@ public:
             SetStatus("LAUNCHER SAVED - ASSIGN IT IN CONTENT TYPES");return;
         }
         if(row==9) {
-            if(!launcherDraft_.moduleId.empty()){SetStatus("DISABLE HERE; REMOVE THE .ufmod FILE TO UNINSTALL");return;}
+            if(!launcherDraft_.moduleId.empty()&&launcherDraft_.moduleId!=kSharedRetroArchModule){SetStatus("DISABLE HERE; REMOVE THE .ufmod FILE TO UNINSTALL");return;}
             if(launcherIndex_<0){launcherEditor_=false;launcherRow_=0;return;}
             if(launcherDraft_.id=="native"||launcherDraft_.id=="wiiflow"||launcherDraft_.id=="usbloadergx"){SetStatus("BUILT-IN ADAPTER - DISABLE INSTEAD");return;}
             for(const auto &l:libraries_)if(l.launcherId==launcherDraft_.id){SetStatus("REASSIGN CONTENT TYPES USING THIS LAUNCHER FIRST");return;}
@@ -6183,12 +7232,14 @@ public:
         for(int i=first;i<std::min(first+7,static_cast<int>(rows.size()));++i) {
             int y=260+(i-first)*40;
             if(i==launcherRow_&&!settingsSidebar_&&settingsAction_<0)FillRoundedRect(renderer_,{x-12,y-5,750,36},10,{accent.r,accent.g,accent.b,70});
+            if(i==launcherRow_)settingsHelpLabel_=rows[i].first;
             DrawFittedText(renderer_,rows[i].first,x,y,launcherBrowse_?720:320,2,text);
             if(!launcherBrowse_)DrawFittedText(renderer_,rows[i].second,x+340,y,380,2,text);
         }
         DrawSettingsActions(x,accent);
     }
-    int TypeRowCount() const { return typeEditor_?12:static_cast<int>(libraries_.size())+1; }
+#include "box_color_settings_members.hpp"
+    int TypeRowCount() const { return typeEditor_?17:static_cast<int>(libraries_.size())+1; }
     void TypeAdjust(int amount) {
         const auto previousSize=CaseProfiles::For(typeDraft_.id,typeDraft_.launcherId,typeDraft_.extensions);
         const bool autoSize=typeDraft_.caseWidthMm==previousSize.width && typeDraft_.caseHeightMm==previousSize.height && typeDraft_.caseThicknessMm==previousSize.thickness;
@@ -6205,10 +7256,16 @@ public:
         }
         if(typeRow_==4) typeDraft_.enabled=!typeDraft_.enabled;
         if(typeRow_==5) typeDraft_.order=std::clamp(typeDraft_.order+amount,0,static_cast<int>(libraries_.size()));
-        if(typeRow_==6) typeDraft_.caseWidthMm=std::clamp(typeDraft_.caseWidthMm+amount,50,200);
-        if(typeRow_==7) typeDraft_.caseHeightMm=std::clamp(typeDraft_.caseHeightMm+amount,50,250);
-        if(typeRow_==8) typeDraft_.caseThicknessMm=std::clamp(typeDraft_.caseThicknessMm+amount,2,40);
-        if(typeRow_==9) typeDraft_.mediaByContentType=!typeDraft_.mediaByContentType;
+        if(typeRow_==11) typeDraft_.caseWidthMm=std::clamp(typeDraft_.caseWidthMm+amount,50,200);
+        if(typeRow_==12) typeDraft_.caseHeightMm=std::clamp(typeDraft_.caseHeightMm+amount,50,250);
+        if(typeRow_==13) typeDraft_.caseThicknessMm=std::clamp(typeDraft_.caseThicknessMm+amount,2,40);
+        if(typeRow_==6) typeDraft_.mediaByContentType=!typeDraft_.mediaByContentType;
+        if(typeRow_==7)typeDraft_.boxModel=PreparedModels::Cycle(typeDraft_.boxModel,amount,true);
+        if(typeRow_==8)typeDraft_.mediaModel=PreparedModels::Cycle(typeDraft_.mediaModel,amount,false);
+        if(typeRow_==9){typeDraft_.viewType=(typeDraft_.viewType+1+amount+5)%5-1;typeDraft_.viewLayout=0;}
+        if(typeRow_==10){if(typeDraft_.viewType<0){typeDraft_.viewType=preferences_.coverType;typeDraft_.viewLayout=GlobalPresentationLayout();}
+            const int count=CoverPresentation::LayoutCount(typeDraft_.viewType);typeDraft_.viewLayout=(typeDraft_.viewLayout+amount+count)%count;}
+
         if(autoSize && (typeRow_==1 || typeRow_==3)) {
             const auto size=CaseProfiles::For(typeDraft_.id,typeDraft_.launcherId,typeDraft_.extensions);
             typeDraft_.caseWidthMm=size.width;typeDraft_.caseHeightMm=size.height;typeDraft_.caseThicknessMm=size.thickness;
@@ -6219,7 +7276,7 @@ public:
             typeIndex_=typeRow_-1;
             if(typeIndex_<0) {
                 typeDraft_={"","New Content Type",Platform::Files,GameLauncher::WiiFlow,".nds",true,static_cast<int>(libraries_.size())};
-                typeDraft_.caseHeightMm=122;typeDraft_.caseThicknessMm=15;
+                typeDraft_.caseHeightMm=122;typeDraft_.caseThicknessMm=15;typeDraft_.mediaModel="ds";
                 unsigned serial=1;
                 do { typeDraft_.id="custom_"+std::to_string(serial++); }
                 while(std::any_of(libraries_.begin(),libraries_.end(),[&](const auto&l){return l.id==typeDraft_.id;}));
@@ -6227,7 +7284,8 @@ public:
             initialTypeDraft_=typeDraft_;typeEditor_=true;typeRow_=0;return;
         }
         if(typeRow_==0||typeRow_==2) { typeName_=typeRow_==0;typeBuffer_=typeName_?typeDraft_.name:typeDraft_.extensions;typeText_=true;typeKey_=0;return; }
-        if(typeRow_==10) {
+        if(typeRow_==14){OpenBoxColor();return;}
+        if(typeRow_==15) {
             if(typeDraft_.name.find_first_not_of(' ')==std::string::npos) {SetStatus("ENTER A NAME");return;}
             if(typeDraft_.parser==Platform::Files&&typeDraft_.extensions.empty()){SetStatus("ENTER FILE EXTENSIONS");return;}
             auto next=libraries_;
@@ -6235,18 +7293,20 @@ public:
             const int position=std::clamp(typeDraft_.order,0,static_cast<int>(next.size()));
             next.insert(next.begin()+position,typeDraft_);
             for(std::size_t i=0;i<next.size();++i) next[i].order=static_cast<int>(i);
-            if(!SaveLibraries(next,false)){SetStatus("COULD NOT SAVE CONTENT TYPES");return;}
-            libraries_=std::move(next);typeEditor_=false;settingsEditing_=false;typeRow_=position+1;tab_=0;visualTab_=0;RebuildVisible();
+            std::string saveError;
+            if(!SaveLibraries(next,false,&saveError)){SetStatus(saveError,10000);return;}
+            ClearSideCases();libraries_=std::move(next);typeEditor_=false;settingsEditing_=false;typeRow_=position+1;tab_=0;visualTab_=0;RebuildVisible(true);
             SetStatus("CONTENT TYPE SAVED",4000);return;
         }
-        if(typeRow_==11) {
+        if(typeRow_==16) {
             if(typeIndex_<0){typeEditor_=false;typeRow_=0;return;}
             if(std::any_of(sources_.begin(),sources_.end(),[&](const auto&s){return s.libraryId==typeDraft_.id;}) ||
                std::any_of(mediaSources_.begin(),mediaSources_.end(),[&](const auto&s){return s.libraryId==typeDraft_.id;})) {SetStatus("REASSIGN THIS TYPE'S CONTENT AND MEDIA DIRECTORIES FIRST",6000);return;}
             if(typeDraft_.id=="wiiu"){SetStatus("DISABLE THE BUILT-IN WII U TYPE INSTEAD");return;}
             auto next=libraries_;next.erase(next.begin()+typeIndex_);
-            if(!SaveLibraries(next,false)){SetStatus("COULD NOT SAVE CONTENT TYPES");return;}
-            libraries_=std::move(next);typeEditor_=false;typeRow_=0;tab_=0;visualTab_=0;RebuildVisible();return;
+            std::string saveError;
+            if(!SaveLibraries(next,false,&saveError)){SetStatus(saveError,10000);return;}
+            libraries_=std::move(next);typeEditor_=false;typeRow_=0;tab_=0;visualTab_=0;RebuildVisible(true);return;
         }
         settingsEditing_=!settingsEditing_;
     }
@@ -6265,7 +7325,11 @@ public:
             } else if(typeName_)typeDraft_.name=typeBuffer_;else {
                 const auto old=CaseProfiles::For(typeDraft_.id,typeDraft_.launcherId,typeDraft_.extensions);
                 const bool autoSize=typeDraft_.caseWidthMm==old.width && typeDraft_.caseHeightMm==old.height && typeDraft_.caseThicknessMm==old.thickness;
+                const auto oldModels=PreparedModels::For(typeDraft_.id,typeDraft_.launcherId,typeDraft_.extensions);
                 typeDraft_.extensions=typeBuffer_;
+                if(typeIndex_<0){const auto models=PreparedModels::For(typeDraft_.id,typeDraft_.launcherId,typeDraft_.extensions);
+                    if(typeDraft_.boxModel==oldModels.box)typeDraft_.boxModel=models.box;
+                    if(typeDraft_.mediaModel==oldModels.media)typeDraft_.mediaModel=models.media;}
                 if(autoSize) {
                     const auto size=CaseProfiles::For(typeDraft_.id,typeDraft_.launcherId,typeDraft_.extensions);
                     typeDraft_.caseWidthMm=size.width;typeDraft_.caseHeightMm=size.height;typeDraft_.caseThicknessMm=size.thickness;
@@ -6274,29 +7338,61 @@ public:
             typeText_=false;
         }
     }
+    void DrawPreparedModelPreview(std::string model,bool box,SDL_Rect rect,Color accent){
+        struct PreviewScope{const LibraryDefinition *&slot;const LibraryDefinition *old;~PreviewScope(){slot=old;}} scope{boxPreviewDefinition_,boxPreviewDefinition_};boxPreviewDefinition_=&typeDraft_;
+        GameEntry game;game.name="Preview";game.libraryId=typeDraft_.id;game.absolutePath=typeDraft_.extensions;
+        const bool inheritBox=!box&&model=="auto";
+        if(model=="auto"){auto draft=typeDraft_;if(box)draft.boxModel="auto";else draft.mediaModel="auto";model=GamePreparedModel(game,{draft},!box);if(model=="auto")model="dvd";}
+        if(model=="jewel"||model=="ps1-jewel"){
+            const CaseView view(rect,{142,125,14},.35f,-.10f,.04f);
+            DrawJewelArt(game,view,!box&&!inheritBox,model=="ps1-jewel",1.f,0);return;
+        }
+        if(model=="cardboard"){const CaseProfile profile{float(typeDraft_.caseWidthMm),float(typeDraft_.caseHeightMm),float(typeDraft_.caseThicknessMm)};DrawCardboardArt(game,CaseView(rect,profile,.35f,-.1f,.04f),profile);return;}
+        if(model=="dvd"||box){DrawBoxDirect(game,rect,0,false,accent,.35f,-.1f,.04f,CaseView::kCamera,{float(typeDraft_.caseWidthMm),float(typeDraft_.caseHeightMm),float(typeDraft_.caseThicknessMm)},true);return;}
+        auto *logo=CartridgeTitleLogo(game);
+        if(model=="nes"){NesCartridge::Draw(renderer_,rect,nullptr,nesMaterial_,true,1,.35f,-.1f,.04f,logo);return;}
+        if(model=="snes"){SnesCartridge::Draw(renderer_,rect,nullptr,snesMaterial_,true,1,.35f,-.1f,.04f,logo);return;}
+        if(model=="n64"||model=="gba"||model=="gb"||model=="ds"||model=="hucard"||model=="genesis"){
+            const auto m=model=="n64"?CartridgeModels::Model::N64:model=="gba"?CartridgeModels::Model::GBA:model=="genesis"?CartridgeModels::Model::Genesis:model=="hucard"?CartridgeModels::Model::HuCard:model=="gb"?CartridgeModels::Model::GB:CartridgeModels::Model::DS;
+            CartridgeModels::Draw(renderer_,m,rect,nullptr,cartridgeMaterials_,true,1,.35f,-.1f,.04f,logo);return;
+        }
+        const int edge=std::min(rect.w,rect.h);SDL_Rect disc{rect.x+(rect.w-edge)/2,rect.y+(rect.h-edge)/2,edge,edge};
+        SDL_RenderCopy(renderer_,ps1Material_.Disc(renderer_),nullptr,&disc);
+    }
     void DrawTypes(int x,Color accent,bool glass) {
-        const Color text=glass?Color{43,54,63,255}:Color{238,244,252,255};
+        if(boxColorOpen_){DrawBoxColor(x,accent,glass);return;}
+        const Color text=glass?UIShade(Color{43,54,63,255}):UIShade(Color{238,244,252,255});
         DrawText(renderer_,typeText_?(launcherEditor_?"EDIT LAUNCHER FIELD":typeName_?"EDIT NAME":"EDIT EXTENSIONS"):typeEditor_?"CONTENT TYPE / EDIT":"MANAGE CONTENT TYPES",x,205,3,text);
         if(typeText_) {
             DrawFittedText(renderer_,typeBuffer_+"_",x,260,720,2,text);
             for(int i=0;TypeKeys[i];++i) {int px=x+(i%12)*60,py=320+(i/12)*32;
                 if(i==typeKey_) FillRoundedRect(renderer_,{px-5,py-4,42,30},8,{accent.r,accent.g,accent.b,100});
                 DrawText(renderer_,std::string(1,TypeKeys[i]),px,py,2,text);}
-            DrawSettingsActions(x,accent);return;
+        DrawSettingsActions(x,accent);return;
         }
         std::vector<std::pair<std::string,std::string>> rows;
         if(typeEditor_) rows={{"NAME",typeDraft_.name},{"SCANNER",PlatformName(typeDraft_.parser)},
             {"EXTENSIONS",typeDraft_.extensions},{"LAUNCHER",LauncherLabel(typeDraft_.launcherId)},
             {"ENABLED",OnOff(typeDraft_.enabled)},{"RAIL POSITION",std::to_string(typeDraft_.order+1)},
+            {"MEDIA BY CONTENT TYPE",OnOff(typeDraft_.mediaByContentType)},
+            {"BOX MODEL",PreparedModels::Name(typeDraft_.boxModel)},{"MEDIA MODEL",typeDraft_.mediaModel=="auto"?"Use box model":PreparedModels::Name(typeDraft_.mediaModel)},
+            {"VIEW TYPE",typeDraft_.viewType<0?"Display default":CoverPresentation::Types[typeDraft_.viewType]},
+            {"LAYOUT",typeDraft_.viewType<0?"Display default":CoverPresentation::LayoutName(typeDraft_.viewType,typeDraft_.viewLayout)},
             {"CASE WIDTH",std::to_string(typeDraft_.caseWidthMm)+" mm"},
             {"CASE HEIGHT",std::to_string(typeDraft_.caseHeightMm)+" mm"},
             {"CASE THICKNESS",std::to_string(typeDraft_.caseThicknessMm)+" mm"},
-            {"MEDIA BY CONTENT TYPE",OnOff(typeDraft_.mediaByContentType)}};
+            {"BOX COLOR",BoxColorName(typeDraft_.boxColor)}};
         else {rows.push_back({"+  ADD CONTENT TYPE",""});for(const auto&l:libraries_) rows.push_back({l.name,OnOff(l.enabled)});}
+        const bool modelPreview=typeEditor_&&(typeRow_==7||typeRow_==8);
         const int first=std::max(0,typeRow_-5);
         for(int i=first;i<std::min(first+7,static_cast<int>(rows.size()));++i){const int y=260+(i-first)*40;
             if(i==typeRow_&&!settingsSidebar_&&settingsAction_<0)FillRoundedRect(renderer_,{x-12,y-5,750,36},10,{accent.r,accent.g,accent.b,70});
-            DrawFittedText(renderer_,rows[i].first,x,y,320,2,text);DrawFittedText(renderer_,rows[i].second,x+340,y,380,2,text);}
+            DrawFittedText(renderer_,rows[i].first,x,y,320,2,text);DrawFittedText(renderer_,rows[i].second,x+340,y,modelPreview?145:380,2,text);}
+        if(modelPreview){
+            FillRoundedRect(renderer_,{x+500,280,225,240},12,glass?UIShade(Color{218,228,232,245}):UIShade(Color{20,29,39,245}));
+            DrawPreparedModelPreview(typeRow_==7?typeDraft_.boxModel:typeDraft_.mediaModel,typeRow_==7,{x+513,291,199,190},accent);
+            DrawFittedText(renderer_,"MODEL PREVIEW",x+518,490,190,1,text);
+        }
         DrawSettingsActions(x,accent);
     }
     std::vector<MediaDirectoryRow> MediaRows() const { return MediaDirectoryRows(mediaSources_,libraries_,expandedMediaGroups_); }
@@ -6429,13 +7525,14 @@ public:
         if(action==DraftExit::Category)SettingsChangeCategory(draftExitCategory_);
         else if(action==DraftExit::Settings)ToggleSettings();
         else if(action==DraftExit::Support)OpenSupport();
+        else if(action==DraftExit::Controllers)OpenControllers();
     }
     void DrawDraftExit(Color accent) {
         const bool light=preferences_.skin==1 || preferences_.skin==2;
         const PopupTextGlowScope glow(light);
-        const Color ink=light?Color{38,53,64,255}:Color{238,244,252,255};
-        FillRoundedRect(renderer_,{0,0,kWidth,kHeight},0,{0,0,0,130});
-        FillRoundedRect(renderer_,{300,225,680,280},24,light?Color{239,246,248,255}:Color{20,31,49,255});
+        const Color ink=light?UIShade(Color{38,53,64,255}):UIShade(Color{238,244,252,255});
+        if(preferences_.skin!=1)FillRoundedRect(renderer_,{0,0,kWidth,kHeight},0,{0,0,0,130});
+        FillRoundedRect(renderer_,{300,225,680,280},24,light?UIShade(Color{239,246,248,255}):UIShade(Color{20,31,49,255}));
         if(light)DrawGlassSurface(renderer_,{300,225,680,280},24,accent,100,true);
         DrawText(renderer_,"UNSAVED CHANGES",640,260,3,ink,true);
         DrawText(renderer_,"Exit without saving your changes?",640,324,2,ink,true);
@@ -6443,7 +7540,7 @@ public:
         for(int i=0;i<2;++i){
             const SDL_Rect rect{350+i*300,414,280,56};
             if(draftExitYes_==(i==1))FillRoundedRect(renderer_,{rect.x-3,rect.y-3,rect.w+6,rect.h+6},15,accent);
-            FillRoundedRect(renderer_,rect,12,light?Color{225,239,245,255}:Color{32,52,73,255});
+            FillRoundedRect(renderer_,rect,12,light?UIShade(Color{225,239,245,255}):UIShade(Color{32,52,73,255}));
             DrawText(renderer_,i?"YES - DISCARD":"NO - KEEP EDITING",490+i*300,433,1,ink,true);
         }
     }
@@ -6551,14 +7648,13 @@ public:
     void SourceEditorActivate() {
         if (sourceEditorRow_ == 0 || DefaultFileRow(sourceEditorRow_)) {
             defaultFileBrowser_=DefaultFileRow(sourceEditorRow_);
-            browserPath_ = DirectoryExists(DraftPath()) ? DraftPath() : "fs:/vol/external01";
+            browserPath_ = DraftPath();
             if(defaultFileBrowser_ && !draftMediaSource_.defaultFile.empty()) {
                 const auto &file=draftMediaSource_.defaultFile;
                 const auto slash=file.find_last_of('/');
-                if(slash!=std::string::npos && DirectoryExists(file.substr(0,slash))) browserPath_=file.substr(0,slash);
+                if(slash!=std::string::npos) browserPath_=BrowserPath::Parent(file);
             }
-            if (browserPath_.rfind("fs:/", 0) != 0 && browserPath_.rfind("usb1:/",0)!=0) browserPath_ = "fs:/vol";
-            browserPath_=BrowserPath::Normalize(browserPath_);
+            browserPath_=BrowserPath::NearestDirectory(browserPath_,DirectoryExists);
             RefreshBrowser();
             directoryBrowser_ = true;
         } else if(sourceEditorRow_==SourceEditorCount()-2) SaveDraftSource();
@@ -6584,7 +7680,7 @@ public:
                 categoryOnly=old.path==draftSource_.path&&old.platform==draftSource_.platform&&old.enabled==draftSource_.enabled&&old.depth==draftSource_.depth&&old.libraryId==draftSource_.libraryId&&old.launcherId==draftSource_.launcherId&&old.launcher==draftSource_.launcher;}
             if(editingSourceIndex_>=0) next[editingSourceIndex_]=draftSource_; else next.push_back(draftSource_);
             saved=SaveContentSources(next,false); if(saved) sources_=std::move(next);
-            if(saved){RebuildVisible();if(categoryOnly){sourceEditor_=false;sourceRow_=0;SetStatus("VC SORT SETTING SAVED");return;}}
+            if(saved){RebuildVisible(true);if(categoryOnly){sourceEditor_=false;sourceRow_=0;SetStatus("VC SORT SETTING SAVED");return;}}
         }
         if(!saved) { SetStatus("COULD NOT SAVE PATHS",5000); return; }
         sourceEditor_ = false;
@@ -6632,15 +7728,15 @@ public:
 
     void DrawIconPreparation(std::size_t done,std::size_t total,float seconds) {
         const bool glass=preferences_.skin==1;
-        gSmoothText=glass; gGlassTextHalo=glass; gGlassBackdrop=nullptr; gGlassOverVideo=false;
-        const Color accent=AccentFor(Selected()?Selected()->platform:Platform::WiiU,preferences_.theme);
-        const Color ink=glass?Color{38,57,72,255}:Color{236,244,255,255};
-        const Color muted=glass?Color{78,99,113,255}:Color{154,176,199,255};
+        gSmoothText=glass||SwitchSkin(); gGlassTextHalo=glass; gGlassBackdrop=nullptr; gGlassOverVideo=false;
+        const Color accent=UForceSkin()?SwitchAccent():AccentFor(Selected()?Selected()->platform:Platform::WiiU,preferences_.theme);
+        const Color ink=glass?Color{38,57,72,255}:UIShade(Color{236,244,255,255});
+        const Color muted=glass?Color{78,99,113,255}:UIShade(Color{154,176,199,255});
         const float phase=preferences_.backgroundMotion?seconds:0.f;
         const float progress=total?std::clamp(float(done)/total,0.f,1.f):1.f;
         for(int y=0;y<kHeight;++y) {
             const float t=float(y)/kHeight;
-            SetColor(renderer_,glass?Color{Uint8(237-23*t),Uint8(246-18*t),Uint8(251-14*t),255}:
+            SetColor(renderer_,UForceSkin()?SwitchBackground():glass?Color{Uint8(237-23*t),Uint8(246-18*t),Uint8(251-14*t),255}:
                 Color{Uint8(12+7*t),Uint8(19+9*t),Uint8(33+12*t),255});
             SDL_RenderDrawLine(renderer_,0,y,kWidth,y);
         }
@@ -6655,7 +7751,7 @@ public:
             }
         }
         FillRoundedRect(renderer_,{350,72,580,542},glass?32:8,
-                        glass?Color{255,255,255,155}:Color{21,34,53,225});
+                        glass?Color{255,255,255,155}:UIShade(Color{21,34,53,225}));
         // Subpixel geometry with a one-pixel alpha fringe on both edges.
         // Cache the mesh: no per-frame allocation or hundreds of line draw calls.
         constexpr int ringSegments=1024;
@@ -6782,9 +7878,40 @@ public:
     }
 #ifdef UFLOW_HOST_PREVIEW
     bool CheckLaunchAnimation(const std::string &path) {
+        // Exercise the actual launch dispatcher at fixed size: a quarter turn
+        // must change geometry, independently of launch zoom and fade.
+        for(const auto &model:PreparedModels::Models){
+            if(std::string(model.id)=="auto")continue;
+            if(!VisualPreview("library"))return false;
+            preferences_.skin=1;preferences_.coverType=model.box?CoverPresentation::Box:CoverPresentation::Media;
+            LibraryDefinition definition;definition.id="launch-test";definition.name="Launch test";
+            definition.boxModel=model.box?model.id:"auto";definition.mediaModel=model.id;
+            libraries_={definition};games_.resize(1);games_[0].libraryId="launch-test";games_[0].mediaLibraryId.clear();games_[0].vcSystem.clear();
+            games_[0].physicalMediaPath.clear();games_[0].cartridgeLabelPath.clear();RebuildVisible();
+            const auto &game=games_[0];const auto accent=AccentFor(game.platform,preferences_.theme);
+            for(int turn=0;turn<3;++turn){
+                SDL_SetRenderTarget(renderer_,nullptr);SetColor(renderer_,{0,0,0,255});SDL_RenderClear(renderer_);
+                DrawBoxDirect(game,{400,120,480,480},0,true,accent,turn*1.5707963f,0,0,CaseView::kCamera,CaseProfileForGame(game,libraries_));
+                if(!SaveVisualFrame(renderer_,path+"-model-"+model.id+"-"+std::to_string(turn)+".png"))return false;
+            }
+            if(std::string(model.id)=="disc"||std::string(model.id)=="mini-disc"){
+                for(int context=0;context<2;++context)for(int turn=0;turn<2;++turn){
+                    detailsProgress_=context==0?1.f:0.f;showcaseProgress_=context==1?1.f:0.f;
+                    SDL_SetRenderTarget(renderer_,nullptr);SetColor(renderer_,{0,0,0,255});SDL_RenderClear(renderer_);
+                    DrawBox(game,{400,120,480,480},0,true,accent,turn*1.05f,0,0,true);
+                    if(!SaveVisualFrame(renderer_,path+"-disc-context-"+model.id+"-"+std::to_string(context)+"-"+std::to_string(turn)+".png"))return false;
+                }
+                detailsProgress_=showcaseProgress_=0;
+            }
+            launchOrigin_={400,120,480,480};launchYaw_=launchPitch_=launchRoll_=0;
+            if(!BeginLaunchAnimation())return false;
+            for(float progress:{0.f,.2f,.45f,.7f,1.f})if(!DrawLaunchAnimation(progress))return false;
+            EndLaunchAnimation();
+        }
+        libraries_=LoadLibraries();
         for(int skin:{0,1})for(int mode:{0,1,2,3}) {
             if(!VisualPreview("library"))return false;
-            preferences_.skin=skin;preferences_.useBoxArt=mode!=3;
+            preferences_.skin=skin;preferences_.coverLayout=mode==3?2:0;
             details_=mode==1;detailsProgress_=details_?1.f:0.f;
             if(!Render(0))return false;
             if(mode==2) {
@@ -6830,7 +7957,7 @@ public:
         // Freeze the surrounding scene once, without a readback or allocation.
         // Existing case drawing records the selected case's on-screen pose.
         launchCapture_=true;gGlassBackdrop=nullptr;
-        const auto accent=AccentFor(game->platform,preferences_.theme);
+        const auto accent=UForceSkin()?SwitchAccent():AccentFor(game->platform,preferences_.theme);
         DrawBackground(accent,game);
         const bool fullVideo=video_.Ready() && videoOptions_.mode!=VideoMode::Background;
         if(video_.Ready())video_.Draw(kWidth,kHeight);
@@ -6850,7 +7977,7 @@ public:
         const auto *game=Selected();
         if(!launchAnimation_ || !game)return false;
         const float p=std::clamp(progress,0.f,1.f),ease=SmoothFade(p);
-        const auto accent=AccentFor(game->platform,preferences_.theme);
+        const auto accent=UForceSkin()?SwitchAccent():AccentFor(game->platform,preferences_.theme);
         SDL_SetRenderTarget(renderer_,nullptr);
         SetColor(renderer_,{0,0,0,255});SDL_RenderClear(renderer_);
         SDL_SetTextureAlphaMod(lensTexture_,Uint8(255*(1.f-ease)));
@@ -6889,7 +8016,11 @@ public:
         return captured;
     }
     bool Render(float deltaSeconds, const std::string &capturePath = {}) {
+        FrameProfile::Scope frameTiming(frameProfile_,ProfileClock,profileInputUs_,preferences_.skin,ViewType(),PresentationLayout(),SceneSkin()?SceneEffects():-1);
+        profileInputUs_=0;
+        if(SceneSkin())SceneBudget(deltaSeconds);
         UpdateGridCamera(deltaSeconds);
+        UpdateWiiUMenu(deltaSeconds);
         const Uint64 performanceStart=SDL_GetPerformanceCounter();
         // Also advance cache retirement while full video bypasses the shelf.
         // Otherwise all cards from its last draw stay marked in-use forever.
@@ -6909,18 +8040,23 @@ public:
             if(SDL_SetRenderTarget(renderer_,startupFrame_)!=0) {
                 SDL_DestroyTexture(startupFrame_);startupFrame_=nullptr;SDL_SetRenderTarget(renderer_,nullptr);
             }
+            frameTiming.Mark(FrameProfile::Draw);
             DrawIconPreparation(textures_.IconsDone(),textures_.IconsTotal(),SDL_GetTicks()/1000.f);
+            frameTiming.Mark(FrameProfile::Video);
             DrawStartupIntro();
             SDL_SetRenderTarget(renderer_,nullptr);
             if(startupFrame_) {SDL_SetTextureAlphaMod(startupFrame_,255);SDL_RenderCopy(renderer_,startupFrame_,nullptr,nullptr);}
             startupFadeAt_=0;
             const bool captured=capturePath.empty() || SaveVisualFrame(renderer_,capturePath);
+            frameTiming.Mark(FrameProfile::Present);
             SDL_RenderPresent(renderer_);
 #ifndef UFLOW_HOST_PREVIEW
             GX2WaitForFlip();
 #endif
+            frameTiming.Mark(FrameProfile::Artwork);
             textures_.SetCoverDetail(false);
             PrefetchArtwork();
+            frameTiming.Mark(FrameProfile::Upload);
             textures_.PumpOne();
             return captured;
         }
@@ -6929,15 +8065,15 @@ public:
             && !videoTest_
 #endif
         ) deltaSeconds = 0; // deterministic transition samples, not performance measurements
-        SetSwitchFont(SwitchSkin());
+        SetSwitchFont(SwitchSkin() || preferences_.skin==1);
         gSmoothText = preferences_.skin != 0;
         gGlassTextHalo = preferences_.skin == 1;
         gGlassOverVideo=false;
         UpdateControlHints();
         const float response = preferences_.animationSpeed == 0 ? 6.5f : preferences_.animationSpeed == 1 ? 11.0f : 17.0f;
         const float step = 1.0f - std::exp(-std::max(0.f,deltaSeconds) * response);
-        const bool bookshelf = preferences_.coverType==CoverPresentation::Box && preferences_.coverLayout==8;
-        if(bookshelf)visualSelected_=bookshelfMotion_.Advance(visualSelected_,float(selected_),deltaSeconds,preferences_.animationSpeed);
+        const bool bookshelf = !FixedShelfScene() && !SceneFlatArtwork() && ((ViewType()==CoverPresentation::Box && ViewLayout(CoverPresentation::Box)==8) || (ViewType()==CoverPresentation::Media && ViewLayout(CoverPresentation::Media)==4));
+        if(bookshelf)visualSelected_=bookshelfMotion_.Advance(visualSelected_,float(selected_),deltaSeconds,preferences_.animationSpeed,ViewType()==CoverPresentation::Media);
         else {bookshelfMotion_={};visualSelected_ += (static_cast<float>(selected_) - visualSelected_) * step;}
         visualTab_ += (static_cast<float>(pendingTab_>=0?pendingTab_:tab_) - visualTab_) * step;
         AdvanceLibraryFade(deltaSeconds);
@@ -6955,8 +8091,11 @@ public:
             coverInspectBackProgress_=0.f;
         }
         settingsProgress_ += ((settings_ ? 1.0f : 0.0f) - settingsProgress_) * step;
+        frameTiming.Mark(FrameProfile::Artwork);
         const GameEntry *selected = Selected();
         textures_.SetCoverDetail(CoverInspectOpen() || details_ || detailsProgress_>.01f);
+        const bool flatSceneHome=SceneFlatArtwork()&&!OverlayOpen()&&!CoverInspectOpen();
+        textures_.SetThumbnailView(flatSceneHome||ViewType()==CoverPresentation::Thumbnails);
         textures_.PinCover(selected?(selected->fullCoverPath.empty()?selected->coverPath:selected->fullCoverPath):std::string());
         if(visible_.size()>1)for(int offset:{-1,1,-2,2,-3,3}) {
             int index=static_cast<int>(selected_)+offset,count=static_cast<int>(visible_.size());
@@ -6968,7 +8107,7 @@ public:
         }
         // Put the focused cover ahead of backgrounds and neighbor requests,
         // including while a video or Details overlay owns the screen.
-        if(selected) {
+        if(selected && !flatSceneHome && (!BannerVideo() || OverlayOpen() || CoverInspectOpen())) {
             textures_.PrefetchCover(selected->fullCoverPath,true);
             if(selected->fullCoverPath.empty() ||
                (textures_.CoverDetailKnown(selected->fullCoverPath,true) && !textures_.HasCover(selected->fullCoverPath,true)))
@@ -6985,6 +8124,7 @@ public:
         if(backgroundPath!=selectedBackgroundPath_ || background.texture!=selectedBackground_.texture)
             detailsBackdropReady_=false;
         selectedBackgroundPath_=backgroundPath;selectedBackground_=background;
+        frameTiming.Mark(FrameProfile::Video);
         UpdateVideo(selected);
         UpdateDetailsVideo();
         const bool showcase=video_.Active() && video_.Ready() && videoOptions_.mode==VideoMode::Showcase;
@@ -7000,24 +8140,15 @@ public:
             !video_.Active()&&video_.CanStart()&&detailsVideo_.CanStart(),
             InstallBusy()||scanOpen_||updateOpen_||WelcomeOpen()||InjectionDialogOpen()||settings_||details_||
             detailsProgress_>.01f||settingsProgress_>.01f);
-        if(videoIsolationUntil_ && (SDL_TICKS_PASSED(SDL_GetTicks(),videoIsolationUntil_) || !video_.Active() || OverlayOpen()))
-            videoIsolationUntil_=0;
-        if(videoIsolationUntil_ && video_.Ready()) {
-            SDL_SetRenderTarget(renderer_,nullptr);
-            SetColor(renderer_,{0,0,0,255});SDL_RenderClear(renderer_);
-            video_.Draw(kWidth,kHeight);
-            SDL_RenderPresent(renderer_);
-#ifndef UFLOW_HOST_PREVIEW
-            GX2WaitForFlip();
-#endif
-            return true;
-        }
         Color accent = selected ? AccentFor(selected->platform, preferences_.theme)
                                 : AccentFor(Platform::WiiU, preferences_.theme);
 
-        const float overlayProgress = std::max({detailsProgress_, settingsProgress_,(scanOpen_||InjectionDialogOpen()||WelcomeOpen()||updateOpen_)?1.f:0.f});
+        frameTiming.Mark(FrameProfile::Draw);
+        if(UForceSkin())accent=SwitchAccent();
+        const bool glassPopup=preferences_.skin==1&&(launchOptionsOpen_||searchOpen_||sortOpen_||alphabetProgress_>.001f||powerPrompt_||draftExit_!=DraftExit::None||settingsHelpOpen_);
+        const float overlayProgress = std::max({detailsProgress_, settingsProgress_,(scanOpen_||InjectionDialogOpen()||WelcomeOpen()||updateOpen_||glassPopup)?1.f:0.f});
         const bool stickyBackground=selectedBackground_.texture && preferences_.backgroundTransparency<100 &&
-            detailsProgress_>.01f && settingsProgress_<=.01f && !scanOpen_ && !InjectionDialogOpen() && !WelcomeOpen() && !updateOpen_;
+            detailsProgress_>.01f && settingsProgress_<=.01f && !scanOpen_ && !InjectionDialogOpen() && !WelcomeOpen() && !updateOpen_ && !glassPopup;
         const bool fullVideo = video_.Ready() && (videoOptions_.mode==VideoMode::Foreground || (videoOptions_.mode==VideoMode::Showcase && showcaseProgress_>=.55f));
         if (overlayProgress <= .01f && !fullVideo) PrefetchArtwork();
         // Overlay content changes every frame, but the obscured library does not.
@@ -7027,7 +8158,7 @@ public:
         const bool reuseBackdrop = freezeBackdrop && detailsBackdropReady_;
         const bool offscreen = !fullVideo && (reuseBackdrop || (sceneTexture_ && SDL_SetRenderTarget(renderer_, sceneTexture_) == 0));
         if (!reuseBackdrop && !fullVideo) {
-            const bool backgroundVideo=videoOptions_.mode==VideoMode::Background && video_.Draw(kWidth,kHeight);
+            const bool backgroundVideo= !BannerVideo() && videoOptions_.mode==VideoMode::Background && video_.Draw(kWidth,kHeight);
             if (!backgroundVideo) DrawBackground(accent, selected);
             // Reuse the existing lens scratch as an immutable video-only layer.
             // It also supplies live scene samples to the glass, never its own target.
@@ -7051,7 +8182,7 @@ public:
                 SDL_SetRenderTarget(renderer_,sceneTexture_);
             }
             if(!fadeLayer || libraryFade_>0.f) {
-                if (visible_.empty()) DrawEmpty(accent); else DrawCarousel(accent);
+                if (visible_.empty()&&!WiiUMenuLayout()&&!UForceHome()&&!LayoutSkin()) DrawEmpty(accent); else DrawCarousel(accent);
             }
             if(fadeLayer) {
                 const float opacity=libraryFade_*libraryFade_*(3.f-2.f*libraryFade_);
@@ -7062,7 +8193,7 @@ public:
             if(!settings_ && settingsProgress_<=.01f)DrawFooter(accent);
             if(coverInspectProgress_>.01f) DrawCoverInspect(accent);
             DrawHeader(accent);
-            if(!SwitchSkin()){const auto &skin=SkinSpec();DrawProfile(skin.avatarX,skin.avatarY,skin.avatarSize,false);DrawFittedText(renderer_,profileName_,skin.avatarX-160,skin.avatarY+14,145,1,preferences_.skin==1?Color{48,61,71,255}:Color{237,244,255,255},true);}
+            if(!SwitchSkin()){const auto &skin=SkinSpec();const int profileY=skin.avatarY+(preferences_.skin==1?-20:-26);DrawProfile(skin.avatarX,profileY,skin.avatarSize,false);DrawFittedText(renderer_,profileName_,skin.avatarX-160,profileY+14,145,1,preferences_.skin==1?Color{48,61,71,255}:Color{237,244,255,255},true);}
             gGlassBackdrop=nullptr;
             gGlassOverVideo=false;
             if(videoLayer && videoOptions_.foregroundOpacity<100) {
@@ -7071,6 +8202,7 @@ public:
                 SDL_SetTextureAlphaMod(lensTexture_,255);
             }
         }
+        frameTiming.Mark(FrameProfile::Compose);
         bool blurReady = reuseBackdrop;
         if (offscreen) {
             SDL_SetRenderTarget(renderer_, nullptr);
@@ -7147,10 +8279,14 @@ public:
             SDL_RenderCopy(renderer_,startupFrame_,nullptr,nullptr);
             if(fade>=1.f) {SDL_DestroyTexture(startupFrame_);startupFrame_=nullptr;}
         }
+        gGlassBackdrop=preferences_.skin==1&&blurReady?lensTexture_:nullptr;
         DrawGallery();DrawPowerPrompt();
         if(draftExit_!=DraftExit::None)DrawDraftExit(accent);
+        DrawSettingsHelp(accent);
+        gGlassBackdrop=nullptr;
         const bool captured = capturePath.empty() || SaveVisualFrame(renderer_, capturePath);
         if(scanOpen_ && scanFirstFrame_)Trace("scan-first-present");
+        frameTiming.Mark(FrameProfile::Present);
         SDL_RenderPresent(renderer_);
         if(scanOpen_ && scanFirstFrame_){Trace("scan-first-presented");scanFirstFrame_=false;}
 #ifndef UFLOW_HOST_PREVIEW
@@ -7159,10 +8295,13 @@ public:
         // copy while the display is still presenting it. Only rendered in foreground.
         GX2WaitForFlip();
 #endif
+        if(settingsExitPending_){Trace("settings-exit-library-render");settingsExitPending_=false;}
+        frameTiming.Mark(FrameProfile::Settings);
         FlushSettingsSave(false);
         // Only upload a completed CPU decode here; storage and decompression
         // run on the artwork worker. Include upload time in frame statistics.
-        if (!fullVideo&&!scanOpen_&&!InjectionDialogOpen()) textures_.PumpOne(!video_.Active() && !OverlayOpen());
+        frameTiming.Mark(FrameProfile::Upload);
+        if (!fullVideo&&!scanOpen_&&!InjectionDialogOpen()) textures_.PumpOne(!flatSceneHome && !video_.Active() && !OverlayOpen());
         const double elapsedMs=1000.0*(SDL_GetPerformanceCounter()-performanceStart)/SDL_GetPerformanceFrequency();
         ++performanceFrames_; performanceTotalMs_+=elapsedMs;
         performanceMaxMs_=std::max(performanceMaxMs_,elapsedMs);
@@ -7200,7 +8339,8 @@ private:
     }
     void UpdateVideo(const GameEntry *selected) {
         if(InstallBusy())return;
-        if (selected != videoSelection_) {
+        if (selected != videoSelection_ || videoUForceBanner_ != BannerVideo()) {
+            videoUForceBanner_ = BannerVideo();
             showcaseProgress_=0.f;
             StopVideo(); videoSelection_ = selected;
             videoTrigger_.Focus(selected ? selected->absolutePath + "|" + selected->previewPath : "");
@@ -7211,6 +8351,11 @@ private:
                 videoOptions_ = source->video; videoConfigured_ = true;
             }
             if(demo_.Active() && selected && !selected->previewPath.empty())videoConfigured_=true;
+            // This skin embeds previews in its hero instead of replacing the library.
+            if(videoUForceBanner_) {
+                videoOptions_.mode=VideoMode::Background;
+                if(selected && !selected->previewPath.empty())videoConfigured_=true;
+            }
         }
         bool realLibrary = !preview_;
 #ifdef UFLOW_HOST_PREVIEW
@@ -7270,18 +8415,35 @@ private:
             } else return;
         }
         if(begin) {
-            demoFailed_.clear();
             demoOriginPath_=Selected()?Selected()->absolutePath:std::string{};
         }
         std::vector<std::size_t> candidates;
         for(std::size_t i=0;i<visible_.size();++i) {
             const auto &path=games_[visible_[i]].previewPath;
-            if(!path.empty() && !demoFailed_.count(path))candidates.push_back(i);
+            if(path.empty() || demoFailed_.count(path))continue;
+            const auto *source=VideoSourceFor(mediaSources_,games_[visible_[i]]);
+            if(!source)continue;
+            const auto &fallback=source->defaultFile;
+            const std::string fallbackPath=fallback.empty()?std::string{}:
+                (fallback.front()=='/'||fallback.find(':')!=std::string::npos?fallback:source->path+"/"+fallback);
+            if(path!=fallbackPath)candidates.push_back(i);
         }
         const auto next=demo_.Choose(candidates,selected_);
-        if(next==DemoMode::None){DemoInput(true);return;}
+        if(next==DemoMode::None){
+            RestoreDemoSelection();demo_.Reset(now);demoNext_=false;
+            // Keep failed files excluded across idle retries. Actual user input
+            // clears this set, allowing a repaired/remounted library to retry.
+            return;
+        }
+        const auto &path=games_[visible_[next]].previewPath;
+        struct stat info{};
+        if(stat(path.c_str(),&info)!=0 || !S_ISREG(info.st_mode) || info.st_size<=0){
+            demoFailed_.insert(path);demoNext_=true;return;
+        }
         StopVideo();videoSelection_=nullptr;videoTrigger_.Focus("");
-        selected_=next;detailsBackdropReady_=false;demoNext_=false;demoSelectedAt_=now;
+        selected_=next;visualSelected_=float(next);bookshelfMotion_={};
+        gridCameraReady_=false;wiiuMenuPage_=-1;wiiuFocusIndex_=-1;
+        detailsBackdropReady_=false;demoNext_=false;demoSelectedAt_=now;
         PrefetchArtwork();
     }
     void QueueSettingsSave() {
@@ -7290,11 +8452,25 @@ private:
         settingsSaveAfter_ = SDL_GetTicks() + 750;
     }
     void FlushSettingsSave(bool force) {
-        if (!settingsDirty_ || (!force && !SDL_TICKS_PASSED(SDL_GetTicks(), settingsSaveAfter_))) return;
-        SaveSettings(preferences_);
-        settingsDirty_ = false;
+        const auto result=settingsWriter_.Poll();
+        if(result.revision!=settingsWriteRevision_){
+            settingsWriteRevision_=result.revision;frameProfile_.SaveTiming(result.microseconds,0);
+            if(!result.ok){settingsDirty_=true;settingsSaveAfter_=SDL_GetTicks()+5000;SetStatus("Could not save settings; retrying",5000);}
+        }
+        if(!settingsDirty_ || (!force&&!SDL_TICKS_PASSED(SDL_GetTicks(),settingsSaveAfter_)))return;
+        if(settingsWriter_.Submit(preferences_))settingsDirty_=false;
+        else {settingsSaveAfter_=SDL_GetTicks()+5000;SetStatus("Could not start settings writer",5000);}
+    }
+    void DrainSettingsSave(){
+        FlushSettingsSave(true);settingsWriter_.Drain();
+        // Only lifecycle boundaries may wait for storage. Retry a failed write
+        // here while the SD is still mounted; ordinary browsing never waits.
+        const auto result=settingsWriter_.Poll();
+        if(settingsDirty_||!result.ok){if(SaveSettingsChecked(preferences_))settingsDirty_=false;}
     }
     void ClearSideCases() {
+        for(auto &entry:mediaSpines_)SDL_DestroyTexture(entry.second.texture);mediaSpines_.clear();
+        for(auto &entry:mediaCards_)SDL_DestroyTexture(entry.second.texture);mediaCards_.clear();mediaCardBytes_=0;
         bookshelfCached_=false;
         for (auto &entry : sideCases_) SDL_DestroyTexture(entry.texture);
         sideCases_.clear();
@@ -7303,13 +8479,13 @@ private:
     int SettingsFirstRow() const {
         if(settingsCategory_==4)return std::clamp(settingsRow_-11,0,std::max(0,static_cast<int>(ControlAction::Count)+1-12));
         if(settingsCategory_==0)return std::clamp(settingsRow_-5,0,std::max(0,SettingsRowCount()-6));
-        return settingsCategory_==3?std::clamp(settingsRow_-5,0,12):0;
+        return settingsCategory_==3?std::clamp(settingsRow_-5,0,11):0;
     }
     int SettingsRowCount() const {
         if(audioSettings_) return 6;
-        if(settingsCategory_==0)return preferences_.demoMode?10:9;
+        if(settingsCategory_==0)return preferences_.demoMode?12:11;
         if(settingsCategory_==4)return static_cast<int>(ControlAction::Count)+1;
-        static constexpr int counts[] = {8, 0, 0, 18, 0, 0};
+        static constexpr int counts[] = {8, 0, 0, 17, 0, 0};
         return counts[settingsCategory_];
     }
     void RefreshBrowser() {
@@ -7339,10 +8515,28 @@ private:
         browserDirectories_=std::move(result.entries);AddBrowserActions();
         browserRow_=std::clamp(browserRow_,0,std::max(0,static_cast<int>(browserDirectories_.size())-1));
     }
-    void RebuildVisible() {
+    std::vector<MediaSource> defaultSleeveSources_;
+    std::map<std::string,GameMedia> navigationDefaults_;
+    void ResolveNavigationDefaults(){
+        if(defaultSleeveSources_!=mediaSources_){
+            defaultSleeveSources_=mediaSources_;navigationDefaults_.clear();
+            for(const auto &source:mediaSources_)if(source.enabled&&source.type==MediaType::FullCover&&!source.libraryId.empty()&&!source.defaultFile.empty()){
+                auto path=source.defaultFile;
+                if(path.front()!='/'&&path.find(':')==std::string::npos)path=source.path+"/"+path;
+                struct stat info{};if(stat(path.c_str(),&info)||!S_ISREG(info.st_mode))continue;
+                GameMedia m;m.sleeve=path;
+                std::ifstream layout(path+".layout");std::string magic;uint64_t bytes=0;float back=0,front=0;
+                if(layout>>magic>>bytes>>back>>front&&magic=="UFLOW-SLEEVE-1"&&bytes==uint64_t(info.st_size)&&back>0&&back<front&&front<1){m.backEnd=back;m.frontStart=front;}
+                navigationDefaults_.try_emplace(source.libraryId,std::move(m));
+            }
+        }
+        for(auto &game:games_)ApplyNavigationDefaultSleeve(game,navigationDefaults_);
+    }
+    void RebuildVisible(bool checkMedia=false) {
         ++bookshelfEpoch_;bookshelfCached_=false;bookshelfMotion_={};
         ApplyVCCategories(games_,preferences_,sources_);
-        mediaRefreshPending_=std::any_of(games_.begin(),games_.end(),[&](const auto &g){return DesiredMediaLibrary(g,libraries_)!=(g.mediaLibraryId.empty()?g.libraryId:g.mediaLibraryId);});
+        ResolveNavigationDefaults();
+        if(checkMedia)mediaRefreshPending_=std::any_of(games_.begin(),games_.end(),[&](const auto &g){return ContentTypeMediaNeeded(g,libraries_);});
         detailsBackdropReady_ = false;
         visible_.clear();
         const auto oldLibrary=CurrentLibraryId();
@@ -7374,14 +8568,44 @@ private:
         }
     }
     void PrefetchArtwork() {
-        if (visible_.empty()) return;
-        if(preferences_.coverType!=CoverPresentation::Box) {
+        if (visible_.empty() || SceneFlatArtwork()) return;
+        if(UForceHome()) {
+            const int count=int(visible_.size()),first=int(selected_/5)*5;
+            const auto queue=[&](int i){if(i>=0&&i<count){const auto &game=games_[visible_[i]];
+                if(ViewType()==CoverPresentation::Thumbnails)textures_.PrefetchShelf(game.backgroundPath.empty()?game.coverPath:game.backgroundPath);
+                else if(ViewType()==CoverPresentation::Logo)textures_.Prefetch(game.logoPath);
+                else if(ViewType()==CoverPresentation::Box || MediaUsesBoxModel(game,libraries_)) {
+                    textures_.PrefetchCover(game.fullCoverPath.empty()?(game.coverPath.empty()?game.defaultSleevePath:game.coverPath):game.fullCoverPath,i==int(selected_));
+                } else {textures_.Prefetch(game.cartridgeLabelPath);textures_.Prefetch(game.physicalMediaPath);textures_.Prefetch(game.logoPath);}
+            }};
+            for(int i=first;i<std::min(first+5,count);++i)queue(i);
+            textures_.PrefetchBackground(Selected()->backgroundPath);
+            if(Selected()->backgroundPath.empty())textures_.PrefetchCover(Selected()->coverPath,false);
+            // Visible row first; warm adjacent pages without full cover/logo work.
+            for(int d=0;d<5;++d){queue(first+5+d);queue(first-5+d);}
+            return;
+        }
+        if(WiiUMenuLayout()){
+            const int first=int(selected_/15)*15;
+            textures_.PrefetchCover(Selected()->coverPath,true);
+            for(int i=std::max(0,first-3);i<std::min(int(visible_.size()),first+18);++i)textures_.PrefetchCover(games_[visible_[i]].coverPath,i==int(selected_));
+            return;
+        }
+        if(ViewType()!=CoverPresentation::Box) {
             const int count=int(visible_.size());
             const auto queue=[&](int index) {
                 if(!preferences_.wrapNavigation && (index<0 || index>=count))return;
                 const auto &game=games_[visible_[(index%count+count)%count]];
-                textures_.Prefetch(game.logoPath);
-                if(preferences_.coverType==CoverPresentation::Media)textures_.Prefetch(game.physicalMediaPath);
+                if(ViewType()==CoverPresentation::Thumbnails) {
+                    textures_.PrefetchCover(game.fullCoverPath,false);
+                    textures_.PrefetchCover(game.coverPath,false);
+                    if(game.fullCoverPath.empty()&&game.coverPath.empty())textures_.PrefetchCover(game.defaultSleevePath,false);
+                } else if(ViewType()==CoverPresentation::Media && MediaUsesBoxModel(game,libraries_)) {
+                    const auto &path=!game.fullCoverPath.empty()?game.fullCoverPath:
+                        !game.coverPath.empty()?game.coverPath:game.defaultSleevePath;
+                    textures_.PrefetchCover(path,index==int(selected_),index!=int(selected_));
+                } else textures_.Prefetch(game.logoPath);
+                if(ViewType()==CoverPresentation::Media){textures_.Prefetch(game.physicalMediaPath);textures_.Prefetch(game.cartridgeLabelPath);}
             };
             queue(int(selected_));
             for(int distance=1;distance<=std::min(8,count-1);++distance){queue(int(selected_)+distance);queue(int(selected_)-distance);}
@@ -7408,7 +8632,7 @@ private:
                 }
             }
         };
-        if(preferences_.coverType==CoverPresentation::Box && preferences_.coverLayout==8) {
+        if(ViewType()==CoverPresentation::Box && ViewLayout(CoverPresentation::Box)==8) {
             queueCover(*Selected(),true);
             neighbors(int(selected_),1,1,[&](const GameEntry &game){queueCover(game,true);});
             if(preferences_.useBackgrounds)textures_.PrefetchBackground(Selected()->backgroundPath);
@@ -7420,7 +8644,8 @@ private:
         const int shown=preferences_.wrapNavigation?(rounded%count+count)%count:std::clamp(rounded,0,count-1);
         queueFront(games_[visible_[selected_]]);
         queueFront(games_[visible_[shown]]);
-        neighbors(shown,1,3,[&](const GameEntry &game){queueCover(game,true);});
+        neighbors(shown,1,1,[&](const GameEntry &game){queueCover(game,true);});
+        neighbors(shown,2,3,[&](const GameEntry &game){queueCover(game,false);});
         // Ordinary SDL textures use four bytes per pixel. Keep the immediate
         // neighbors at original resolution, with sharper browse mips beyond,
         // so three 2048px originals leave room within the 96 MiB budget.
@@ -7453,13 +8678,10 @@ private:
             }
             if (selected) {
                 if(preferences_.useBackgrounds)textures_.PrefetchBackground(game.backgroundPath);
-                if (preferences_.useLogos || preferences_.coverType!=CoverPresentation::Box) textures_.Prefetch(game.logoPath);
+                if (preferences_.useLogos || ViewType()!=CoverPresentation::Box) textures_.Prefetch(game.logoPath);
             }
         };
         queueGame(games_[visible_[selected_]],true);
-        if(preferences_.coverType!=CoverPresentation::Box)neighbors(static_cast<int>(selected_),0,8,[&](const GameEntry &game){
-            textures_.Prefetch(game.logoPath);if(preferences_.coverType==CoverPresentation::Media)textures_.Prefetch(game.physicalMediaPath);
-        });
         if(preferences_.useBackgrounds)
             neighbors(static_cast<int>(selected_),1,1,[&](const GameEntry &game){textures_.PrefetchBackground(game.backgroundPath);});
         // The centre cover is followed by the cards that can enter view next.
@@ -7484,6 +8706,10 @@ private:
 public:
 #include "switch_skin_members.hpp"
 #include "home_navigation.hpp"
+#include "uforce_skin_members.hpp"
+    #include "skin_scene_members.hpp"
+    #include "skin_layout_members.hpp"
+#include "wiiu_menu_members.hpp"
 #include "control_binding_icons.hpp"
 private:
     void DrawBackground(Color accent, const GameEntry *game) {
@@ -7491,7 +8717,7 @@ private:
         if (preferences_.skin == 1) {
             const bool themeVideo=glassBackground_.Draw(kWidth,kHeight);
             if(!themeVideo)FillVerticalGradient(renderer_, {0,0,kWidth,kHeight},
-                                 {246,248,248,255},{214,225,229,255});
+                                 {233,239,234,255},{221,231,224,255});
             SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
             if(themeVideo) { DrawSelectedBackground(game);return; }
             FillVerticalGradient(renderer_, {0,0,kWidth,kHeight},
@@ -7530,11 +8756,14 @@ private:
         SDL_SetTextureAlphaMod(texture,255);
     }
     void DrawHeader(Color accent) {
+        if(LayoutSkin())return;
+        if(UForceSkin()){DrawUForceHeader();return;}
         if(SwitchSkin()){DrawSwitchHeader();return;}
 
         if(!searchQuery_.empty() || alphabetFilter_)DrawText(renderer_,
             (alphabetFilter_?"A-Z: "+AlphabetLabel(alphabetFilter_)+"   ":"")+
             (!searchQuery_.empty()?"SEARCH: "+Ellipsize(searchQuery_,38):""),640,105,2,accent,true);
+        const int chromeY=preferences_.skin==1?-20:-26;
         const auto tabs = LibraryTabs();
         // The library picker is a clipped rail: large libraries never overlap the title/count controls.
         // The selected library stays centered; labels slide at full opacity inside the frame.
@@ -7579,18 +8808,18 @@ private:
             // Clip at the frame boundary without an edge-fade overlay.
         };
         if (preferences_.skin == 1) {
-            DrawGlassSurface(renderer_, {32,20,1216,70}, 25, accent, 92, true);
-            DrawText(renderer_, "uFlow", 58, 38, 4, {46,55,63,255});
-            DrawText(renderer_, LibraryPosition(), 165, 52, 1, {104,117,127,255});
-            DrawGlassSurface(renderer_, {398,31,600,52}, 19, accent, 42, false);
-            drawLibraryRail(408,580,42,true);
+            DrawGlassSurface(renderer_, {32,-25,1216,93}, 25, accent, 92, true);
+            DrawText(renderer_, "uFlow", 58, 38+chromeY, 4, {46,55,63,255});
+            DrawText(renderer_, LibraryPosition(), 165, 52+chromeY, 1, {104,117,127,255});
+            DrawGlassSurface(renderer_, {398,31+chromeY,600,52}, 19, accent, 42, false);
+            drawLibraryRail(408,580,42+chromeY,true);
             return;
         }
-        FillRoundedRect(renderer_, {38,26,1204,74}, 22, {5,10,20,190});
-        DrawText(renderer_, "UFLOW", 66, 46, 4, {245,249,255,255});
-        DrawText(renderer_, LibraryPosition(), 198, 55, 2, accent);
-        FillRoundedRect(renderer_, {414,38,590,48}, 17, {255,255,255,8});
-        drawLibraryRail(424,570,48,false);
+        FillRoundedRect(renderer_, {38,26+chromeY,1204,74}, 22, {5,10,20,190});
+        DrawText(renderer_, "UFLOW", 66, 46+chromeY, 4, {245,249,255,255});
+        DrawText(renderer_, LibraryPosition(), 198, 55+chromeY, 2, accent);
+        FillRoundedRect(renderer_, {414,38+chromeY,590,48}, 17, {255,255,255,8});
+        drawLibraryRail(424,570,48+chromeY,false);
     }
     void DrawEmpty(Color accent) {
         DrawText(renderer_, (!searchQuery_.empty()||alphabetFilter_)?"NO MATCHING GAMES":CurrentLibraryId() == kFavoritesLibraryId ? "NO FAVORITES YET" : "NO GAMES FOUND", 640, 300, 5,
@@ -7598,40 +8827,164 @@ private:
         DrawText(renderer_, (!searchQuery_.empty()||alphabetFilter_)?std::string("PRESS ")+ActionButton(ControlAction::Sort)+" TO CLEAR FILTER":CurrentLibraryId() == kFavoritesLibraryId ? favoriteHint_ : "ADD DIRECTORIES IN SETTINGS > LIBRARY",
                  640, 365, 2, (preferences_.skin==1 || preferences_.skin==2)?Color{105,118,128,255}:accent, true);
     }
-    void DrawPresentation(const GameEntry &game,SDL_Rect rect,bool selected,Color accent,float opacity=1.f,float roll=0.f) {
-        if(preferences_.coverType==CoverPresentation::Thumbnails){DrawThumbnail(game,rect,selected,SwitchSkin()?SwitchAccent():accent,opacity);return;}
+    template<class Project> void DrawCardboardArt(const GameEntry &game,Project project,CaseProfile profile){
+        const float panel=profile.sidewaysSleeve?profile.heightMm:profile.widthMm,total=panel*2+profile.thicknessMm;
+        CardboardBox::Draw(renderer_,project,[&](int side,std::array<SDL_Vertex,4> &vertices)->SDL_Texture*{
+            if(side<0)return nullptr;
+            const auto face=side==0?CoverFaces::Face::Front:side==1?CoverFaces::Face::Back:CoverFaces::Face::Spine;
+            const auto art=CoverFaces::Resolve(game,face,panel/total,(panel+profile.thicknessMm)/total,[&](const auto &path){return textures_.GetCover(path,true).texture!=nullptr;});
+            const auto texture=textures_.GetCover(art.path,true);
+            const bool rotate=face!=CoverFaces::Face::Spine&&CoverFaces::TurnSleeve(profile.sidewaysSleeve,profile.sidewaysDefaultSleeve,art.sleeve,art.path==game.defaultSleevePath,texture.width,texture.height);
+            for(auto &v:vertices){const auto uv=v.tex_coord;
+                if(rotate){const auto q=CoverFaces::SidewaysUV(art.u0,art.u1,uv.x,uv.y,face,art.path==game.defaultSleevePath&&(profile.sidewaysDefaultSleeve||face==CoverFaces::Face::Back));v.tex_coord={q.u,q.v};}
+                else v.tex_coord.x=art.u0+uv.x*(art.u1-art.u0);
+            }return texture.texture;
+        },BoxModelSDLColor(game,{189,184,171,255}));
+    }
+    template<class Project> void DrawJewelArt(const GameEntry &game,Project project,bool media,bool branded,float opacity=1.f,float discAngle=-1.f){
+        const auto art=[&](CoverFaces::Face side){const auto selection=CoverFaces::Resolve(game,side,142.f/298.f,156.f/298.f,
+            [&](const auto &path){return textures_.GetCover(path,true).texture!=nullptr;});
+            return Ps1Jewel::Art{textures_.GetCover(selection.path,true).texture,selection.u0,selection.u1};};
+        if(discAngle<0)discAngle=media&&(showcaseProgress_>.99f||detailsProgress_>.99f||coverInspectProgress_>.99f)?Ps1Jewel::DiscAngle(SDL_GetTicks()):0.f;
+        Ps1Jewel::Draw(renderer_,project,ps1Material_,media,art(CoverFaces::Face::Front),art(CoverFaces::Face::Back),art(CoverFaces::Face::Spine),textures_.Get(game.physicalMediaPath).texture,discAngle,opacity,branded,BoxModelSDLColor(game,{255,255,255,255}),BoxModelColorSet(game));
+    }
+    void DrawPreparedCartridge(const GameEntry &game,CartridgeModels::Model model,SDL_Rect rect,bool selected,float opacity,float yaw,float pitch,float roll){
+        auto *label=textures_.Get(game.cartridgeLabelPath).texture;
+        auto *logo=CartridgeTitleLogo(game);
+        const auto draw=[&](SDL_Rect r){++mediaModelBuilds_;CartridgeModels::Draw(renderer_,model,r,label,cartridgeMaterials_,selected,opacity,yaw,pitch,roll,logo);};
+        if(!WallLayout()||yaw!=0||pitch!=0||roll!=0||opacity!=1||rect.w<=0||rect.h<=0||rect.w>1024||rect.h>1024){draw(rect);return;}
+        const auto key=game.absolutePath+"|"+game.name+"|"+std::to_string(int(model))+MediaArtworkStamp(game)+"|"+
+            std::to_string(rect.w)+":"+std::to_string(rect.h)+":"+std::to_string(selected);
+        auto found=mediaCards_.find(key);
+        if(found==mediaCards_.end()){
+            const size_t bytes=size_t(rect.w)*rect.h*4;
+            while(!mediaCards_.empty()&&(mediaCards_.size()>=96||mediaCardBytes_+bytes>24*1024*1024)){
+                auto old=std::min_element(mediaCards_.begin(),mediaCards_.end(),[](const auto &a,const auto &b){return a.second.used<b.second.used;});
+                mediaCardBytes_-=size_t(old->second.w)*old->second.h*4;SDL_DestroyTexture(old->second.texture);mediaCards_.erase(old);
+            }
+            auto *texture=SDL_CreateTexture(renderer_,SDL_PIXELFORMAT_RGBA8888,SDL_TEXTUREACCESS_TARGET,rect.w,rect.h);
+            auto *previous=SDL_GetRenderTarget(renderer_);SDL_Rect viewport,clip;SDL_RenderGetViewport(renderer_,&viewport);SDL_RenderGetClipRect(renderer_,&clip);
+            const bool clipped=SDL_RenderIsClipEnabled(renderer_);
+            if(texture&&SDL_SetRenderTarget(renderer_,texture)==0){
+                SDL_RenderSetViewport(renderer_,nullptr);SDL_RenderSetClipRect(renderer_,nullptr);SetColor(renderer_,{0,0,0,0});SDL_RenderClear(renderer_);
+                draw({0,0,rect.w,rect.h});SDL_SetRenderTarget(renderer_,previous);SDL_RenderSetViewport(renderer_,&viewport);SDL_RenderSetClipRect(renderer_,clipped?&clip:nullptr);
+                const auto blend=SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE,SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,SDL_BLENDOPERATION_ADD,SDL_BLENDFACTOR_ONE,SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,SDL_BLENDOPERATION_ADD);
+                if(SDL_SetTextureBlendMode(texture,blend)!=0)SDL_SetTextureBlendMode(texture,SDL_BLENDMODE_BLEND);
+                found=mediaCards_.emplace(key,MediaSpine{texture,rect.w,rect.h,++mediaCardUse_}).first;mediaCardBytes_+=bytes;
+            }else {if(texture)SDL_DestroyTexture(texture);draw(rect);return;}
+        }else ++mediaModelHits_;
+        found->second.used=++mediaCardUse_;SDL_RenderCopy(renderer_,found->second.texture,nullptr,&rect);
+    }
+    void DrawPresentation(const GameEntry &game,SDL_Rect rect,bool selected,Color accent,float opacity=1.f,float roll=0.f,float mediaYaw=0.f,float mediaPitch=0.f,float mediaRoll=0.f) {
+        if(ViewType()==CoverPresentation::Thumbnails){DrawThumbnail(game,rect,selected,SwitchSkin()?SwitchAccent():accent,opacity);return;}
         if(selected && !launchAnimation_) {
             if(launchCapture_)return;
-            launchOrigin_=rect;launchYaw_=launchPitch_=launchRoll_=0;
+            launchOrigin_=rect;launchYaw_=mediaYaw;launchPitch_=mediaPitch;launchRoll_=mediaRoll;
         }
         const auto drawImage=[&](TextureInfo image,SDL_Rect area) {
             if(!image.texture || image.width<=0 || image.height<=0)return false;
             const float scale=std::min(float(area.w)/image.width,float(area.h)/image.height);
             SDL_FRect fit{area.x+(area.w-image.width*scale)*.5f,area.y+(area.h-image.height*scale)*.5f,image.width*scale,image.height*scale};
+            if(launchAnimation_||mediaYaw!=0||mediaPitch!=0||mediaRoll!=0){
+                // Imported flat cartridge artwork follows the same outgoing
+                // pose as meshes, rather than only scaling toward the camera.
+                // Subdivide for SDL's affine texture interpolation; a single quad
+                // visibly creases circular artwork when viewed obliquely.
+                constexpr int divisions=16,side=divisions+1;
+                SDL_Vertex vertices[side*side]{};int indices[divisions*divisions*6]{};
+                const float camera=std::max(fit.w,fit.h)*CaseView::kCamera;
+                for(int row=0;row<=divisions;++row)for(int col=0;col<=divisions;++col){
+                    const int i=row*side+col;
+                    const float u=float(col)/divisions,v=float(row)/divisions;
+                    const float x=(u-.5f)*fit.w,y=(.5f-v)*fit.h;
+                    const float rx=x*std::cos(mediaYaw),rz=-x*std::sin(mediaYaw);
+                    const float py=y*std::cos(mediaPitch)-rz*std::sin(mediaPitch),pz=y*std::sin(mediaPitch)+rz*std::cos(mediaPitch);
+                    const float perspective=camera/(camera-pz);
+                    vertices[i]={{fit.x+fit.w*.5f+(rx*std::cos(mediaRoll)-py*std::sin(mediaRoll))*perspective,
+                                  fit.y+fit.h*.5f-(rx*std::sin(mediaRoll)+py*std::cos(mediaRoll))*perspective},
+                                 {255,255,255,Uint8(255*opacity)},{u,v}};
+                }
+                for(int row=0;row<divisions;++row)for(int col=0;col<divisions;++col){
+                    const int a=row*side+col,k=(row*divisions+col)*6;
+                    indices[k]=a;indices[k+1]=a+1;indices[k+2]=a+side+1;
+                    indices[k+3]=a;indices[k+4]=a+side+1;indices[k+5]=a+side;
+                }
+                SDL_SetTextureAlphaMod(image.texture,255);SDL_RenderGeometry(renderer_,image.texture,vertices,side*side,indices,divisions*divisions*6);return true;
+            }
             SDL_SetTextureAlphaMod(image.texture,Uint8(255*opacity));
             SDL_RenderCopyExF(renderer_,image.texture,nullptr,&fit,roll*180.0/3.141592653589793,nullptr,SDL_FLIP_NONE);SDL_SetTextureAlphaMod(image.texture,255);return true;
         };
         const auto drawLabel=[&](SDL_Rect area) {
             if(!drawImage(textures_.Get(game.logoPath),area)) {
-                auto ink=preferences_.coverType==CoverPresentation::Logo?
+                auto ink=ViewType()==CoverPresentation::Logo?
                     (preferences_.skin==1?Color{36,53,65,255}:Color{239,246,251,255}):Color{42,51,60,255};
                 ink.a=Uint8(ink.a*opacity);
                 DrawFittedText(renderer_,game.name,area.x,area.y+area.h/2-10,area.w,selected?3:2,ink);
             }
         };
-        if(preferences_.coverType==CoverPresentation::Logo) {
+        if(ViewType()==CoverPresentation::Logo) {
             drawLabel(rect);return;
         }
-        const auto id=!game.mediaLibraryId.empty()?game.mediaLibraryId:game.vcSystem.empty()||game.vcSystem=="wiiu"?GameLibraryId(game):game.vcSystem;
-        const auto shape=CoverPresentation::Shape(id,game.absolutePath);
+        const auto id=GameModelLibraryId(game);
+        const auto model=GamePreparedModel(game,libraries_,true);
+        if(model=="jewel"||model=="ps1-jewel"){
+            const CaseView view(rect,{142,125,14},mediaYaw,mediaPitch,mediaRoll);
+            DrawJewelArt(game,view,!MediaUsesBoxModel(game,libraries_),model=="ps1-jewel",opacity);return;
+        }
+        if(model=="cardboard"){const auto profile=CaseProfileForGame(game,libraries_);DrawCardboardArt(game,CaseView(rect,profile,mediaYaw,mediaPitch,mediaRoll),profile);return;}
+        if(model=="dvd"){const auto profile=MediaUsesBoxModel(game,libraries_)?CaseProfileForGame(game,libraries_):CaseProfile{135,190,14};DrawBoxDirect(game,rect,0,selected,accent,mediaYaw,mediaPitch,mediaRoll,CaseView::kCamera,profile,true);return;}
+        const auto shape=CoverPresentation::Shape(model=="auto"?id:model,model=="auto"?game.absolutePath:std::string{});
         using S=CoverPresentation::MediaShape;
-        const bool disc=shape==S::Disc || shape==S::MiniDisc;
+        const bool disc=shape==S::Disc || shape==S::MiniDisc || model=="disc";
+        // Cache the complete flat disc (including its logo/default text) once,
+        // then project it as one surface so every part shares the launch pose.
+        if(disc&&(launchAnimation_||mediaYaw!=0||mediaPitch!=0||mediaRoll!=0)){
+            const auto key="disc-pose|"+game.absolutePath+"|"+game.name+"|"+model+"|"+id+MediaArtworkStamp(game)+
+                "|"+std::to_string(accent.r)+":"+std::to_string(accent.g)+":"+std::to_string(accent.b);
+            auto found=mediaCards_.find(key);
+            if(found==mediaCards_.end()){
+                constexpr int size=512;constexpr size_t bytes=size*size*4;
+                while(!mediaCards_.empty()&&(mediaCards_.size()>=96||mediaCardBytes_+bytes>24*1024*1024)){
+                    auto old=std::min_element(mediaCards_.begin(),mediaCards_.end(),[](const auto &a,const auto &b){return a.second.used<b.second.used;});
+                    mediaCardBytes_-=size_t(old->second.w)*old->second.h*4;SDL_DestroyTexture(old->second.texture);mediaCards_.erase(old);
+                }
+                auto *texture=SDL_CreateTexture(renderer_,SDL_PIXELFORMAT_RGBA8888,SDL_TEXTUREACCESS_TARGET,size,size);
+                auto *previous=SDL_GetRenderTarget(renderer_);SDL_Rect viewport,clip;SDL_RenderGetViewport(renderer_,&viewport);SDL_RenderGetClipRect(renderer_,&clip);
+                const bool clipped=SDL_RenderIsClipEnabled(renderer_),animating=launchAnimation_;
+                if(texture&&SDL_SetRenderTarget(renderer_,texture)==0){
+                    SDL_RenderSetViewport(renderer_,nullptr);SDL_RenderSetClipRect(renderer_,nullptr);SetColor(renderer_,{0,0,0,0});SDL_RenderClear(renderer_);
+                    launchAnimation_=false;DrawPresentation(game,{0,0,size,size},false,accent);launchAnimation_=animating;
+                    SDL_SetRenderTarget(renderer_,previous);SDL_RenderSetViewport(renderer_,&viewport);SDL_RenderSetClipRect(renderer_,clipped?&clip:nullptr);
+                    const auto blend=SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE,SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,SDL_BLENDOPERATION_ADD,SDL_BLENDFACTOR_ONE,SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,SDL_BLENDOPERATION_ADD);
+                    if(SDL_SetTextureBlendMode(texture,blend)!=0)SDL_SetTextureBlendMode(texture,SDL_BLENDMODE_BLEND);
+                    SDL_SetTextureScaleMode(texture,SDL_ScaleModeLinear);
+                    found=mediaCards_.emplace(key,MediaSpine{texture,size,size,++mediaCardUse_}).first;mediaCardBytes_+=bytes;
+                }else if(texture)SDL_DestroyTexture(texture);
+            }
+            if(found!=mediaCards_.end()){
+                found->second.used=++mediaCardUse_;
+                DiscModel::Draw(renderer_,rect,found->second.texture,shape==S::MiniDisc,mediaYaw,mediaPitch,mediaRoll,opacity);return;
+            }
+        }
         float ratio=disc?1.f:shape==S::NES?.85f:shape==S::DS?.93f:shape==S::HuCard?.65f:shape==S::GBA?1.65f:1.5f;
         const float scale=std::min(float(rect.w)/ratio,float(rect.h))*(shape==S::MiniDisc?.82f:1.f);
         const int w=int(scale*ratio),h=int(scale);
         SDL_Rect body{rect.x+(rect.w-w)/2,rect.y+(rect.h-h)/2,w,h};
         const auto part=[&](float x,float y,float width,float height){return SDL_Rect{body.x+int(x*w),body.y+int(y*h),int(width*w),int(height*h)};};
         SDL_Rect label=disc?part(.18f,.19f,.64f,.23f):part(.2f,.22f,.6f,.46f);
+        if(shape==S::NES && (game.physicalMediaPath.empty() || !game.cartridgeLabelPath.empty())) {
+            NesCartridge::Draw(renderer_,rect,textures_.Get(game.cartridgeLabelPath).texture,nesMaterial_,selected,opacity,mediaYaw,mediaPitch,mediaRoll,textures_.Get(game.logoPath).texture);
+            return;
+        }
+        if(shape==S::SNES && (game.physicalMediaPath.empty() || !game.cartridgeLabelPath.empty())) {
+            SnesCartridge::Draw(renderer_,rect,textures_.Get(game.cartridgeLabelPath).texture,snesMaterial_,selected,opacity,mediaYaw,mediaPitch,mediaRoll,textures_.Get(game.logoPath).texture);
+            return;
+        }
+        if((shape==S::N64||shape==S::GBA||shape==S::GB||shape==S::DS||shape==S::HuCard||shape==S::Genesis) && (shape==S::HuCard||shape==S::Genesis||game.physicalMediaPath.empty()||!game.cartridgeLabelPath.empty())){
+            const auto model=shape==S::N64?CartridgeModels::Model::N64:shape==S::GBA?CartridgeModels::Model::GBA:shape==S::Genesis?CartridgeModels::Model::Genesis:shape==S::HuCard?CartridgeModels::Model::HuCard:shape==S::GB?CartridgeModels::Model::GB:CartridgeModels::Model::DS;
+            DrawPreparedCartridge(game,model,rect,selected,opacity,mediaYaw,mediaPitch,mediaRoll);
+            return;
+        }
         const auto artwork=textures_.Get(game.physicalMediaPath);
         if(artwork.texture) {
             drawImage(artwork,body);
@@ -7649,32 +9002,11 @@ private:
             FillSmoothAnnulus(renderer_,cx,cy,r*.97f,r*.95f,{255,255,255,180});
             FillSmoothAnnulus(renderer_,cx,cy,r*.9f,r*.895f,{accent.r,accent.g,accent.b,90});
             DrawFittedText(renderer_,LibraryLabel(id),body.x+int(w*.27f),body.y+int(h*.73f),int(w*.46f),1,{88,107,118,255});
-        } else {
-            const bool dark=shape==S::DS||shape==S::GBA||shape==S::Cartridge;
-            const Color plastic=dark?Color{54,62,72,255}:Color{177,181,187,255};
-            FillRoundedRect(renderer_,{body.x+4,body.y+6,w,h},std::max(3,w/22),{0,0,0,80});
-            if(shape==S::N64) {
-                FillRoundedRect(renderer_,part(0,.13f,1,.87f),std::max(3,w/16),plastic);
-                FillRoundedRect(renderer_,part(.13f,0,.74f,.98f),std::max(3,w/10),plastic);
-            } else FillRoundedRect(renderer_,body,std::max(3,w/22),plastic);
-            FillRoundedRect(renderer_,part(.18f,.18f,.64f,.55f),std::max(2,w/35),{28,35,43,230});
-            FillRoundedRect(renderer_,part(.2f,.2f,.6f,.5f),std::max(2,w/45),{223,224,213,255});
-            label=part(.23f,.24f,.54f,.4f);
-            if(shape==S::DS || shape==S::HuCard) {
-                FillRoundedRect(renderer_,part(.12f,.79f,.76f,.16f),2,{28,33,38,255});
-                for(int i=0;i<9;++i)FillRoundedRect(renderer_,part(.15f+i*.079f,.82f,.052f,.1f),1,{189,153,76,255});
-            } else {
-                for(int i=0;i<4;++i) {
-                    FillRoundedRect(renderer_,part(.04f,.28f+i*.09f,.09f,.025f),1,{dark?Uint8(30):Uint8(136),dark?Uint8(37):Uint8(143),dark?Uint8(46):Uint8(149),255});
-                    FillRoundedRect(renderer_,part(.87f,.28f+i*.09f,.09f,.025f),1,{dark?Uint8(30):Uint8(136),dark?Uint8(37):Uint8(143),dark?Uint8(46):Uint8(149),255});
-                }
-                FillRoundedRect(renderer_,part(.24f,.87f,.52f,.055f),2,{31,39,46,220});
-            }
         }
         drawLabel(label);
     }
     void DrawCover(const GameEntry &game, SDL_Rect rect, bool selected, Color accent) {
-        if(preferences_.coverType!=CoverPresentation::Box){DrawPresentation(game,rect,selected,accent);return;}
+        if(ViewType()!=CoverPresentation::Box){DrawPresentation(game,rect,selected,accent);return;}
         if(selected) {
             if(launchCapture_)return;
             launchOrigin_=rect;launchYaw_=launchPitch_=launchRoll_=0.f;
@@ -7683,7 +9015,7 @@ private:
         const float scale=std::min(rect.w/std::max(135.f,profile.widthMm),rect.h/std::max(190.f,profile.heightMm));
         const int width=static_cast<int>(profile.widthMm*scale),height=static_cast<int>(profile.heightMm*scale);
         rect.x+=(rect.w-width)/2;rect.y+=(rect.h-height)/2;rect.w=width;rect.h=height;
-        const bool flat=preferences_.coverLayout==2;
+        const bool flat=ViewLayout(CoverPresentation::Box)==2;
         SDL_Rect shadow = {rect.x+12,rect.y+15,rect.w,rect.h};
         if(!flat)FillRoundedRect(renderer_, shadow, 18, {0,0,0,105});
         FillRoundedRect(renderer_, rect, 18, selected ? Color{235,241,250,255} : Color{27,37,54,255});
@@ -7737,20 +9069,20 @@ private:
         if (game.favorite) DrawFavoriteBadge(rect.x+rect.w-34,rect.y+8);
         DrawInstallBadge(game,rect);
     }
-    void DrawFavoriteBadge(int x,int y,int size=28) {
-        FillRoundedRect(renderer_,{x+1,y+2,size,size},size/3,{0,0,0,65});
-        FillRoundedRect(renderer_,{x,y,size,size},size/3,{28,38,49,225});
+    void DrawFavoriteBadge(int x,int y,int size=28,Uint8 opacity=255) {
+        FillRoundedRect(renderer_,{x+1,y+2,size,size},size/3,{0,0,0,Uint8(65*opacity/255)});
+        FillRoundedRect(renderer_,{x,y,size,size},size/3,{28,38,49,Uint8(225*opacity/255)});
         constexpr float pi=3.14159265358979323846f;
         SDL_Vertex vertices[11]{};int indices[30]{};SDL_FPoint outline[11]{};
         const float cx=x+size*.5f,cy=y+size*.5f,outer=size*.36f,inner=outer*.46f;
-        vertices[0]={{cx,cy},{255,220,107,255},{0,0}};
+        vertices[0]={{cx,cy},{255,220,107,opacity},{0,0}};
         for(int i=0;i<10;++i){const float angle=-pi*.5f+i*pi/5.f,r=i%2?inner:outer;
             const SDL_FPoint point{cx+std::cos(angle)*r,cy+std::sin(angle)*r};
-            vertices[i+1]={point,point.y<cy?SDL_Color{255,232,144,255}:SDL_Color{242,177,48,255},{0,0}};
+            vertices[i+1]={point,point.y<cy?SDL_Color{255,232,144,opacity}:SDL_Color{242,177,48,opacity},{0,0}};
             outline[i]=point;indices[i*3]=0;indices[i*3+1]=i+1;indices[i*3+2]=(i+1)%10+1;
         }
         SDL_RenderGeometry(renderer_,nullptr,vertices,11,indices,30);
-        outline[10]=outline[0];SetColor(renderer_,{255,235,161,235});SDL_RenderDrawLinesF(renderer_,outline,11);
+        outline[10]=outline[0];SetColor(renderer_,{255,235,161,Uint8(235*opacity/255)});SDL_RenderDrawLinesF(renderer_,outline,11);
     }
     // The selected case at rest keeps a slight, breathing turn.
     float CaseIdleYaw() const {
@@ -7776,13 +9108,28 @@ private:
                  float turnScale = .82f, float pitch = 0.0f, float roll = 0.0f,
                  bool absoluteRotation = false, float camera = CaseView::kCamera,
                  float subpixelX = 0.f, float subpixelY = 0.f, bool settledPreview = false) {
-        if(preferences_.coverType!=CoverPresentation::Box){DrawPresentation(game,rect,selected,accent);return;}
+        if(ViewType()!=CoverPresentation::Box){
+            // Reuse the case pose in details, video showcase and inspection.
+            // Ordinary library cartridges remain upright.
+            const bool modelPose=absoluteRotation && (detailsProgress_>.01f || showcaseProgress_>.01f || coverInspectProgress_>.01f);
+            DrawPresentation(game,rect,selected,accent,1.f,0.f,modelPose?turnScale:0.f,
+                             modelPose?pitch:0.f,modelPose?roll:0.f);return;
+        }
         const auto profile = CaseProfileForGame(game,libraries_);
         const float yaw = absoluteRotation ? turnScale :
             -std::clamp(relative, -1.0f, 1.0f) * turnScale + (selected ? CaseIdleYaw() : 0.0f);
         if(selected) {
             if(launchCapture_)return;
             launchOrigin_=rect;launchYaw_=yaw;launchPitch_=pitch;launchRoll_=roll;
+        }
+        // A carton is six planar panels, not a detailed plastic mesh. Draw it
+        // directly instead of cropping/reusing the plastic-case AA targets;
+        // those targets can leave a missing lower-right tile on GX2.
+        if(GamePreparedModel(game,libraries_,false)=="cardboard"){
+            CaseView view(rect,profile,yaw,pitch,roll,camera);
+            view.centerX+=subpixelX;view.centerY+=subpixelY;
+            const auto b=view.Bounds();DrawSoftEllipseShadow(renderer_,{b.x,b.y+b.h-3,b.w,18},120);
+            DrawCardboardArt(game,view,profile);return;
         }
         // Render each model at 2x using the smallest preallocated target that fits.
         SDL_Rect bounds;
@@ -7822,15 +9169,15 @@ private:
         // Do not cache a temporary placeholder while its cover is still queued.
         // A known decode failure may be cached, but a pending decode must render
         // directly once more so the completed artwork replaces the placeholder.
-        const bool artworkResolved = (textures_.CoverDetailKnown(game.fullCoverPath,selected) && textures_.HasCover(game.fullCoverPath,selected)) ||
-            (textures_.CoverDetailKnown(game.fullCoverPath,selected) && textures_.CoverDetailKnown(game.coverPath,selected) &&
-             textures_.CoverDetailKnown(game.backCoverPath,selected) && textures_.CoverDetailKnown(game.spinePath,selected) && textures_.CoverDetailKnown(game.defaultSleevePath,selected));
+        const auto known=[&](const std::string &path){return textures_.RenderCoverKnown(path,selected);};
+        const auto available=[&](const std::string &path){return textures_.HasRenderCover(path,selected);};
+        const bool artworkResolved=CoverFaces::Resolved(game,known,available);
         // Resting side cases only translate; the carousel passes their fixed yaw.
         bool cacheable = (!selected && std::abs(relative) >= 1.f) || settledPreview;
         std::string cacheKey;
         if (cacheable) {
             relative = relative < 0 ? -1.f : 1.f;
-            cacheKey = game.fullCoverPath + "\n" + game.coverPath + "\n" + game.name + "\n" +
+            cacheKey = GamePreparedModel(game,libraries_,false) + "\n" + game.fullCoverPath + "\n" + game.coverPath + "\n" + game.name + "\n" +
                 game.backCoverPath + "\n" + game.spinePath + "\n" + game.defaultSleevePath + "\n" +
                 std::to_string(game.defaultBackEnd) + ":" + std::to_string(game.defaultFrontStart) + ":" +
                 std::to_string(static_cast<int>(game.platform)) + ":" + std::to_string(game.favorite) + ":" +
@@ -7848,7 +9195,8 @@ private:
         }
         // A completed side-card stays usable after its source textures are
         // evicted. Only creation of a NEW cached card requires resolved faces.
-        if(!artworkResolved)cacheable=false;
+        // Readiness is checked again after drawing: synchronous loads may
+        // complete here, before another visible case evicts their source art.
         SDL_Texture *caseTexture = nullptr;
         for (std::size_t i=0; i<caseTextures_.size(); ++i) {
             if (caseTextures_[i] && bounds.w*2 <= kCaseTargetSizes[i].x && bounds.h*2 <= kCaseTargetSizes[i].y) {
@@ -7921,16 +9269,29 @@ private:
         const SDL_Rect source{0,0,bounds.w*2,bounds.h*2};
         SDL_RenderCopyF(renderer_,caseTexture,&source,&destination);
         if (cachedTarget) {
-            sideCases_.push_back({cacheKey,cachedTarget,++sideCaseUse_,cachedBytes});
-            sideCaseBytes_ += cachedBytes;
+            if(artworkResolved || CoverFaces::Resolved(game,known,available)) {
+                sideCases_.push_back({cacheKey,cachedTarget,++sideCaseUse_,cachedBytes});
+                sideCaseBytes_ += cachedBytes;
+            } else SDL_DestroyTexture(cachedTarget);
         }
     }
     void DrawBoxDirect(const GameEntry &game, SDL_Rect rect, float relative, bool selected, Color accent,
-                       float yaw, float pitch, float roll, float camera, CaseProfile profile) {
-        if(preferences_.coverType!=CoverPresentation::Box){DrawPresentation(game,rect,selected,accent);return;}
+                       float yaw, float pitch, float roll, float camera, CaseProfile profile,bool standardCase=false) {
+        if(!standardCase&&ViewType()!=CoverPresentation::Box){DrawPresentation(game,rect,selected,accent,1.f,roll,yaw,pitch,roll);return;}
 #ifdef UFLOW_HOST_PREVIEW
         ++caseDraws_;
 #endif
+        const auto prepared=standardCase?std::string("dvd"):GamePreparedModel(game,libraries_,false);
+        if(prepared=="cardboard"){
+            const CaseView view(rect,profile,yaw,pitch,roll,camera);const auto b=view.Bounds();
+            DrawSoftEllipseShadow(renderer_,{b.x,b.y+b.h-3,b.w,18},120);
+            DrawCardboardArt(game,view,profile);return;
+        }
+        if(prepared=="jewel"||prepared=="ps1-jewel"){
+            const CaseView view(rect,profile,yaw,pitch,roll,camera);const auto b=view.Bounds();
+            DrawSoftEllipseShadow(renderer_,{b.x,b.y+b.h-3,b.w,18},150);
+            DrawJewelArt(game,view,false,prepared=="ps1-jewel");return;
+        }
         const float geometrySleeveWidth = profile.widthMm * 2.f + profile.thicknessMm;
         const float geometryBackEnd = profile.widthMm / geometrySleeveWidth;
         const float geometryFrontStart = (profile.widthMm + profile.thicknessMm) / geometrySleeveWidth;
@@ -7942,8 +9303,8 @@ private:
         const float backEnd = sourcePanel / sourceSleeveWidth;
         const float frontStart = (sourcePanel + profile.thicknessMm) / sourceSleeveWidth;
         const auto selectFace=[&](CoverFaces::Face face) {
-            if(!game.fullCoverPath.empty() && !textures_.CoverKnown(game.fullCoverPath,selected)) {
-                textures_.PrefetchCover(game.fullCoverPath,selected);
+            if(!game.fullCoverPath.empty() && !textures_.RenderCoverKnown(game.fullCoverPath,selected)) {
+                textures_.PrefetchCover(game.fullCoverPath,selected,!selected);
                 return CoverFaces::Selection{}; // Pending is not a failed decode; don't queue unused faces.
             }
             return CoverFaces::Resolve(game,face,backEnd,frontStart,[&](const auto &path){return textures_.GetCover(path,selected).texture!=nullptr;});
@@ -8019,6 +9380,9 @@ private:
             SDL_RenderGeometry(renderer_, artwork.texture, reflection, 4, reflectionIndices, 6);
         }
 
+        const Color plastic = BoxModelColor(game, preferences_.skin == 1
+                                      ? Mix({218,232,239,255}, accent, selected ? .22f : .10f)
+                                      : Mix({15,31,50,255}, accent, selected ? .68f : .48f));
         std::array<SDL_Vertex, CaseModel::kPositions.size()> vertices{};
         std::array<float, CaseModel::kPositions.size()> depths{};
         for (std::size_t index = 0; index < CaseModel::kPositions.size(); ++index) {
@@ -8035,9 +9399,6 @@ private:
             const float normalY = yawNormalX * rollSine + pitchNormalY * rollCosine;
             const float light = std::clamp(.34f + std::max(0.0f, normalX * -.28f + normalY * -.20f + pitchNormalZ * .95f) * .66f,
                                            .30f, 1.0f);
-            const Color plastic = preferences_.skin == 1
-                                      ? Mix({218,232,239,255}, accent, selected ? .22f : .10f)
-                                      : Mix({15,31,50,255}, accent, selected ? .68f : .48f);
             vertices[index].color = {static_cast<Uint8>(plastic.r * light),
                                      static_cast<Uint8>(plastic.g * light),
                                      static_cast<Uint8>(plastic.b * light), 255};
@@ -8190,7 +9551,7 @@ private:
         const int hintWidth = std::max(580, TextWidth(coverInspectHint_,1) + 32);
         FillRoundedRect(renderer_,{640-hintWidth/2,590,hintWidth,36},16,
                         preferences_.skin==1?Color{236,246,250,panelAlpha}:Color{7,15,27,panelAlpha});
-        DrawText(renderer_,preferences_.coverType==CoverPresentation::Box?coverInspectHint_:"HOLD TO ZOOM    B  RETURN",640,601,1,
+        DrawText(renderer_,ViewType()==CoverPresentation::Box?coverInspectHint_:"HOLD TO ZOOM    B  RETURN",640,601,1,
                  preferences_.skin==1?Color{48,64,73,static_cast<Uint8>(255.f*pose.travel)}:
                                       Color{235,242,250,static_cast<Uint8>(255.f*pose.travel)},true);
     }
@@ -8205,31 +9566,44 @@ private:
         float push, pushPower;       // resting depth: downward offset over the first four steps
     };
     float CoverZoomScale() const { return std::clamp(preferences_.coverZoom,CoverZoom::Min,CoverZoom::Max)/100.f; }
-    int &PresentationLayout() {
-        return preferences_.coverType==CoverPresentation::Thumbnails?preferences_.thumbnailLayout:preferences_.coverType==CoverPresentation::Logo?preferences_.logoLayout:
-            preferences_.coverType==CoverPresentation::Media?preferences_.mediaLayout:preferences_.coverLayout;
+    const LibraryDefinition *PresentationOverride() const {
+        if(tab_<0||tab_>=int(libraryTabs_.size()))return nullptr;
+        for(const auto &l:libraries_)if(l.id==libraryTabs_[tab_]&&l.viewType>=0)return &l;
+        return nullptr;
     }
-    int PresentationLayout() const {
-        return preferences_.coverType==CoverPresentation::Thumbnails?preferences_.thumbnailLayout:preferences_.coverType==CoverPresentation::Logo?preferences_.logoLayout:
-            preferences_.coverType==CoverPresentation::Media?preferences_.mediaLayout:preferences_.coverLayout;
+    int ViewType() const {if(skinPresentation_>=0)return skinPresentation_;if(FixedShelfScene())return CoverPresentation::Box;const auto *l=PresentationOverride();return l?l->viewType:preferences_.coverType;}
+    int ViewLayout(int type) const {
+        if(type==CoverPresentation::Box&&FixedShelfScene())return 8;
+        if(const auto *l=PresentationOverride();l&&l->viewType==type)return l->viewLayout;
+        return type==CoverPresentation::Thumbnails?preferences_.thumbnailLayout:type==CoverPresentation::Logo?preferences_.logoLayout:
+            type==CoverPresentation::Media?preferences_.mediaLayout:preferences_.coverLayout;
     }
+    int &GlobalPresentationLayout(){return preferences_.coverType==CoverPresentation::Thumbnails?preferences_.thumbnailLayout:preferences_.coverType==CoverPresentation::Logo?preferences_.logoLayout:preferences_.coverType==CoverPresentation::Media?preferences_.mediaLayout:preferences_.coverLayout;}
+    int &PresentationLayout(){
+        if(const auto *l=PresentationOverride())for(auto &entry:libraries_)if(entry.id==l->id)return entry.viewLayout;
+        return GlobalPresentationLayout();
+    }
+    int PresentationLayout() const {return ViewLayout(ViewType());}
     float CoverCenterY() const { return std::max(312.f,314.f*CoverZoomScale()*.5f+10.f); }
     SDL_Rect FocusCoverRect() const {
+        if(UForceHome())return {40+int(selected_%5)*243,488,228,146};
+        if(WiiUMenuLayout())return WiiUMenuToScreen(WiiUMenuCell(int(selected_%15)));
         if(WallLayout())return GridFocusRect();
-        if(preferences_.coverType==CoverPresentation::Thumbnails) {
+        if(ViewType()==CoverPresentation::Thumbnails) {
             const int size=int(SkinSpec().tileSize*CoverZoomScale()/1.2f);
             return {SwitchSkin()?SkinSpec().rowX:640-size/2,SkinSpec().rowY-size/2,size,size};
         }
-        if(preferences_.coverType==CoverPresentation::Box && preferences_.coverLayout==4){
+        if(ViewType()==CoverPresentation::Box && ViewLayout(CoverPresentation::Box)==4){
             const int h=int(std::clamp(340.f*CoverZoomScale()/1.2f,220.f,345.f));
             return {640-int(h*.71f)/2,290-h/2,int(h*.71f),h};
         }
-        const bool logo=preferences_.coverType==CoverPresentation::Logo;
-        const bool wheel=logo && preferences_.logoLayout>=1 && preferences_.logoLayout<=4;
-        const int w=int((logo?(wheel?250.f:340.f):preferences_.coverType==CoverPresentation::Media?314.f:220.f)*CoverZoomScale());
+        const bool logo=ViewType()==CoverPresentation::Logo;
+        const bool wheel=logo && ViewLayout(CoverPresentation::Logo)>=1 && ViewLayout(CoverPresentation::Logo)<=4;
+        const int w=int((logo?(wheel?250.f:340.f):ViewType()==CoverPresentation::Media?314.f:220.f)*CoverZoomScale());
         const int h=int((logo?(wheel?110.f:150.f):314.f)*CoverZoomScale());
-        const int cx=preferences_.coverType==CoverPresentation::Box && preferences_.coverLayout==8?420:wheel&&preferences_.logoLayout<=2?(preferences_.logoLayout==1?1020:260):640;
-        const int cy=preferences_.coverType==CoverPresentation::Box && preferences_.coverLayout==8?350:wheel?(preferences_.logoLayout==3?190:preferences_.logoLayout==4?440:355):int(CoverCenterY());
+        const bool shelf=(ViewType()==CoverPresentation::Box && ViewLayout(CoverPresentation::Box)==8)||(ViewType()==CoverPresentation::Media && ViewLayout(CoverPresentation::Media)==4);
+        const int cx=shelf?420:wheel&&ViewLayout(CoverPresentation::Logo)<=2?(ViewLayout(CoverPresentation::Logo)==1?1020:260):640;
+        const int cy=shelf?350:wheel?(ViewLayout(CoverPresentation::Logo)==3?190:ViewLayout(CoverPresentation::Logo)==4?440:355):int(CoverCenterY());
         return {cx-w/2,cy-h/2,w,h};
     }
     SDL_Rect InspectCoverRect() const {
@@ -8241,7 +9615,7 @@ private:
         return {640-w/2,345-h/2,w,h};
     }
     CoverStyle CurrentCoverStyle() const {
-        const int layout = std::clamp(preferences_.coverLayout, 0, 3);
+        const int layout = std::clamp(ViewLayout(CoverPresentation::Box), 0, 3);
         const float spacing = std::clamp((preferences_.coverSpacing-75)/25.f,0.f,2.f);
         const int lo=int(spacing),hi=std::min(2,lo+1);
         const auto spaced=[&](const float (&values)[4][3]){return values[layout][lo]+(values[layout][hi]-values[layout][lo])*(spacing-lo);};
@@ -8270,11 +9644,6 @@ private:
     struct CoverSpan { float left, right, outer; };
     CoverSpan MeasureCover(const GameEntry &game, float width, float height, float yaw, float camera) const {
         const auto profile = CaseProfileForGame(game, libraries_);
-        if (!preferences_.useBoxArt) { // DrawCover's flat fit
-            const float half = profile.widthMm * .5f * std::min(width / std::max(135.f, profile.widthMm),
-                                                                height / std::max(190.f, profile.heightMm));
-            return {-half, half, 0.f};
-        }
         const CaseView view({0, 0, static_cast<int>(width), static_cast<int>(height)}, profile, yaw, 0.f, 0.f, camera);
         const SDL_FRect box = view.Bounds();
         return {box.x - view.centerX, box.x + box.w - view.centerX, view.SideFaceWidth()};
@@ -8282,13 +9651,13 @@ private:
     struct PresentationPose { float x,y,w,h,yaw=0,roll=0; };
     PresentationPose PresentationCard(float relative) const {
         const auto origin=FocusCoverRect();
-        const bool logo=preferences_.coverType==CoverPresentation::Logo,box=preferences_.coverType==CoverPresentation::Box;
+        const bool logo=ViewType()==CoverPresentation::Logo,box=ViewType()==CoverPresentation::Box;
         const int layout=PresentationLayout();
         const float d=std::abs(relative),side=relative<0?-1.f:1.f;
         const float focus=1.f-SmoothFade(std::min(1.f,d));
         const float spacing=preferences_.coverSpacing/100.f,zoom=CoverZoomScale();
         float scale=.65f+.35f*focus,x=relative*(logo?295.f:225.f)*spacing*zoom,y=0,yaw=0,roll=0;
-        if(preferences_.coverType==CoverPresentation::Thumbnails) {
+        if(ViewType()==CoverPresentation::Thumbnails) {
             scale=1; x=relative*(origin.w+16*spacing);y=0;
             if(layout==1 && d>=1) {scale=.63f;x=side*(origin.w*.85f+int((d-1)/2)*(origin.w*.65f+16*spacing));y=(std::fmod(d-1,2.f)-.5f)*(origin.h*.65f+16);}
         } else if(box && layout==2) {
@@ -8320,12 +9689,12 @@ private:
             } else if(fan) {
                 // One radial row, as in the video: cases turn with the arc,
                 // while focus pulls a case forward and enlarges it in its slot.
-                const float angle=relative*.095f*std::clamp(spacing,.65f,1.5f);
-                const float radius=2000.f*origin.w/241.f;
+                const float angle=relative*(box?.095f:.19f)*std::clamp(spacing,.65f,1.5f);
+                const float radius=(box?2000.f:650.f)*origin.w/241.f;
                 scale=.80f+.20f*focus;
                 x=std::sin(angle)*radius;
                 y=(1.f-std::cos(angle))*radius+16.f*(1.f-focus);
-                roll=box?-angle:0;
+                roll=-angle;
                 yaw=box?std::clamp(.18f-relative*.025f,.05f,.30f):0;
             } else if(box&&layout==6){scale=.88f+.12f*focus;x=relative*255.f*spacing*zoom;}
         }
@@ -8334,6 +9703,26 @@ private:
     // A real stack of cases in one world/camera. The translation between cases
     // is their physical thickness, so faces occlude each other and only the
     // spines form the diagonal shelf. Every case stands on the same floor.
+    bool BookshelfAssetsCurrent() const {
+        return std::all_of(bookshelfAssets_.begin(),bookshelfAssets_.end(),[&](const auto &asset){
+            return textures_.AssetRevision(asset.first)==asset.second;
+        });
+    }
+    void CaptureBookshelfAssets(const std::vector<int> &positions) {
+        bookshelfAssets_.clear();
+        std::unordered_set<std::string> seen;
+        const auto capture=[&](const std::string &path){
+            if(!path.empty() && seen.insert(path).second)
+                bookshelfAssets_.emplace_back(path,textures_.AssetRevision(path));
+        };
+        for(const int position:positions) {
+            if(position<0 || position>=static_cast<int>(visible_.size()))continue;
+            const auto &game=games_[visible_[position]];
+            capture(game.logoPath);capture(game.cartridgeLabelPath);capture(game.physicalMediaPath);
+            capture(game.fullCoverPath);capture(game.coverPath);capture(game.backCoverPath);
+            capture(game.spinePath);capture(game.defaultSleevePath);
+        }
+    }
     void DrawBookshelf(Color accent) {
         bookshelfFaces_=bookshelfVertices_=0;
         const int count=int(visible_.size());if(!count)return;
@@ -8348,8 +9737,7 @@ private:
             std::to_string(preferences_.coverZoom)+":"+std::to_string(preferences_.coverSpacing)+":"+
             std::to_string(preferences_.reflections)+":"+std::to_string(preferences_.skin)+":"+std::to_string(preferences_.theme)+":"+
             std::to_string(hidden)+":"+std::to_string(preferences_.wrapNavigation)+":"+std::to_string(Selected()->favorite);
-        if(resting && bookshelfCached_ && bookshelfTexture_ && bookshelfKey_==cacheKey &&
-           bookshelfRevision_==textures_.Revision() && !bookshelfNeedsArtwork_) {
+        if(resting && bookshelfCached_ && bookshelfTexture_ && bookshelfKey_==cacheKey && BookshelfAssetsCurrent()) {
             SDL_RenderCopy(renderer_,bookshelfTexture_,nullptr,nullptr);++bookshelfCacheHits_;return;
         }
         if(!bookshelfTexture_) {
@@ -8367,20 +9755,30 @@ private:
         if(capture){SDL_RenderSetViewport(renderer_,nullptr);SDL_RenderSetClipRect(renderer_,nullptr);SetColor(renderer_,{0,0,0,0});SDL_RenderClear(renderer_);}
         ++bookshelfBuilds_;
         const auto actual=[&](int i){return (i%count+count)%count;};
-        const auto profile=[&](int i){return CaseProfileForGame(games_[visible_[actual(i)]],libraries_);};
         // Keep actual cartons/disc cases touching at normal spacing. The slider
         // adds a small physical gap instead of spreading independent billboards.
         const float gap=(preferences_.coverSpacing-50)/50.f*.006f+.001f;
-        const auto step=[&](int a,int b){return (profile(a).thicknessMm+profile(b).thicknessMm)/380.f+gap;};
+        const std::string geometryKey=std::to_string(bookshelfEpoch_)+":"+std::to_string(count)+":"+
+            std::to_string(preferences_.coverSpacing);
+        if(boxShelfGeometryKey_!=geometryKey) {
+            boxShelfProfiles_.resize(count);boxShelfCenters_.assign(count+1,0.f);
+            for(int i=0;i<count;++i)boxShelfProfiles_[i]=CaseProfileForGame(games_[visible_[i]],libraries_);
+            for(int i=1;i<=count;++i)
+                boxShelfCenters_[i]=boxShelfCenters_[i-1]+(boxShelfProfiles_[i-1].thicknessMm+
+                    boxShelfProfiles_[i%count].thicknessMm)/380.f+gap;
+            boxShelfGeometryKey_=geometryKey;++boxShelfGeometryBuilds_;
+        }
+        const auto profile=[&](int i){return boxShelfProfiles_[actual(i)];};
+        const auto center=[&](int i){const int cycle=int(std::floor(float(i)/count));
+            return boxShelfCenters_[i-cycle*count]+cycle*boxShelfCenters_[count];};
         struct Book {int index;float relative,z,focus;CaseProfile profile;CaseScene scene;float yaw,pitch,roll;bool clear;};
         std::vector<Book> books;
         const int first=std::max(base-64,preferences_.wrapNavigation?int(std::ceil(position-count*.5f)):0);
         const int last=std::min(base+48,preferences_.wrapNavigation?first+count-1:count-1);
-        float z=-fraction*step(base,base+1);
-        for(int i=base;i>first;--i)z-=step(i-1,i);
+        const float cameraSlot=center(base)+(center(base+1)-center(base))*fraction;
         const auto origin=FocusCoverRect();
         for(int i=first;i<=last;++i) {
-            const auto p=profile(i);const float relative=i-position;
+            const auto p=profile(i);const float relative=i-position,z=center(i)-cameraSlot;
             const float focus=SmoothFade(std::max(0.f,1.f-std::abs(relative)));
             const auto pose=BookshelfCasePose(p,z,focus,pixels,screenX,screenY,origin,314.f*CoverZoomScale());
             const auto &scene=pose.scene;const float turn=pose.yaw,tilt=pose.pitch,roll=pose.roll;
@@ -8389,7 +9787,6 @@ private:
                 if(bounds.x<kWidth+180 && bounds.x+bounds.w>0 && bounds.y<630 && bounds.y+bounds.h>95)
                     books.push_back({actual(i),relative,z,focus,p,scene,turn,tilt,roll,pose.clear});
             }
-            if(i<last)z+=step(i,i+1);
         }
 #ifdef UFLOW_HOST_PREVIEW
         carouselCards_.clear();for(const auto &book:books)carouselCards_.push_back({book.index,book.relative});
@@ -8408,6 +9805,14 @@ private:
             const bool selected=book.index==int(selected_);
             if(selected && (detailsProgress_>.015f || coverInspectProgress_>.015f || showcaseProgress_>0 || launchCapture_))return;
             const CaseView view({0,0,220,314},p,book.yaw,book.pitch,book.roll,camera,&book.scene);
+            const auto prepared=GamePreparedModel(game,libraries_,false);
+            if(!reflection&&(prepared=="cardboard"||prepared=="jewel"||prepared=="ps1-jewel")) {
+                const auto bounds=view.Bounds();
+                if(bounds.x+bounds.w<=0||bounds.x>=kWidth||bounds.y+bounds.h<=0||bounds.y>=kHeight)return;
+                if(prepared=="cardboard")DrawCardboardArt(game,view,p);
+                else DrawJewelArt(game,view,false,prepared=="ps1-jewel");
+                return;
+            }
             const float panel=p.sidewaysSleeve?p.heightMm:p.widthMm,total=panel*2+p.thicknessMm;
             const auto face=[&](CoverFaces::Face side){return CoverFaces::Resolve(game,side,panel/total,(panel+p.thicknessMm)/total,
                 [&](const auto &path){return textures_.GetCover(path,selected).texture!=nullptr;});};
@@ -8434,6 +9839,13 @@ private:
                     }
                     projected[j]={point.point.x,point.point.y,camera-point.depth};
                 }
+                // Cull before resolving artwork or tessellating. Reflections
+                // use their own projected coordinates, so remain independent.
+                if(std::all_of(projected.begin(),projected.end(),[](const auto &p){return p.w>0;}) &&
+                  (std::all_of(projected.begin(),projected.end(),[](const auto &p){return p.x<0;}) ||
+                   std::all_of(projected.begin(),projected.end(),[](const auto &p){return p.x>kWidth;}) ||
+                   std::all_of(projected.begin(),projected.end(),[](const auto &p){return p.y<0;}) ||
+                   std::all_of(projected.begin(),projected.end(),[](const auto &p){return p.y>kHeight;})))continue;
                 const auto &a=projected[0],&b=projected[1],&c=projected[2];
                 const float cross=(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x);
                 if(reflection?cross>=0:cross<=0)continue;
@@ -8443,10 +9855,11 @@ private:
                 ++bookshelfFaces_;bookshelfVertices_+=n;
                 const bool turn=texture.texture && f.side!=CoverFaces::Face::Spine &&
                     CoverFaces::TurnSleeve(p.sidewaysSleeve,p.sidewaysDefaultSleeve,art.sleeve,art.path==game.defaultSleevePath,texture.width,texture.height);
+                const auto material=BoxModelColor(game,{35,66,78,255});
                 for(int j=0;j<n;++j) {
                     const auto uv=vertices[j].tex_coord;
                     const Uint8 alpha=reflection?Uint8(28.f*uv.y*uv.y):255;
-                    vertices[j].color=texture.texture?SDL_Color{Uint8(f.shade),Uint8(f.shade),Uint8(f.shade),alpha}:SDL_Color{35,66,78,alpha};
+                    vertices[j].color=texture.texture?SDL_Color{Uint8(f.shade),Uint8(f.shade),Uint8(f.shade),alpha}:SDL_Color{material.r,material.g,material.b,alpha};
                     if(turn) {const auto t=CoverFaces::SidewaysUV(art.u0,art.u1,uv.x,uv.y,f.side,art.path==game.defaultSleevePath && (p.sidewaysDefaultSleeve || f.side==CoverFaces::Face::Back));vertices[j].tex_coord={t.u,t.v};}
                     else vertices[j].tex_coord={art.u0+uv.x*(art.u1-art.u0),uv.y};
                 }
@@ -8463,7 +9876,291 @@ private:
         if(capture) {
             SDL_SetRenderTarget(renderer_,previousTarget);SDL_RenderSetViewport(renderer_,&oldViewport);SDL_RenderSetClipRect(renderer_,wasClipped?&oldClip:nullptr);
             SDL_RenderCopy(renderer_,bookshelfTexture_,nullptr,nullptr);
-            bookshelfKey_=cacheKey;bookshelfRevision_=textures_.Revision();bookshelfNeedsArtwork_=textures_.Pending()!=0;bookshelfCached_=true;
+            std::vector<int> indices;indices.reserve(books.size());for(const auto &book:books)indices.push_back(book.index);
+            CaptureBookshelfAssets(indices);bookshelfKey_=cacheKey;bookshelfCached_=true;
+        }
+    }
+    CoverPresentation::MediaShape ShelfShape(const GameEntry &game) const {
+        const auto id=GameModelLibraryId(game);
+        const auto model=GamePreparedModel(game,libraries_,true);
+        return CoverPresentation::Shape(model=="auto"?id:model,model=="auto"?game.absolutePath:std::string{});
+    }
+    SDL_Texture *CartridgeTitleLogo(const GameEntry &game) {
+        if(auto *logo=textures_.Get(game.logoPath).texture)return logo;
+        const std::string key="cartridge-title:"+game.name;
+        auto found=gSmoothTextCache.find(key);
+        if(found==gSmoothTextCache.end()) {
+            if(gSmoothTextCache.size()>=256){auto oldest=std::min_element(gSmoothTextCache.begin(),gSmoothTextCache.end(),
+                [](const auto &a,const auto &b){return a.second.lastUse<b.second.lastUse;});
+                if(oldest!=gSmoothTextCache.end()){SDL_DestroyTexture(oldest->second.texture);gSmoothTextCache.erase(oldest);}}
+            SmoothTextEntry entry;
+            if(auto *surface=RenderTextSurface(Ellipsize(game.name,48),2)){entry.width=surface->w;entry.height=surface->h;
+                entry.texture=SDL_CreateTextureFromSurface(renderer_,surface);SDL_FreeSurface(surface);}
+            found=gSmoothTextCache.emplace(key,entry).first;
+        }
+        found->second.lastUse=SDL_GetTicks();return found->second.texture;
+    }
+    void DrawShelfCartridge(const GameEntry &game,float x,float baseline,float zoom,float yaw,float pitch,float roll,bool selected,Color accent){
+        const auto prepared=GamePreparedModel(game,libraries_,true);
+        if(prepared=="jewel"||prepared=="ps1-jewel"||prepared=="dvd"||prepared=="cardboard"){
+            // Cartridges expose their top edge; cases expose the vertical spine.
+            // Keep the same pull/turn timing without rolling the jewel case.
+            const float turn=std::clamp((1.5f-pitch)/1.575f,0.f,1.f);
+            yaw=1.5f+(.48f-1.5f)*turn;pitch=-.075f*turn;roll=.17f*turn;
+            const int size=int(314.f*zoom);SDL_Rect rect{int(x-size*.5f),0,size,size};
+            const CaseProfile profile=MediaUsesBoxModel(game,libraries_)||prepared=="cardboard"?CaseProfileForGame(game,libraries_):prepared=="dvd"?CaseProfile{135,190,14}:CaseProfile{142,125,14};
+            auto b=CaseView(rect,profile,yaw,pitch,roll).Bounds();rect.y=int(std::round(baseline-b.y-b.h));
+            DrawPresentation(game,rect,selected,accent,1.f,0,yaw,pitch,roll);return;
+        }
+        const auto id=GameModelLibraryId(game);
+        using S=CoverPresentation::MediaShape;
+        const auto shape=ShelfShape(game);
+        if(shape==S::NES && (game.physicalMediaPath.empty() || !game.cartridgeLabelPath.empty())){
+            const int size=int(314.f*zoom);SDL_Rect rect{int(x-size*.5f),0,size,size};
+            const auto bounds=NesCartridge::Bounds(rect,yaw,pitch,roll);
+            rect.y=int(std::round(baseline-bounds.y-bounds.h));
+            DrawPresentation(game,rect,selected,accent,1.f,-roll,yaw,pitch,roll);return;
+        }
+        if(shape==S::SNES && (game.physicalMediaPath.empty() || !game.cartridgeLabelPath.empty())){
+            // Match NES millimetre scale; the SNES shell is wider and shorter.
+            const int size=int(314.f*zoom);SDL_Rect rect{int(x-size*.5f),0,size,size};
+            const auto bounds=SnesCartridge::Bounds(rect,yaw,pitch,roll);
+            rect.y=int(std::round(baseline-bounds.y-bounds.h));
+            DrawPresentation(game,rect,selected,accent,1.f,-roll,yaw,pitch,roll);return;
+        }
+        if((shape==S::N64||shape==S::GBA||shape==S::GB||shape==S::DS||shape==S::HuCard||shape==S::Genesis) && (shape==S::HuCard||shape==S::Genesis||game.physicalMediaPath.empty()||!game.cartridgeLabelPath.empty())){
+            const auto model=shape==S::N64?CartridgeModels::Model::N64:shape==S::GBA?CartridgeModels::Model::GBA:shape==S::Genesis?CartridgeModels::Model::Genesis:shape==S::HuCard?CartridgeModels::Model::HuCard:shape==S::GB?CartridgeModels::Model::GB:CartridgeModels::Model::DS;
+            const auto &spec=CartridgeModels::Spec(model);
+            const int size=int(spec.height*2.14f*std::max(spec.width/spec.height+.12f,1.1f)*zoom);
+            SDL_Rect rect{int(x-size*.5f),0,size,size};const auto bounds=CartridgeModels::Bounds(model,rect,yaw,pitch,roll);
+            rect.y=int(std::round(baseline-bounds.y-bounds.h));
+            DrawPresentation(game,rect,selected,accent,1.f,-roll,yaw,pitch,roll);return;
+        }
+        // Physical cartridge dimensions keep smaller systems smaller. All
+        // projected bottoms, rather than rectangle centres, touch one baseline.
+        CaseProfile profile{90,90,16};
+        switch(shape){
+            case S::NES:profile={120,133,19};break;
+            case S::SNES:profile={128,89,20};break;
+            case S::N64:profile={116,76,18};break;
+            case S::GBA:profile={60,35,8};break;
+            case S::DS:profile={35,33,4};break;
+            case S::HuCard:profile={54,85,3};break;
+            case S::MiniDisc:profile={80,80,2};break;
+            case S::Disc:profile={120,120,2};break;
+            default:break;
+        }
+        const int size=int(408.f*zoom);SDL_Rect rect{int(x-size*.5f),0,size,size};
+        const CaseView initial(rect,profile,yaw,pitch,roll,2.8f);
+        float bottom=-1.e9f;
+        for(float px:{-.5f,.5f})for(float py:{-.5f,.5f})for(float pz:{-.5f,.5f})bottom=std::max(bottom,initial(px,py,pz).point.y);
+        rect.y=int(std::round(baseline-bottom));
+        const CaseView view(rect,profile,yaw,pitch,roll,2.8f);
+        struct Face{float p[4][3];int kind;};
+        const Face faces[]={
+            {{{-.5f,.5f,-.5f},{.5f,.5f,-.5f},{.5f,-.5f,-.5f},{-.5f,-.5f,-.5f}},0},
+            {{{-.5f,.5f,.5f},{.5f,.5f,.5f},{.5f,-.5f,.5f},{-.5f,-.5f,.5f}},1},
+            {{{-.5f,.5f,-.5f},{.5f,.5f,-.5f},{.5f,.5f,.5f},{-.5f,.5f,.5f}},2},
+            {{{-.5f,-.5f,-.5f},{.5f,-.5f,-.5f},{.5f,-.5f,.5f},{-.5f,-.5f,.5f}},0},
+            {{{-.5f,.5f,-.5f},{-.5f,.5f,.5f},{-.5f,-.5f,.5f},{-.5f,-.5f,-.5f}},0},
+            {{{.5f,.5f,-.5f},{.5f,.5f,.5f},{.5f,-.5f,.5f},{.5f,-.5f,-.5f}},0}};
+        struct Quad{int face;float depth;SDL_Vertex v[4];};std::array<Quad,6> quads{};
+        const SDL_FPoint uv[]={{0,0},{1,0},{1,1},{0,1}};const int indices[]={0,1,2,0,2,3};
+        const bool dark=shape==S::DS||shape==S::GBA;
+        for(int f=0;f<6;++f){auto &q=quads[f];q.face=f;
+            const Uint8 c=Uint8((dark?65:174)-(f>2?26:0));
+            for(int k=0;k<4;++k){const auto &p=faces[f].p[k];const auto point=view(p[0],p[1],p[2]);q.depth+=point.depth;
+                q.v[k]={point.point,{c,c,c,255},uv[k]};}}
+        std::sort(quads.begin(),quads.end(),[](const Quad&a,const Quad&b){return a.depth<b.depth;});
+        for(auto &q:quads){
+            SDL_RenderGeometry(renderer_,nullptr,q.v,4,indices,6);
+            const auto kind=faces[q.face].kind;if(!kind)continue;
+            auto art=textures_.Get(kind==2?game.logoPath:game.physicalMediaPath);
+            if(!art.texture && kind==1)art=textures_.Get(game.logoPath);
+            if(!art.texture || art.width<=0 || art.height<=0)continue;
+            const float width=profile.widthMm,height=kind==2?profile.thicknessMm:profile.heightMm;
+            const float scale=std::min(width*.88f/art.width,height*.88f/art.height);
+            const float u=art.width*scale/width,v=art.height*scale/height;
+            if(kind==2){for(auto &vertex:q.v)vertex.color={37,39,42,255};SDL_RenderGeometry(renderer_,nullptr,q.v,4,indices,6);}
+            for(int k=0;k<4;++k){const float a=.5f+(uv[k].x-.5f)*u,b=.5f+(uv[k].y-.5f)*v;
+                const auto &f=faces[q.face];float p[3];for(int j=0;j<3;++j)p[j]=f.p[0][j]+a*(f.p[1][j]-f.p[0][j])+b*(f.p[3][j]-f.p[0][j]);
+                q.v[k]={view(p[0],p[1],p[2]).point,{255,255,255,255},uv[k]};}
+            SDL_RenderGeometry(renderer_,art.texture,q.v,4,indices,6);
+        }
+    }
+    void DrawCartridgeFloor(SDL_Texture *texture,SDL_Rect image,float x,float floor,float width) {
+        // Reuse the rendered cartridge, including its artwork and current pose.
+        // Render targets use premultiplied alpha, so fade RGB and alpha together.
+        if(preferences_.reflections&&texture){
+            const float depth=std::min(90.f,std::max(0.f,650.f-floor));
+            if(depth>0){
+                SDL_Vertex vertices[4];const int indices[]={0,1,2,0,2,3};
+                SDL_BlendMode blend;SDL_GetTextureBlendMode(texture,&blend);
+                const Uint8 nearColor=blend==SDL_BLENDMODE_BLEND?255:42,farColor=blend==SDL_BLENDMODE_BLEND?255:0;
+                const float v0=(floor-image.y)/image.h;
+                const float v1=std::max(0.f,v0-depth*2.f/image.h);
+                vertices[0]={{float(image.x),floor+2.f},{nearColor,nearColor,nearColor,42},{0,v0}};
+                vertices[1]={{float(image.x+image.w),floor+2.f},{nearColor,nearColor,nearColor,42},{1,v0}};
+                vertices[2]={{float(image.x+image.w),floor+depth},{farColor,farColor,farColor,0},{1,v1}};
+                vertices[3]={{float(image.x),floor+depth},{farColor,farColor,farColor,0},{0,v1}};
+                SDL_RenderGeometry(renderer_,texture,vertices,4,indices,6);
+            }
+        }
+        DrawSoftEllipseShadow(renderer_,{x-width*.58f,floor-4.f,width*1.16f,std::clamp(width*.09f,10.f,25.f)},180);
+    }
+    void DrawMovingShelfCartridge(const GameEntry &game,float x,float floor,float zoom,float yaw,float pitch,float roll,float width,Color accent){
+        if(preferences_.reflections&&!mediaMovingTexture_){
+            mediaMovingTexture_=SDL_CreateTexture(renderer_,SDL_PIXELFORMAT_RGBA8888,SDL_TEXTUREACCESS_TARGET,kWidth,kHeight);
+            if(mediaMovingTexture_){const auto blend=SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE,SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,SDL_BLENDOPERATION_ADD,
+                SDL_BLENDFACTOR_ONE,SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,SDL_BLENDOPERATION_ADD);
+                if(SDL_SetTextureBlendMode(mediaMovingTexture_,blend)!=0)SDL_SetTextureBlendMode(mediaMovingTexture_,SDL_BLENDMODE_BLEND);}
+        }
+        auto *previous=SDL_GetRenderTarget(renderer_);SDL_Rect viewport,clip;SDL_RenderGetViewport(renderer_,&viewport);SDL_RenderGetClipRect(renderer_,&clip);
+        const bool clipped=SDL_RenderIsClipEnabled(renderer_);
+        if(preferences_.reflections&&mediaMovingTexture_&&SDL_SetRenderTarget(renderer_,mediaMovingTexture_)==0){
+            SDL_RenderSetViewport(renderer_,nullptr);SDL_RenderSetClipRect(renderer_,nullptr);SetColor(renderer_,{0,0,0,0});SDL_RenderClear(renderer_);
+            DrawShelfCartridge(game,x,floor,zoom,yaw,pitch,roll,true,accent);
+            SDL_SetRenderTarget(renderer_,previous);SDL_RenderSetViewport(renderer_,&viewport);SDL_RenderSetClipRect(renderer_,clipped?&clip:nullptr);
+            DrawCartridgeFloor(mediaMovingTexture_,{0,0,kWidth,kHeight},x,floor,width);
+            SDL_RenderCopy(renderer_,mediaMovingTexture_,nullptr,nullptr);
+        }else{DrawCartridgeFloor(nullptr,{},x,floor,width);DrawShelfCartridge(game,x,floor,zoom,yaw,pitch,roll,true,accent);}
+    }
+    std::string MediaArtworkStamp(const GameEntry &game) const {
+        std::string stamp;
+        for(const auto *p:{&game.logoPath,&game.cartridgeLabelPath,&game.physicalMediaPath,&game.fullCoverPath,&game.coverPath,&game.backCoverPath,&game.spinePath,&game.defaultSleevePath})
+            stamp+="|"+*p+":"+std::to_string(textures_.AssetRevision(*p));
+        return stamp;
+    }
+    void DrawCachedShelfCartridge(const GameEntry &game,float x,float baseline,float zoom,float width,Color accent) {
+        const std::string key=game.absolutePath+":"+game.name+":"+game.logoPath+":"+game.cartridgeLabelPath+":"+game.physicalMediaPath+":"+game.fullCoverPath+":"+game.spinePath+":"+game.defaultSleevePath+":"+std::to_string(int(ShelfShape(game)))+":"+
+            std::to_string(zoom)+":"+GamePreparedModel(game,libraries_,true)+":"+MediaArtworkStamp(game)+":"+
+            std::to_string(CaseProfileForGame(game,libraries_).widthMm)+":"+std::to_string(CaseProfileForGame(game,libraries_).heightMm)+":"+std::to_string(CaseProfileForGame(game,libraries_).thicknessMm);
+        auto found=mediaSpines_.find(key);
+        if(found==mediaSpines_.end()) {
+            if(mediaSpines_.size()>=128){auto old=std::min_element(mediaSpines_.begin(),mediaSpines_.end(),
+                [](const auto&a,const auto&b){return a.second.used<b.second.used;});SDL_DestroyTexture(old->second.texture);mediaSpines_.erase(old);}
+            const int w=int(std::ceil(width))+12,h=int(std::ceil(440.f*CoverZoomScale()))+12;
+            SDL_Texture *texture=SDL_CreateTexture(renderer_,SDL_PIXELFORMAT_RGBA8888,SDL_TEXTUREACCESS_TARGET,w,h);
+            if(texture){const auto blend=SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE,SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,SDL_BLENDOPERATION_ADD,
+                SDL_BLENDFACTOR_ONE,SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,SDL_BLENDOPERATION_ADD);
+                if(SDL_SetTextureBlendMode(texture,blend)!=0)SDL_SetTextureBlendMode(texture,SDL_BLENDMODE_BLEND);}
+            auto *previous=SDL_GetRenderTarget(renderer_);SDL_Rect viewport,clip;SDL_RenderGetViewport(renderer_,&viewport);SDL_RenderGetClipRect(renderer_,&clip);
+            const bool clipped=SDL_RenderIsClipEnabled(renderer_);
+            if(texture&&SDL_SetRenderTarget(renderer_,texture)==0){SDL_RenderSetViewport(renderer_,nullptr);SDL_RenderSetClipRect(renderer_,nullptr);
+                SetColor(renderer_,{0,0,0,0});SDL_RenderClear(renderer_);DrawShelfCartridge(game,w*.5f,float(h-6),zoom,0,1.5f,1.5707963f,false,accent);
+                SDL_SetRenderTarget(renderer_,previous);SDL_RenderSetViewport(renderer_,&viewport);SDL_RenderSetClipRect(renderer_,clipped?&clip:nullptr);
+                found=mediaSpines_.emplace(key,MediaSpine{texture,w,h,SDL_GetTicks()}).first;
+            }else if(texture)SDL_DestroyTexture(texture);
+        }
+        if(found!=mediaSpines_.end()){auto &entry=found->second;entry.used=SDL_GetTicks();SDL_Rect destination{int(std::round(x-entry.w*.5f)),int(std::round(baseline-entry.h+6)),entry.w,entry.h};
+            DrawCartridgeFloor(entry.texture,destination,x,baseline,width);
+            SDL_RenderCopy(renderer_,entry.texture,nullptr,&destination);
+        }else {DrawCartridgeFloor(nullptr,{},x,baseline,width);DrawShelfCartridge(game,x,baseline,zoom,0,1.5f,1.5707963f,false,accent);}
+    }
+    void DrawMediaBookshelf(Color accent) {
+        const int count=int(visible_.size());if(!count)return;
+        const float position=preferences_.wrapNavigation?visualSelected_:std::clamp(visualSelected_,0.f,float(count-1));
+        const int base=int(std::floor(position));
+        const bool hidden=detailsProgress_>.015f || coverInspectProgress_>.015f || showcaseProgress_>0 || launchCapture_;
+        const bool resting=std::abs(position-std::round(position))<.00001f && tabSlide_==0;
+        const std::string cacheKey=std::string("media:")+std::to_string(bookshelfEpoch_)+":"+std::to_string(position)+":"+std::to_string(selected_)+":"+
+            std::to_string(preferences_.coverZoom)+":"+std::to_string(preferences_.coverSpacing)+":"+
+            std::to_string(preferences_.reflections)+":"+std::to_string(preferences_.skin)+":"+std::to_string(preferences_.theme)+":"+
+            std::to_string(hidden)+":"+std::to_string(preferences_.wrapNavigation)+":"+std::to_string(Selected()->favorite);
+        if(resting && bookshelfCached_ && bookshelfTexture_ && bookshelfKey_==cacheKey && BookshelfAssetsCurrent()) {
+            SDL_RenderCopy(renderer_,bookshelfTexture_,nullptr,nullptr);++bookshelfCacheHits_;return;
+        }
+        if(!bookshelfTexture_) {
+            bookshelfTexture_=SDL_CreateTexture(renderer_,SDL_PIXELFORMAT_RGBA8888,SDL_TEXTUREACCESS_TARGET,kWidth,kHeight);
+            if(bookshelfTexture_) {
+                const auto blend=SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE,SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,SDL_BLENDOPERATION_ADD,
+                    SDL_BLENDFACTOR_ONE,SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,SDL_BLENDOPERATION_ADD);
+                if(SDL_SetTextureBlendMode(bookshelfTexture_,blend)!=0){SDL_DestroyTexture(bookshelfTexture_);bookshelfTexture_=nullptr;}
+            }
+        }
+        SDL_Texture *previousTarget=SDL_GetRenderTarget(renderer_);
+        SDL_Rect oldViewport,oldClip;SDL_RenderGetViewport(renderer_,&oldViewport);SDL_RenderGetClipRect(renderer_,&oldClip);
+        const bool wasClipped=SDL_RenderIsClipEnabled(renderer_);
+        const bool capture=resting && bookshelfTexture_ && SDL_SetRenderTarget(renderer_,bookshelfTexture_)==0;
+        if(capture){SDL_RenderSetViewport(renderer_,nullptr);SDL_RenderSetClipRect(renderer_,nullptr);SetColor(renderer_,{0,0,0,0});SDL_RenderClear(renderer_);}
+        ++bookshelfBuilds_;
+
+        const std::string geometryKey=std::to_string(bookshelfEpoch_)+":"+std::to_string(count)+":"+
+            std::to_string(preferences_.coverZoom)+":"+std::to_string(preferences_.coverSpacing);
+        if(mediaShelfGeometryKey_!=geometryKey){
+        using Shape=CoverPresentation::MediaShape;
+        const auto firstShape=ShelfShape(games_[visible_[0]]);
+        const bool mixed=std::any_of(visible_.begin(),visible_.end(),[&](auto index){return ShelfShape(games_[index])!=firstShape;});
+        // A single-system shelf fills the viewport; mixed shelves retain physical scale.
+        float systemScale=1.f;
+        if(!mixed){if(firstShape==Shape::DS)systemScale=3.f;else if(firstShape==Shape::GBA)systemScale=1.85f;else if(firstShape==Shape::GB)systemScale=1.85f;}
+        const float zoom=CoverZoomScale()*systemScale,spacing=preferences_.coverSpacing/100.f;
+        std::map<Shape,float> widths;
+        const auto spineWidth=[&](const GameEntry &game){
+            const auto prepared=GamePreparedModel(game,libraries_,true);
+            if(prepared=="jewel"||prepared=="ps1-jewel"||prepared=="dvd"||prepared=="cardboard"){
+                const int size=int(314.f*zoom*.88f);const CaseProfile profile=MediaUsesBoxModel(game,libraries_)||prepared=="cardboard"?CaseProfileForGame(game,libraries_):prepared=="dvd"?CaseProfile{135,190,14}:CaseProfile{142,125,14};
+                return CaseView({0,0,size,size},profile,1.5f,0,0).Bounds().w;
+            }
+            const auto shape=ShelfShape(game);auto found=widths.find(shape);if(found!=widths.end())return found->second;
+            float width=36.f*zoom;
+            if(shape==Shape::N64||shape==Shape::GBA||shape==Shape::GB||shape==Shape::DS||shape==Shape::HuCard||shape==Shape::Genesis){
+                const auto model=shape==Shape::N64?CartridgeModels::Model::N64:shape==Shape::GBA?CartridgeModels::Model::GBA:shape==Shape::Genesis?CartridgeModels::Model::Genesis:shape==Shape::HuCard?CartridgeModels::Model::HuCard:shape==Shape::GB?CartridgeModels::Model::GB:CartridgeModels::Model::DS;
+                const auto &spec=CartridgeModels::Spec(model);const int size=int(spec.height*2.14f*std::max(spec.width/spec.height+.12f,1.1f)*zoom*.88f);
+                width=CartridgeModels::Bounds(model,{0,0,size,size},0,1.5f,1.5707963f).w;
+            }else if(shape==Shape::NES) {int size=int(314.f*zoom*.88f);width=NesCartridge::Bounds({0,0,size,size},0,1.5f,1.5707963f).w;}
+            else if(shape==Shape::SNES) {int size=int(314.f*zoom*.88f);width=SnesCartridge::Bounds({0,0,size,size},0,1.5f,1.5707963f).w;}
+            widths[shape]=width;return width;};
+        auto &centers=mediaShelfCenters_;auto &spine=mediaShelfWidths_;
+        centers.assign(count+1,0.f);spine.resize(count);
+        for(int i=0;i<count;++i)spine[i]=spineWidth(games_[visible_[i]]);
+        const float gap=std::max(2.f,4.f*spacing*CoverZoomScale());
+        for(int i=1;i<=count;++i)centers[i]=centers[i-1]+(spine[i-1]+spine[i%count])*.5f+gap;
+        mediaShelfZoom_=zoom;mediaShelfGap_=gap;mediaShelfGeometryKey_=geometryKey;
+        ++mediaShelfGeometryBuilds_;
+        }
+        const auto &centers=mediaShelfCenters_,&spine=mediaShelfWidths_;
+        const float zoom=mediaShelfZoom_,gap=mediaShelfGap_;
+        const auto center=[&](int index){int cycle=int(std::floor(float(index)/count));return centers[index-cycle*count]+cycle*centers[count];};
+        const float camera=center(base)+(center(base+1)-center(base))*(position-base);
+        const float minStep=*std::min_element(spine.begin(),spine.end())+gap;
+        const int reach=std::min(count,int(std::ceil((640.f+340.f*CoverZoomScale())/minStep))+1);
+        if(resting)mediaShelfAnchor_=int(selected_);
+        struct Cart{int index;float relative,focus,offset;};std::vector<Cart> carts;
+        for(int i=base-reach;i<=base+reach;++i){
+            if(!preferences_.wrapNavigation && (i<0||i>=count))continue;
+            const float relative=i-position;
+            if(preferences_.wrapNavigation && (relative< -count*.5f || relative>=count*.5f))continue;
+            // Finish putting one cartridge away before extracting the next.
+            const int index=(i%count+count)%count;
+            const float focus=(index==int(selected_)||index==mediaShelfAnchor_)?1.f-SmoothFade(std::min(1.f,std::abs(relative)*2.f)):0.f;
+            carts.push_back({(i%count+count)%count,relative,focus,center(i)-camera});
+        }
+        std::sort(carts.begin(),carts.end(),[](const Cart&a,const Cart&b){return a.focus==b.focus?a.relative>b.relative:a.focus<b.focus;});
+        for(const auto &cart:carts){
+            if(hidden && cart.index==int(selected_))continue;
+            const auto &game=games_[visible_[cart.index]];
+            const float t=cart.focus;
+            // Match the box shelf: extract without rotating, then turn only
+            // after clearing neighbours; reverse the same path on insertion.
+            const float pull=SmoothFade(std::min(1.f,t/.6f));
+            const float turn=SmoothFade(std::clamp((t-.6f)/.4f,0.f,1.f));
+            const float sideX=640.f+cart.offset;
+            const float x=sideX+(420.f-sideX)*pull+tabSlide_;
+            if(x+200.f*zoom<0 || x-200.f*zoom>1280)continue;
+            const float yaw=.48f*turn;
+            const float pitch=1.50f+(-.075f-1.50f)*turn;
+            const float roll=1.5707963f+(.17f-1.5707963f)*turn;
+            // Moving toward the viewer enlarges the cartridge before it turns.
+            // Keep its bottom anchored so the larger pose clears the header.
+            if(t==0.f)DrawCachedShelfCartridge(game,x,525.f,zoom*.88f,spine[cart.index],accent);
+            else DrawMovingShelfCartridge(game,x,525.f+90.f*pull,zoom*(.88f+.52f*pull),yaw,pitch,roll,spine[cart.index]+(320.f*CoverZoomScale()-spine[cart.index])*turn,accent);
+        }
+        if(capture){
+            SDL_SetRenderTarget(renderer_,previousTarget);SDL_RenderSetViewport(renderer_,&oldViewport);SDL_RenderSetClipRect(renderer_,wasClipped?&oldClip:nullptr);
+            SDL_RenderCopy(renderer_,bookshelfTexture_,nullptr,nullptr);
+            std::vector<int> indices;indices.reserve(carts.size());for(const auto &cart:carts)indices.push_back(cart.index);
+            CaptureBookshelfAssets(indices);bookshelfKey_=cacheKey;bookshelfCached_=true;
         }
     }
     void DrawPresentationCarousel(Color accent) {
@@ -8472,12 +10169,16 @@ private:
         struct Card{int index;float relative;PresentationPose pose;};std::vector<Card> cards;
         const float position=preferences_.wrapNavigation?visualSelected_:std::clamp(visualSelected_,0.f,float(count-1));
         const int base=int(std::floor(position));
-        const bool fan=preferences_.coverType==CoverPresentation::Box && preferences_.coverLayout==4;
-        const int reach=fan?7:preferences_.coverType==CoverPresentation::Box && preferences_.coverLayout==8?24:8;
+        const bool fan=(ViewType()==CoverPresentation::Box && ViewLayout(CoverPresentation::Box)==4)||(ViewType()==CoverPresentation::Media && ViewLayout(CoverPresentation::Media)==2);
+        const int reach=fan?7:ViewType()==CoverPresentation::Box && ViewLayout(CoverPresentation::Box)==8?24:8;
         for(int i=base-reach;i<=base+reach;++i) {
             if(!preferences_.wrapNavigation && (i<0||i>=count))continue;
             const float relative=i-position;
-            if(preferences_.coverType==CoverPresentation::Logo && preferences_.logoLayout>=1 && preferences_.logoLayout<=4 && std::abs(relative)>=4.f)continue;
+            const bool arc=(ViewType()==CoverPresentation::Box && ViewLayout(CoverPresentation::Box)==5) ||
+                (ViewType()==CoverPresentation::Media && ViewLayout(CoverPresentation::Media)==1) ||
+                (ViewType()==CoverPresentation::Logo && ViewLayout(CoverPresentation::Logo)==5);
+            if(arc && std::abs(relative)>.5f*3.14159265f/.34f)continue;
+            if(ViewType()==CoverPresentation::Logo && ViewLayout(CoverPresentation::Logo)>=1 && ViewLayout(CoverPresentation::Logo)<=4 && std::abs(relative)>=4.f)continue;
             if(preferences_.wrapNavigation && (relative< -count*.5f || relative>=count*.5f))continue;
             const auto a=PresentationCard(float(i-base)),b=PresentationCard(float(i-base-1));
             const float t=position-base;const auto mix=[&](float x,float y){return x+(y-x)*t;};
@@ -8495,15 +10196,19 @@ private:
             if(focused && (detailsProgress_>.015f || coverInspectProgress_>.015f || showcaseProgress_>0.f))continue;
             const auto &p=card.pose;if(fan&&(p.x < -100.f||p.x>1380.f))continue;SDL_Rect rect{int(p.x+tabSlide_-p.w*.5f),int(p.y-p.h*.5f),int(p.w),int(p.h)};
             const auto &game=games_[visible_[card.index]];
-            if(preferences_.coverType!=CoverPresentation::Box)DrawPresentation(game,rect,focused,accent,preferences_.coverType==CoverPresentation::Logo && preferences_.logoLayout>=1 && preferences_.logoLayout<=4?std::clamp(4.f-std::abs(card.relative),0.f,1.f):1.f,p.roll);
-            else if(preferences_.useBoxArt && preferences_.coverLayout!=2)DrawBox(game,rect,card.relative,focused,accent,p.yaw,preferences_.coverLayout==4?-.07f:0.f,p.roll,true);
+            if(ViewType()!=CoverPresentation::Box)DrawPresentation(game,rect,focused,accent,ViewType()==CoverPresentation::Logo && ViewLayout(CoverPresentation::Logo)>=1 && ViewLayout(CoverPresentation::Logo)<=4?std::clamp(4.f-std::abs(card.relative),0.f,1.f):1.f,ViewType()==CoverPresentation::Media?-p.roll:p.roll,p.yaw,0.f,p.roll);
+            else if(ViewLayout(CoverPresentation::Box)!=2)DrawBox(game,rect,card.relative,focused,accent,p.yaw,ViewLayout(CoverPresentation::Box)==4?-.07f:0.f,p.roll,true);
             else DrawCover(game,rect,focused,accent);
         }
         if(fan)SDL_RenderSetClipRect(renderer_,wasClipped?&previousClip:nullptr);
     }
     void DrawCarousel(Color accent) {
-        if(preferences_.coverType==CoverPresentation::Box && preferences_.coverLayout==8){DrawBookshelf(accent);DrawCarouselTitle(accent);return;}
-        if(preferences_.coverType!=CoverPresentation::Box || preferences_.coverLayout==2 || preferences_.coverLayout>=4) {
+        if(LayoutSkin()){DrawLayoutHome();return;}
+        if(UForceHome()){DrawUForceHome();return;}
+        if(WiiUMenuLayout()){DrawWiiUMenu();return;}
+        if(ViewType()==CoverPresentation::Box && ViewLayout(CoverPresentation::Box)==8){DrawBookshelf(accent);DrawCarouselTitle(accent);return;}
+        if(ViewType()==CoverPresentation::Media && ViewLayout(CoverPresentation::Media)==4){DrawMediaBookshelf(accent);DrawCarouselTitle(accent);return;}
+        if(ViewType()!=CoverPresentation::Box || ViewLayout(CoverPresentation::Box)==2 || ViewLayout(CoverPresentation::Box)>=4) {
             DrawPresentationCarousel(accent);DrawCarouselTitle(accent);return;
         }
         constexpr float kPi = 3.14159265358979323846f;
@@ -8578,10 +10283,6 @@ private:
             const float smoothX = 640.0f + tabSlide_ + card.offset - width / 2.0f;
             const int x = static_cast<int>(std::floor(smoothX));
             const bool selected = actual(card.index) == static_cast<int>(selected_) && focus > .78f;
-            if (!preferences_.useBoxArt) {
-                DrawCover(game, {x, static_cast<int>(CoverCenterY() - height / 2.0f + depthPush), width, height}, selected, accent);
-                continue;
-            }
             const float yaw = std::min(1.0f, distance) * (card.relative < 0 ? style.sideYaw : rightYaw) +
                               (selected ? CaseIdleYaw() : 0.0f);
             const float camera = style.camera + (CaseView::kCamera - style.camera) * focus;
@@ -8606,12 +10307,26 @@ private:
         if(SwitchSkin())return;
         if(visible_.empty())return;
         const auto &game = games_[visible_[selected_]];
+        if(ViewType()==CoverPresentation::Media && ViewLayout(CoverPresentation::Media)==4){
+            // The extracted model occupies the left foreground. Keep its title
+            // and optional logo below the shelf on the unobstructed right side.
+            const Color ink=preferences_.skin==1?Color{48,58,66,255}:Color{246,249,255,255};
+            const auto logo=preferences_.useLogos?textures_.Get(game.logoPath):TextureInfo{};
+            FillRoundedRect(renderer_,{735,546,480,3},1,{accent.r,accent.g,accent.b,105});
+            if(logo.texture){
+                const float scale=std::min(400.f/std::max(1,logo.width),55.f/std::max(1,logo.height));
+                SDL_Rect r{int(975-logo.width*scale*.5f),558,int(logo.width*scale),int(logo.height*scale)};
+                SDL_RenderCopy(renderer_,logo.texture,nullptr,&r);
+                DrawFittedText(renderer_,game.name,735,620,480,2,ink);
+            }else DrawFittedText(renderer_,game.name,735,566,480,3,ink);
+            return;
+        }
         if (video_.Ready() && videoOptions_.mode==VideoMode::Background) {
             if(preferences_.skin==1) DrawGlassSurface(renderer_,{242,511,796,88},18,accent,92,true);
             else FillRoundedRect(renderer_,{242,511,796,88},18,{5,10,20,205});
         }
         FillRoundedRect(renderer_, {250,505,780,3}, 1, {accent.r,accent.g,accent.b,preferences_.skin==1?Uint8(72):Uint8(105)});
-        const TextureInfo logo=preferences_.useLogos && preferences_.coverType!=CoverPresentation::Logo?textures_.Get(game.logoPath):TextureInfo{};
+        const TextureInfo logo=preferences_.useLogos && ViewType()!=CoverPresentation::Logo?textures_.Get(game.logoPath):TextureInfo{};
         if(logo.texture){
             const float ratio=static_cast<float>(logo.width)/std::max(1,logo.height);
             SDL_Rect logoRect={490,516,300,54};
@@ -8654,30 +10369,32 @@ private:
     void DrawAlphabet(Color accent) {
         const float opacity=alphabetProgress_;
         const auto fade=[&](Color c){c.a=static_cast<Uint8>(c.a*opacity);return c;};
-        SetColor(renderer_,fade({0,0,0,165}));SDL_RenderFillRect(renderer_,nullptr);
         const bool glass=preferences_.skin==1;
-        if(glass)DrawGlassSurface(renderer_,{80,305,1120,110},24,accent,static_cast<int>(80*opacity),true);
+        const PopupTextGlowScope glow(glass);
+        if(!glass){SetColor(renderer_,fade({0,0,0,165}));SDL_RenderFillRect(renderer_,nullptr);}
+        if(glass){FillRoundedRect(renderer_,{80,235,1120,310},24,fade({239,246,248,245}));DrawGlassSurface(renderer_,{80,235,1120,310},24,accent,100,true,opacity);}
         else FillRoundedRect(renderer_,{80,305,1120,110},22,fade({10,19,32,230}));
-        const int first=preferences_.alphabetFilterMode?0:1;
-        const int start=108+(preferences_.alphabetFilterMode?0:19);
+        const int first=alphabetModeFilter_?0:1;
+        const int start=108+(alphabetModeFilter_?0:19);
         const int highlight=start+static_cast<int>((alphabetVisual_-first)*38);
         FillRoundedRect(renderer_,{highlight,331,38,54},12,fade({accent.r,accent.g,accent.b,180}));
         for(int i=first;i<28;++i){
             const bool active=i==alphabetChoice_;
-            const auto ink=active?Color{255,255,255,255}:alphabetCounts_[i]?Color{235,244,250,240}:Color{154,164,174,150};
+            const auto ink=glass?(alphabetCounts_[i]?Color{42,53,62,255}:Color{110,120,128,150}):active?Color{255,255,255,255}:alphabetCounts_[i]?Color{235,244,250,240}:Color{154,164,174,150};
             DrawText(renderer_,AlphabetLabel(i),start+(i-first)*38+19,active?340:346,i==0?1:active?4:3,fade(ink),true);
         }
-        DrawText(renderer_,preferences_.alphabetFilterMode?"FILTER BY LETTER":"BROWSE BY LETTER",640,264,3,fade({245,249,255,255}),true);
-        DrawText(renderer_,AlphabetLabel(alphabetChoice_)+" / "+std::to_string(alphabetCounts_[alphabetChoice_])+" GAMES",640,434,2,fade({245,249,255,255}),true);
-        DrawFittedText(renderer_,alphabetHeldMode_?std::string("LEFT STICK / D-PAD MOVE   RELEASE ")+ActionButton(ControlAction::Alphabet)+" APPLY   "+(AlphabetConsumedBinding()==0x40000?"X":"L3")+" MODE":"LEFT STICK / D-PAD MOVE   A APPLY   X MODE   B CANCEL",110,474,1060,2,fade({245,249,255,255}));
-        DrawText(renderer_,"NO MOVEMENT: CANCEL",640,508,1,fade({220,230,240,255}),true);
+        DrawText(renderer_,alphabetModeFilter_?"FILTER BY LETTER":"BROWSE BY LETTER",640,264,3,fade(glass?Color{42,53,62,255}:Color{245,249,255,255}),true);
+        DrawText(renderer_,AlphabetLabel(alphabetChoice_)+" / "+std::to_string(alphabetCounts_[alphabetChoice_])+" GAMES",640,434,2,fade(glass?Color{42,53,62,255}:Color{245,249,255,255}),true);
+        DrawFittedText(renderer_,alphabetHeldMode_?std::string("LEFT STICK / D-PAD MOVE   RELEASE ")+ActionButton(ControlAction::Alphabet)+" APPLY   "+(AlphabetConsumedBinding()==0x40000?"X":"L3")+" MODE":"LEFT STICK / D-PAD MOVE   A APPLY   X MODE   B CANCEL",110,474,1060,2,fade(glass?Color{42,53,62,255}:Color{245,249,255,255}));
+        DrawText(renderer_,"NO MOVEMENT: CANCEL",640,508,1,fade(glass?Color{42,53,62,255}:Color{220,230,240,255}),true);
     }
     void DrawSearch(Color accent) {
         const bool glass=preferences_.skin==1;
-        SetColor(renderer_,{0,0,0,135});SDL_RenderFillRect(renderer_,nullptr);
-        FillRoundedRect(renderer_,{300,160,680,430},24,glass?Color{235,243,246,248}:Color{10,19,32,250});
+        const PopupTextGlowScope glow(glass);
+        if(!glass){SetColor(renderer_,{0,0,0,135});SDL_RenderFillRect(renderer_,nullptr);}
+        FillRoundedRect(renderer_,{300,160,680,430},24,glass?UIShade(Color{239,246,248,245}):UIShade(Color{10,19,32,250}));
         if(glass)DrawGlassSurface(renderer_,{300,160,680,430},24,accent,100,true);
-        const Color ink=glass?Color{45,56,64,255}:Color{238,244,252,255};
+        const Color ink=glass?UIShade(Color{45,56,64,255}):UIShade(Color{238,244,252,255});
         DrawText(renderer_,"SEARCH / "+LibraryLabel(CurrentLibraryId()),340,185,3,ink);
         FillRoundedRect(renderer_,{340,240,600,44},10,{accent.r,accent.g,accent.b,55});
         DrawText(renderer_,Ellipsize(searchBuffer_,38)+"_",355,250,2,ink);
@@ -8706,10 +10423,11 @@ private:
             DrawText(renderer_,"B  Back     A  Apply",940,663,2,ink);return;
         }
         const bool glass=preferences_.skin==1;
-        SetColor(renderer_,{0,0,0,135});SDL_RenderFillRect(renderer_,nullptr);
-        if(glass){FillRoundedRect(renderer_,{390,110,500,490},24,{235,243,246,248});DrawGlassSurface(renderer_,{390,110,500,490},24,accent,100,true);}
-        else FillRoundedRect(renderer_,{390,110,500,490},24,{10,19,32,250});
-        const Color ink=glass?Color{45,56,64,255}:Color{238,244,252,255};
+        const PopupTextGlowScope glow(glass);
+        if(!glass){SetColor(renderer_,{0,0,0,135});SDL_RenderFillRect(renderer_,nullptr);}
+        if(glass){FillRoundedRect(renderer_,{390,110,500,490},24,UIShade(Color{239,246,248,245}));DrawGlassSurface(renderer_,{390,110,500,490},24,accent,100,true);}
+        else FillRoundedRect(renderer_,{390,110,500,490},24,UIShade(Color{10,19,32,250}));
+        const Color ink=glass?UIShade(Color{45,56,64,255}):UIShade(Color{238,244,252,255});
         DrawText(renderer_,"FIND / SORT",430,140,3,ink);
         for(int row=0;row<LibrarySort::Count;++row){
             const int y=190+row*48;
@@ -8721,22 +10439,26 @@ private:
         DrawText(renderer_,std::string("A SORT   B BACK   LIBRARY: HOLD ")+ActionButton(ControlAction::Alphabet)+" FOR A-Z",430,580,1,ink);
     }
     void DrawFooter(Color accent) {
+        if(LayoutSkin())return;
+        if(UForceSkin()){DrawUForceFooter();return;}
         if(SwitchSkin()){DrawSwitchFooter();return;}
+        if(preferences_.skin==1){DrawGlassFooter(accent);return;}
+        const int chromeY=preferences_.skin==1?39:32;
         const bool glass = preferences_.skin == 1;
         if (glass)
-            DrawGlassSurface(renderer_, {32,638,1216,52}, 23, accent, 88, true);
+            DrawGlassSurface(renderer_, {32,674,1216,78}, 23, accent, 88, true);
         else
-            FillRoundedRect(renderer_,{38,626,1204,64},20,{5,10,20,205});
+            FillRoundedRect(renderer_,{38,626+chromeY,1204,64},20,UIShade(Color{5,10,20,205}));
         for (std::size_t i = 0; i < footerHints_.size(); ++i) {
             const auto &hint = footerHints_[i];
-            const Color ink = glass ? (i == 0 ? Color{68,78,87,255} : Color{104,115,124,255}) :
-                                      (i == 0 ? Color{235,241,250,255} : Color{173,184,201,255});
-            const int y = glass ? 653 : 648;
+            const Color ink = glass ? (i == 0 ? UIShade(Color{68,78,87,255}) : UIShade(Color{104,115,124,255})) :
+                                      (i == 0 ? UIShade(Color{235,241,250,255}) : UIShade(Color{173,184,201,255}));
+            const int y = (glass ? 653 : 648)+chromeY;
             // Long D-pad names use two lines, keeping the whole binding visible.
-            DrawText(renderer_,hint.button,hint.x,hint.stacked ? (glass ? 641 : 636) : y,
+            DrawText(renderer_,hint.button,hint.x,hint.stacked ? ((glass ? 641 : 636)+chromeY) : y,
                      hint.stacked ? 1 : 2,glass ? accent : ink);
             DrawText(renderer_,hint.action,hint.stacked ? hint.x : hint.x+hint.buttonWidth+hint.gap,
-                     hint.stacked ? (glass ? 663 : 657) : y,2,ink);
+                     hint.stacked ? ((glass ? 663 : 657)+chromeY) : y,2,ink);
         }
     }
     void DrawPanelBase(Color accent, int x, int width, float progress) {
@@ -8748,7 +10470,7 @@ private:
         if(!selectedBackground_.texture || preferences_.backgroundTransparency==100 || detailsProgress_<=.01f || settingsProgress_>.01f) {
             SetColor(renderer_,{0,0,0,static_cast<Uint8>(190.0f*progress)}); SDL_RenderFillRect(renderer_,nullptr);
         }
-        FillRoundedRect(renderer_,{x,92,width,536},28,{10,17,29,250});
+        FillRoundedRect(renderer_,{x,92,width,536},28,UIShade(Color{10,17,29,250}));
         FillRoundedRect(renderer_,{x,92,8,536},4,accent);
     }
     bool BlurBackdropToLens() {
@@ -8788,7 +10510,7 @@ private:
         const auto lerp=[&](int from,int to){return static_cast<int>(from+(to-from)*pose.travel);};
         // Match the details page's complete turn, with a smaller landing point
         // below the action. The decoder and its queues are shared by all modes.
-        const SDL_Rect movingCase{lerp(FocusCoverRect().x,56),lerp(FocusCoverRect().y,416),lerp(FocusCoverRect().w,170),lerp(FocusCoverRect().h,242)};
+        const SDL_Rect movingCase{lerp(FocusCoverRect().x,56),lerp(FocusCoverRect().y,448+(216-242)/2),lerp(FocusCoverRect().w,170),lerp(FocusCoverRect().h,242)};
         // Wait until the library has faded away so its title never overlaps
         // the arriving synopsis. Reversing the same timeline also stays clean.
         const float reveal=SmoothFade((showcaseProgress_-.55f)/.45f);
@@ -8858,7 +10580,7 @@ private:
             for(int i=0;i<(selected?3:1);++i){SDL_RenderDrawRect(renderer_,&rect);++rect.x;++rect.y;rect.w-=2;rect.h-=2;}
         }
         else if(preferences_.skin==1)DrawDetailGlassButton(renderer_,rect,selected,accent);
-        else FillRoundedRect(renderer_,rect,5,selected?accent:Color{29,45,62,255});
+        else FillRoundedRect(renderer_,rect,5,selected?accent:UIShade(Color{29,45,62,255}));
     }
     void DrawDetailsIcon(int row,SDL_Rect r,Color ink){
         const int cx=r.x+r.w/2,cy=r.y+r.h/2;
@@ -8875,10 +10597,31 @@ private:
             }
             SDL_RenderGeometry(renderer_,nullptr,vertices,11,indices,30);
         }else if(row==1){for(int x=-11;x<=15;++x)line(x,-(15-x)*2/3,x,(15-x)*2/3);}
-        else if(row==2){box(-19,-10,38,23);line(-14,0,-4,0);line(-9,-5,-9,5);box(7,-5,4,4);box(12,2,4,4);}
+        else if(row==2){
+            // Rounded shoulders and grips, with a D-pad and four face buttons.
+            const SDL_Point outline[]={{-19,12},{-20,7},{-16,-9},{-12,-13},{-7,-13},{-4,-11},{4,-11},{7,-13},{12,-13},{16,-9},{20,7},{19,12},{15,14},{11,11},{7,5},{-7,5},{-11,11},{-15,14},{-19,12}};
+            for(size_t i=1;i<std::size(outline);++i)line(outline[i-1].x,outline[i-1].y,outline[i].x,outline[i].y);
+            FillRoundedRect(renderer_,{cx-13,cy-5,10,3},1,ink);
+            FillRoundedRect(renderer_,{cx-10,cy-8,3,10},1,ink);
+            for(const auto p:std::array<SDL_Point,4>{{{10,-8},{6,-4},{14,-4},{10,0}}})
+                FillRoundedRect(renderer_,{cx+p.x-1,cy+p.y-1,3,3},1,ink);
+        }
         else if(row==3){box(-18,-10,36,25);line(-17,-11,-17,-16);line(-17,-16,-2,-16);line(-2,-16,3,-10);}
         else if(row==4){box(-18,-13,36,27);line(-6,-7,7,0);line(7,0,-6,7);line(-6,7,-6,-7);}
-        else{box(-14,-16,28,32);line(-2,-8,2,-8);line(0,-1,0,9);line(-5,10,5,10);}
+        else{
+            SDL_Vertex ring[128]{};int triangles[384]{};
+            for(int i=0;i<64;++i){
+                const float a=i*6.283185f/64;
+                for(int edge=0;edge<2;++edge){const float radius=edge?14.f:16.f;
+                    ring[i*2+edge]={{cx+cosf(a)*radius,cy+sinf(a)*radius},{ink.r,ink.g,ink.b,ink.a},{0,0}};}
+                const int next=(i+1)%64*2;
+                const int t[]={i*2,next,i*2+1,next,next+1,i*2+1};
+                std::copy(t,t+6,triangles+i*6);
+            }
+            SDL_RenderGeometry(renderer_,nullptr,ring,128,triangles,384);
+            FillRoundedRect(renderer_,{cx-2,cy-9,4,4},2,ink);
+            FillRoundedRect(renderer_,{cx-2,cy-2,4,12},1,ink);
+        }
     }
     void DrawGlassDetails(const GameEntry &game, Color accent, float progress) {
         const CoverTransitionPose pose = CoverTransition(progress);
@@ -8894,7 +10637,7 @@ private:
         const int shift = static_cast<int>((1.0f - eased) * 760.0f);
         const int panelX = 382 + shift;
         DrawGlassSurface(renderer_, {panelX,102,838,510}, 30, accent, 96, true);
-        FillRoundedRect(renderer_,{panelX+113,120,700,470},20,{244,248,250,200});
+        FillRoundedRect(renderer_,{panelX+113,120,700,470},20,UIShade(Color{244,248,250,200}));
         SetColor(renderer_, {255,255,255,105}); SDL_Rect divider={panelX+99,126,1,450}; SDL_RenderFillRect(renderer_,&divider);
 
         for(int row=0;row<6;++row){
@@ -8902,7 +10645,7 @@ private:
             const bool selected=row==detailsRow_;
             DrawDetailsButton(tab,selected&&!detailsPanelFocus_,accent);
             if(selected)FillRoundedRect(renderer_,{panelX+10,tab.y+17,3,24},1,accent);
-            DrawDetailsIcon(row,tab,selected?Color{33,58,69,255}:Color{85,103,114,255});
+            DrawDetailsIcon(row,tab,selected?UIShade(Color{33,58,69,255}):UIShade(Color{85,103,114,255}));
         }
 
         const int contentX = panelX + 130;
@@ -8913,10 +10656,10 @@ private:
             if(ratio>static_cast<float>(logoRect.w)/logoRect.h){logoRect.h=static_cast<int>(logoRect.w/ratio);logoRect.y+=(52-logoRect.h)/2;}
             else logoRect.w=static_cast<int>(logoRect.h*ratio);
             SDL_RenderCopy(renderer_,logo.texture,nullptr,&logoRect);
-            DrawText(renderer_,Ellipsize(game.name,52),contentX,182,2,{48,58,66,255});
-        } else DrawFittedText(renderer_,game.name,contentX,139,666,3,{48,58,66,255});
+            DrawText(renderer_,Ellipsize(game.name,52),contentX,182,2,UIShade(Color{48,58,66,255}));
+        } else DrawFittedText(renderer_,game.name,contentX,139,666,3,UIShade(Color{48,58,66,255}));
         const std::string creator=!game.developer.empty()?game.developer:game.publisher;
-        DrawText(renderer_,creator.empty()?PlatformName(game.platform):Ellipsize(creator,52),contentX,204,2,{105,117,127,255});
+        DrawText(renderer_,creator.empty()?PlatformName(game.platform):Ellipsize(creator,52),contentX,204,2,UIShade(Color{105,117,127,255}));
         DrawDetailsContent(game,contentX,accent);
 
         if(detailsRow_!=4){
@@ -8924,24 +10667,25 @@ private:
                 (game.genre.empty()?"Unknown genre":game.genre)+" / "+
                 (game.releaseYear.empty()?"----":game.releaseYear)+" / "+
                 (game.players.empty()?"Players --":"Players "+game.players);
-            DrawFittedText(renderer_,metadata,contentX,506,650,1,{80,96,108,255});
+            DrawFittedText(renderer_,metadata,contentX,506,650,1,UIShade(Color{80,96,108,255}));
         }
 
         const auto footer=[&](int offset,int width,const std::string &text){
-            DrawText(renderer_,text,contentX+offset+width/2,563,1,{43,63,74,255},true);
+            DrawText(renderer_,text,contentX+offset+width/2,563,1,UIShade(Color{43,63,74,255}),true);
         };
         footer(0,288,std::string("A  ")+DetailsAction());
         footer(294,150,"B  BACK"); footer(456,210,"+  SETTINGS");
     }
     void DrawDetailsContent(const GameEntry &game,int x,Color accent) {
-        const Color ink=SwitchSkin()?SwitchInk():preferences_.skin==1?Color{55,67,77,255}:Color{225,235,243,255};
+        const Color ink=SwitchSkin()?SwitchInk():preferences_.skin==1?UIShade(Color{55,67,77,255}):UIShade(Color{225,235,243,255});
         if(detailsRow_==4) {
+
             const std::string paths[]={game.previewPath,game.coverPath,game.backCoverPath,game.spinePath,game.fullCoverPath,game.defaultSleevePath,game.backgroundPath,game.logoPath};
             const char *names[]={"Video","Front cover","Back cover","Spine","Full sleeve","Default sleeve","Background","Logo"};
             const int index=((detailsPage_%8)+8)%8;
-            DrawText(renderer_,std::string("Media / ")+names[index],x,242,3,ink);
+            DrawFittedText(renderer_,std::string("Media / ")+names[index],x,242,620,3,ink);
             if(index==0){
-                SDL_Rect frame={x+135,278,350,197};FillRoundedRect(renderer_,frame,4,{5,10,16,255});
+                SDL_Rect frame={x+135,278,350,197};FillRoundedRect(renderer_,frame,4,UIShade(Color{5,10,16,255}));
                 if(detailsVideo_.Ready()){
                     SDL_Rect old;SDL_RenderGetViewport(renderer_,&old);SDL_RenderSetViewport(renderer_,&frame);
                     detailsVideo_.Draw(frame.w,frame.h);SDL_RenderSetViewport(renderer_,&old);
@@ -8955,10 +10699,11 @@ private:
                     SDL_RenderCopy(renderer_,art.texture,nullptr,&r);
                 }else DrawText(renderer_,"No artwork assigned.",x,340,2,ink);
             }
-            const char *labels[]={"PREVIOUS",index==0?(detailsVideo_.Active()||detailsVideoPending_?"STOP":"PLAY"):"NEXT IMAGE","NEXT"};
-            for(int i=0;i<3;++i){bool active=detailsPanelFocus_&&detailsPanelRow_==i;
-                DrawDetailsButton({x+i*210,490,200,38},active,accent);
-                DrawText(renderer_,labels[i],x+i*210+100,501,1,active&&!SwitchSkin()&&preferences_.skin!=1?AccentInk(accent):ink,true);
+            const char *labels[]={"PREVIOUS",detailsVideo_.Active()||detailsVideoPending_?"STOP":"PLAY","NEXT"};
+            const int count=index==0?3:2,stride=index==0?210:315;
+            for(int i=0;i<count;++i){const int action=index==0?i:(i==0?0:2);bool active=detailsPanelFocus_&&detailsPanelRow_==action;
+                DrawDetailsButton({x+i*stride,490,stride-10,38},active,accent);
+                DrawText(renderer_,labels[action],x+i*stride+(stride-10)/2,501,1,active&&!SwitchSkin()&&preferences_.skin!=1?AccentInk(accent):ink,true);
             }
             return;
         }
@@ -9016,7 +10761,8 @@ private:
         DrawPanelBase(accent,x,1120,progress);
         DrawText(renderer_,"Title Details",x+40,119,3,ink);
         const auto from=FocusCoverRect();const auto lerp=[&](int a,int b){return int(a+(b-a)*pose.travel);};
-        DrawBox(game,{lerp(from.x,110),lerp(from.y,176),lerp(from.w,250),lerp(from.h,357)},-1.f,true,accent,pose.yaw,pose.pitch,pose.roll,true);
+        if(UForceSkin())DrawUForceArt(game,{lerp(from.x,110),lerp(from.y,176),lerp(from.w,250),lerp(from.h,357)},true,true);
+        else DrawBox(game,{lerp(from.x,110),lerp(from.y,176),lerp(from.w,250),lerp(from.h,357)},-1.f,true,accent,pose.yaw,pose.pitch,pose.roll,true);
         for(int i=0;i<6;++i){SDL_Rect tab{x+292,133+i*70,76,58};DrawDetailsButton(tab,i==detailsRow_&&!detailsPanelFocus_,accent);
             DrawDetailsIcon(i,tab,i==detailsRow_?accent:ink);}
         SetColor(renderer_,SwitchMuted());SDL_RenderDrawLine(renderer_,x+385,184,x+385,536);
@@ -9033,22 +10779,23 @@ private:
         const auto pose=CoverTransition(progress);
         const int x=static_cast<int>(80+(1.f-pose.travel)*1240.f);
         DrawPanelBase(accent,x,1120,progress);
-        DrawText(renderer_,"TITLE DETAILS",x+40,120,2,{142,157,179,255});
+        DrawText(renderer_,"TITLE DETAILS",x+40,120,2,UIShade(Color{142,157,179,255}));
         const auto interpolate=[&](int from,int to){return int(from+(to-from)*pose.travel);};
         DrawBox(*game,{interpolate(FocusCoverRect().x,110),interpolate(FocusCoverRect().y,176),interpolate(FocusCoverRect().w,250),interpolate(FocusCoverRect().h,357)},
                 -1.f,true,accent,pose.yaw,pose.pitch,pose.roll,true);
         for(int i=0;i<6;++i) {
-            FillRoundedRect(renderer_,{x+292,133+i*70,76,58},8,i==detailsRow_&&!detailsPanelFocus_?accent:Color{28,42,60,255});
-            DrawDetailsIcon(i,{x+292,133+i*70,76,58},i==detailsRow_?(detailsPanelFocus_?accent:AccentInk(accent)):Color{190,207,224,255});
+            FillRoundedRect(renderer_,{x+292,133+i*70,76,58},8,i==detailsRow_&&!detailsPanelFocus_?accent:UIShade(Color{28,42,60,255}));
+            DrawDetailsIcon(i,{x+292,133+i*70,76,58},i==detailsRow_?(detailsPanelFocus_?accent:AccentInk(accent)):UIShade(Color{190,207,224,255}));
             if(i==detailsRow_)FillRoundedRect(renderer_,{x+282,150+i*70,3,24},1,accent);
         }
-        FillRoundedRect(renderer_,{x+385,120,700,470},5,{16,28,42,255});
-        DrawFittedText(renderer_,game->name,x+410,155,650,3,{232,242,249,255});
+        FillRoundedRect(renderer_,{x+385,120,700,470},5,UIShade(Color{16,28,42,255}));
+        DrawFittedText(renderer_,game->name,x+410,155,650,3,UIShade(Color{232,242,249,255}));
         DrawDetailsContent(*game,x+410,accent);
         DrawText(renderer_,std::string("A  ")+DetailsAction(),x+410,555,1,accent);
         DrawText(renderer_,"B  BACK    +  SETTINGS",x+760,555,1,accent);
     }
     void DrawSettings(Color accent, float progress) {
+
         static constexpr const char *categories[]={"GENERAL","LIBRARY","MEDIA","DISPLAY","CONTROLS","LAUNCHERS"};
         const int x=static_cast<int>(70+(1.0f-progress)*1260.0f);
         DrawPanelBase(accent,x,1140,progress);
@@ -9056,30 +10803,33 @@ private:
         if(SwitchSkin())accent=SwitchAccent();
         // A frosted reading layer keeps dark cover art from swallowing menu text.
         // Leave the outer glass bevel exposed; the backdrop remains softly visible.
-        if (glass && !SwitchSkin()) FillRoundedRect(renderer_,{x+18,110,1104,508},22,{244,248,250,138});
-        DrawText(renderer_,"SETTINGS",x+48,126,4,glass?Color{48,58,66,255}:Color{248,250,255,255});
-        DrawFittedText(renderer_,audioSettings_?"GENERAL / AUDIO":"UFLOW CONTROL CENTER",x+760,139,330,2,glass?Color{70,84,95,255}:Color{116,133,158,255},true);
-        if(!SwitchSkin() && glass) FillRoundedRect(renderer_,{x+38,182,240,374},18,{244,248,250,50});
-        else if(!SwitchSkin()) FillRoundedRect(renderer_,{x+38,182,240,390},18,{5,11,21,220});
+        if (glass && !SwitchSkin()) FillRoundedRect(renderer_,{x+18,110,1104,508},22,UIShade(Color{244,248,250,138}));
+        DrawText(renderer_,"SETTINGS",x+48,126,4,glass?UIShade(Color{48,58,66,255}):UIShade(Color{248,250,255,255}));
+        DrawFittedText(renderer_,audioSettings_?"GENERAL / AUDIO":"UFLOW CONTROL CENTER",x+760,139,330,2,glass?UIShade(Color{70,84,95,255}):(UForceSkin()?Color{166,176,159,255}:UIShade(Color{116,133,158,255})),true);
+        if(!SwitchSkin() && glass) FillRoundedRect(renderer_,{x+38,182,240,374},18,UIShade(Color{244,248,250,50}));
+        else if(!SwitchSkin()) FillRoundedRect(renderer_,{x+38,182,240,390},18,UIShade(Color{5,11,21,220}));
         for(int index=0;index<6;++index){
             const int y=208+index*61;
-            if(index==settingsCategory_ && !supportOpen_ && !supportFocus_){
+            if(index==settingsCategory_ && !supportOpen_ && !supportFocus_ && !controllersOpen_ && !controllersFocus_){
                 if(glass) {
                     FillRoundedRect(renderer_,{x+56,y-12,204,38},11,{accent.r,accent.g,accent.b,62});
                 }
                 else FillRoundedRect(renderer_,{x+52,y-16,212,46},14,{accent.r,accent.g,accent.b,48});
             }
-            if(index==settingsCategory_ && settingsSidebar_ && !supportOpen_ && !supportFocus_)
+            if(index==settingsCategory_ && settingsSidebar_ && !supportOpen_ && !supportFocus_ && !controllersOpen_ && !controllersFocus_)
                 FillRoundedRect(renderer_,{x+43,y-12,5,38},2,accent);
             DrawText(renderer_,categories[index],x+74,y-5,2,
-                     index==settingsCategory_?(glass?Color{50,61,69,255}:Color{255,255,255,255}):
-                                              (glass?Color{65,79,90,255}:Color{128,143,166,255}));
+                     index==settingsCategory_?(glass?UIShade(Color{50,61,69,255}):Color{255,255,255,255}):
+                                              (glass?UIShade(Color{65,79,90,255}):(UForceSkin()?Color{172,182,165,255}:UIShade(Color{128,143,166,255}))));
         }
         const int contentX=x+320;
         const bool infoSelected=supportOpen_ || supportFocus_;
-        FillSmoothDot(renderer_,float(x+74),594,17,infoSelected?accent:(glass?Color{224,237,242,180}:Color{31,49,62,230}));
-        DrawText(renderer_,"i",x+70,584,2,glass?Color{32,65,78,255}:Color{230,245,250,255});
-        if(infoSelected)DrawText(renderer_,"ABOUT",x+104,586,1,glass?Color{32,65,78,255}:Color{230,245,250,255});
+        FillSmoothDot(renderer_,float(x+74),594,17,infoSelected?accent:(glass?UIShade(Color{224,237,242,180}):UIShade(Color{31,49,62,230})));
+        DrawText(renderer_,"i",x+70,584,2,glass?UIShade(Color{32,65,78,255}):UIShade(Color{230,245,250,255}));
+        if(controllersOpen_||controllersFocus_)FillSmoothDot(renderer_,float(x+186),594,21,accent);
+        DrawControllerGlyph(x+186,594,30,glass?UIShade(Color{38,53,64,255}):UIShade(Color{238,244,252,255}));
+        if(controllersOpen_){DrawControllers(contentX,accent,glass);return;}
+
         if(supportOpen_){DrawSupport(contentX,accent,glass);return;}
         if(typeManager_||typeText_) { DrawTypes(contentX,accent,glass); return; }
         if(settingsCategory_==5) {DrawLaunchers(contentX,accent,glass);return;}
@@ -9095,6 +10845,7 @@ private:
         const int rowPitch=audioSettings_?48:settingsCategory_==3 || settingsCategory_==2 || settingsCategory_==0?62:76;
         const int rowHeight=audioSettings_?44:57;
         const auto drawRow=[&](int row,const std::string &label,const std::string &value){
+            if(row==settingsRow_)settingsHelpLabel_=label;
             if(row<SettingsFirstRow() || row>=SettingsFirstRow()+6)return;
             const int y=205+(row-SettingsFirstRow())*rowPitch;
             if(SwitchSkin()){SetColor(renderer_,SwitchMuted());SDL_RenderDrawLine(renderer_,contentX-18,y+37,contentX+742,y+37);}
@@ -9103,9 +10854,9 @@ private:
                 else if(glass) FillRoundedRect(renderer_,{contentX-18,y-18,760,rowHeight},14,{accent.r,accent.g,accent.b,65});
                 else FillRoundedRect(renderer_,{contentX-18,y-18,760,rowHeight},14,{accent.r,accent.g,accent.b,42});
             }
-            DrawText(renderer_,label,contentX,y,2,row==settingsRow_?(glass?Color{45,56,64,255}:Color{255,255,255,255}):
-                                                                (glass?Color{65,79,90,255}:Color{188,199,216,255}));
-            const Color valueColor=glass?AccentInk(accent):(row==settingsRow_?accent:Color{126,142,166,255});
+            DrawText(renderer_,label,contentX,y,2,row==settingsRow_?(glass?UIShade(Color{45,56,64,255}):Color{255,255,255,255}):
+                                                                (glass?UIShade(Color{65,79,90,255}):(UForceSkin()?Color{209,216,203,255}:UIShade(Color{188,199,216,255}))));
+            const Color valueColor=glass?AccentInk(accent):(row==settingsRow_?accent:(UForceSkin()?Color{176,188,168,255}:UIShade(Color{126,142,166,255})));
             if(settingsEditing_ && row==settingsRow_ && !settingsSidebar_ && settingsAction_<0)
                 FillRoundedRect(renderer_,{contentX+468,y-9,268,36},10,{accent.r,accent.g,accent.b,95});
             if(settingsCategory_==3 && (row==3 || row==4)) {
@@ -9114,7 +10865,7 @@ private:
                 const int normal=row==4?CoverZoom::Normal:CoverSpacing::Normal;
                 const int sliderValue=row==4?preferences_.coverZoom:preferences_.coverSpacing;
                 const int filled=int(width*(std::clamp(sliderValue,low,high)-low)/float(high-low));
-                FillRoundedRect(renderer_,{contentX+480,y+6,width,6},3,glass?Color{136,162,177,110}:Color{64,85,109,255});
+                FillRoundedRect(renderer_,{contentX+480,y+6,width,6},3,glass?UIShade(Color{136,162,177,110}):UIShade(Color{64,85,109,255}));
                 if(filled)FillRoundedRect(renderer_,{contentX+480,y+6,filled,6},3,accent);
                 // A reference mark identifies the normal size or spacing.
                 FillRoundedRect(renderer_,{contentX+480+width*(normal-low)/(high-low),y+3,2,12},1,valueColor);
@@ -9129,22 +10880,24 @@ private:
         if(settingsCategory_==0 && !audioSettings_){
             static constexpr const char *skins[]={"PIXEL DECK","GLASSFLOW","SWITCH LIGHT","SWITCH DARK"};
             drawRow(0,"SKIN",SkinSpec().name);
-            drawRow(1,"START VIEW",LibraryLabel(preferences_.startLibrary.empty()?
+            drawRow(1,"SKIN HELP","A  OPEN");
+            drawRow(2,"START VIEW",LibraryLabel(preferences_.startLibrary.empty()?
                 (LibraryTabs().empty()?kAllLibraryId:LibraryTabs()[StartupLibraryIndex(LibraryTabs(),preferences_)]):preferences_.startLibrary));
-            drawRow(2,"WRAP NAVIGATION",OnOff(preferences_.wrapNavigation));
-            drawRow(3,"SHOW INSTALLED WII U",OnOff(preferences_.showInstalled));
-            drawRow(4,"AUTO SORT INSTALLED VC",OnOff(preferences_.autoSortInstalledVC));
-            drawRow(5,"AUDIO","A  OPEN");
-            drawRow(6,"START UFLOW ON BOOT",OnOff(preferences_.startOnBoot));
-            drawRow(7,"TITLE INSTALLER",TitleInstall::Available()?OnOff(preferences_.titleInstallerEnabled):"MODULE NOT INCLUDED");
-            drawRow(8,"DEMO MODE",OnOff(preferences_.demoMode));
-            if(preferences_.demoMode)drawRow(9,"IDLE TIME",std::to_string(preferences_.demoIdleSeconds)+" SECONDS");
+            drawRow(3,"WRAP NAVIGATION",OnOff(preferences_.wrapNavigation));
+            drawRow(4,"SHOW INSTALLED WII U",OnOff(preferences_.showInstalled));
+            drawRow(5,"AUTO SORT INSTALLED VC",OnOff(preferences_.autoSortInstalledVC));
+            drawRow(6,"AUDIO","A  OPEN");
+            drawRow(7,"START UFLOW ON BOOT",OnOff(preferences_.startOnBoot));
+            drawRow(8,"TITLE INSTALLER",TitleInstall::Available()?OnOff(preferences_.titleInstallerEnabled):"MODULE NOT INCLUDED");
+            drawRow(9,"DEMO MODE",OnOff(preferences_.demoMode));
+            if(preferences_.demoMode)drawRow(10,"IDLE TIME",std::to_string(preferences_.demoIdleSeconds)+" SECONDS");
+            drawRow(preferences_.demoMode?11:10,"DEFAULT A-Z MODE",preferences_.alphabetFilterMode?"FILTER":"BROWSE");
         }else if(settingsCategory_==3){
 
             static constexpr const char *speeds[]={"RELAXED","SMOOTH","FAST"};
 
-            drawRow(0,"COVER TYPE",CoverPresentation::Types[preferences_.coverType]);
-            drawRow(1,"COVER LAYOUT",CoverPresentation::LayoutName(preferences_.coverType,PresentationLayout()));
+            drawRow(0,"COVER TYPE",FixedShelfScene()?"Box (skin)":CoverPresentation::Types[preferences_.coverType]);
+            drawRow(1,"COVER LAYOUT",FixedShelfScene()?"Bookshelf (skin)":CoverPresentation::LayoutName(preferences_.coverType,GlobalPresentationLayout()));
             drawRow(2,"ANIMATION",speeds[preferences_.animationSpeed]);
             drawRow(3,"COVER SPACING",std::to_string(preferences_.coverSpacing)+"%");
             drawRow(4,"COVER ZOOM",std::to_string(preferences_.coverZoom)+"%");
@@ -9157,15 +10910,14 @@ private:
                 FillRoundedRect(renderer_,{contentX+438,y-3,24,24},7,{255,255,255,220});
                 FillRoundedRect(renderer_,{contentX+440,y-1,20,20},5,accent);
             }
-            drawRow(9,"3D BOX ART",preferences_.coverType==CoverPresentation::Box?OnOff(preferences_.useBoxArt):"BOX ONLY");
-            drawRow(10,"BACKGROUNDS",OnOff(preferences_.useBackgrounds));
-            drawRow(11,"TITLE LOGOS",OnOff(preferences_.useLogos));
-            drawRow(12,"GAMEPLAY PREVIEWS",OnOff(preferences_.usePreviews));
-            drawRow(13,"PREVIEW DELAY",std::to_string(preferences_.previewDelaySeconds)+" SECONDS");
-            drawRow(14,"PRELOAD COVERS",OnOff(preferences_.preloadBuiltInCovers));
-            drawRow(15,"STARTUP VIDEO",OnOff(preferences_.startupVideo));
-            drawRow(16,"SORT BY",LibrarySort::Name(preferences_.sortMode));
-            drawRow(17,"BACKGROUND TRANSPARENCY",std::to_string(preferences_.backgroundTransparency)+"%");
+            drawRow(9,"BACKGROUNDS",OnOff(preferences_.useBackgrounds));
+            drawRow(10,"TITLE LOGOS",OnOff(preferences_.useLogos));
+            drawRow(11,"GAMEPLAY PREVIEWS",OnOff(preferences_.usePreviews));
+            drawRow(12,"PREVIEW DELAY",std::to_string(preferences_.previewDelaySeconds)+" SECONDS");
+            drawRow(13,"PRELOAD COVERS",OnOff(preferences_.preloadBuiltInCovers));
+            drawRow(14,"STARTUP VIDEO",OnOff(preferences_.startupVideo));
+            drawRow(15,"SORT BY",LibrarySort::Name(preferences_.sortMode));
+            drawRow(16,"BACKGROUND TRANSPARENCY",std::to_string(preferences_.backgroundTransparency)+"%");
         }else if(audioSettings_){
             drawRow(0,"MENU MUSIC",OnOff(preferences_.musicEnabled));
             drawRow(1,"TRACK",preferences_.musicTrack.empty()?"NO TRACK":preferences_.musicTrack);
@@ -9174,12 +10926,12 @@ private:
             drawRow(4,"MENU SOUND EFFECTS",OnOff(preferences_.menuSoundsEnabled));
             drawRow(5,"EFFECTS VOLUME",std::to_string(preferences_.menuSoundsVolume)+"%");
             DrawFittedText(renderer_,musicStatus_,contentX,500,730,1,
-                glass?Color{62,73,82,255}:Color{188,199,216,255});
+                glass?UIShade(Color{62,73,82,255}):(UForceSkin()?Color{209,216,203,255}:UIShade(Color{188,199,216,255})));
             DrawFittedText(renderer_,"/wiiu/apps/uFlow/music/  |  MP3, OGG, WAV  |  MAX 32 MIB",contentX,536,730,1,
-                glass?Color{62,73,82,255}:Color{188,199,216,255});
+                glass?UIShade(Color{62,73,82,255}):(UForceSkin()?Color{209,216,203,255}:UIShade(Color{188,199,216,255})));
         }else if(settingsCategory_==4){
-            const Color controlText=glass?Color{43,54,63,255}:Color{238,244,252,255};
-            const Color controlMuted=glass?Color{65,79,90,255}:Color{130,147,171,255};
+            const Color controlText=glass?UIShade(Color{43,54,63,255}):UIShade(Color{238,244,252,255});
+            const Color controlMuted=glass?UIShade(Color{65,79,90,255}):UIShade(Color{130,147,171,255});
             DrawFittedText(renderer_,bindingCapture_>=0?"HOLD BUTTONS TOGETHER, RELEASE TO ASSIGN":"BUTTON MAPPINGS / COMBINATIONS",contentX,205,735,2,controlText);
             for(int row=SettingsFirstRow();row<std::min(SettingsRowCount(),SettingsFirstRow()+12);++row){
                 const int y=238+(row-SettingsFirstRow())*26; const bool selected=row==settingsRow_&&!settingsSidebar_&&settingsAction_<0;
@@ -9195,8 +10947,8 @@ private:
     }
     void DrawSourceManager(Color accent, int x) {
         const bool glass = preferences_.skin == 1 || preferences_.skin == 2;
-        const Color text = glass ? Color{43,54,63,255} : Color{238,244,252,255};
-        const Color muted = glass ? Color{62,77,88,255} : Color{130,147,171,255};
+        const Color text = glass ? UIShade(Color{43,54,63,255}) : UIShade(Color{238,244,252,255});
+        const Color muted = glass ? UIShade(Color{62,77,88,255}) : UIShade(Color{130,147,171,255});
         DrawText(renderer_,mediaMode_?"MEDIA / DIRECTORIES":"LIBRARY / DIRECTORIES",x,202,3,text);
         DrawText(renderer_,mediaMode_?"EXPAND A CONTENT TYPE / SELECT A DIRECTORY TO EDIT":"SELECT A PATH TO EDIT ITS SCAN OPTIONS",x,240,1,muted);
         const auto mediaRows=mediaMode_?MediaRows():std::vector<MediaDirectoryRow>{};
@@ -9241,8 +10993,8 @@ private:
     }
     void DrawSourceEditor(Color accent, int x) {
         const bool glass = preferences_.skin == 1 || preferences_.skin == 2;
-        const Color text = glass ? Color{43,54,63,255} : Color{238,244,252,255};
-        const Color muted = glass ? Color{62,77,88,255} : Color{130,147,171,255};
+        const Color text = glass ? UIShade(Color{43,54,63,255}) : UIShade(Color{238,244,252,255});
+        const Color muted = glass ? UIShade(Color{62,77,88,255}) : UIShade(Color{130,147,171,255});
         DrawText(renderer_,std::string(mediaMode_?"MEDIA":"LIBRARY")+(editingSourceIndex_>=0?" / EDIT PATH":" / ADD PATH"),x,202,3,text);
         DrawFittedText(renderer_,DraftPath(),x,240,725,1,muted);
         std::vector<std::pair<std::string,std::string>> rows{{"DIRECTORY","A  BROWSE"},
@@ -9265,6 +11017,7 @@ private:
             const auto slash=file.find_last_of('/');
             rows.push_back({"DEFAULT FILE",file.empty()?(IsCoverMedia(draftMediaSource_.type)?"AUTO DEFAULT.PNG / BROWSE":"NONE / BROWSE"):file.substr(slash==std::string::npos?0:slash+1)});
         }
+        if(sourceEditorRow_>=0&&sourceEditorRow_<int(rows.size()))settingsHelpLabel_=rows[sourceEditorRow_].first;
         const int first = SourceEditorFirst();
         for (int row = first; row < std::min(first+7,static_cast<int>(rows.size())); ++row) {
             const int y = 278 + (row-first) * 38;
@@ -9284,7 +11037,7 @@ private:
     }
     void DrawMediaHelp(int x) {
         const bool glass=preferences_.skin==1 || preferences_.skin==2;
-        const Color text=glass?Color{43,54,63,255}:Color{238,244,252,255};
+        const Color text=glass?UIShade(Color{43,54,63,255}):UIShade(Color{238,244,252,255});
         DrawText(renderer_,"MEDIA / SETUP GUIDE",x,202,3,text);
         const char *lines[]={
             "1. ADD A DIRECTORY; SELECT ITS MEDIA TYPE AND LIBRARY.",
@@ -9298,12 +11051,12 @@ private:
             "TITLE ID WINS OVER NAME. LIBRARY-SPECIFIC WINS OVER ALL.",
             "FULL GUIDE: docs/CONTENT_AND_MEDIA.md IN THE PROJECT."};
         for(int i=0;i<10;++i) DrawFittedText(renderer_,lines[i],x,251+i*30,730,1,text);
-        DrawSettingsActions(x,AccentFor(Selected()?Selected()->platform:Platform::WiiU,preferences_.theme));
+        DrawSettingsActions(x,UForceSkin()?SwitchAccent():AccentFor(Selected()?Selected()->platform:Platform::WiiU,preferences_.theme));
     }
     void DrawDirectoryBrowser(Color accent, int x) {
         const bool glass = preferences_.skin == 1 || preferences_.skin == 2;
-        const Color text = glass ? Color{42,53,62,255} : Color{238,244,252,255};
-        const Color muted = glass ? Color{62,77,88,255} : Color{130,147,171,255};
+        const Color text = glass ? UIShade(Color{42,53,62,255}) : UIShade(Color{238,244,252,255});
+        const Color muted = glass ? UIShade(Color{62,77,88,255}) : UIShade(Color{130,147,171,255});
         DrawText(renderer_,defaultFileBrowser_?"MEDIA / SELECT DEFAULT FILE":mediaMode_?"MEDIA / SELECT DIRECTORY":"LIBRARY / SELECT DIRECTORY",x,202,3,text);
         DrawFittedText(renderer_, browserPath_, x, 240, 725, 1, glass?AccentInk(accent):accent);
         if (browserDirectories_.empty()) {
@@ -9347,28 +11100,30 @@ private:
                 default:return slot==1?"SAVE":slot==2?"DELETE":"";
             }
         };
-        for(int i=0;i<4;++i) {
+        for(int i=0;i<5;++i) {
+            const SDL_Rect rect=SettingsActionRect(x,i);
+            if(!rect.w)continue;
             const bool enabled=actions[i]!=SettingsAction::None,focused=enabled && settingsAction_==i;
-            const SDL_Rect rect{x+i*185,574,176,40};
             if(focused)FillRoundedRect(renderer_,{rect.x-3,rect.y-3,rect.w+6,rect.h+6},12,accent);
-            FillRoundedRect(renderer_,rect,9,(preferences_.skin==1 || preferences_.skin==2)?
-                (focused?Color{237,248,252,255}:Color{230,242,247,static_cast<Uint8>(enabled?205:75)}):
-                (focused?Color{32,58,79,255}:Color{26,42,59,static_cast<Uint8>(enabled?240:90)}));
+            FillRoundedRect(renderer_,rect,UForceSkin()?2:9,UForceSkin()?(focused?Color{49,63,34,255}:Color{38,43,35,255}):(preferences_.skin==1 || preferences_.skin==2)?
+                (focused?UIShade(Color{237,248,252,255}):Color{230,242,247,static_cast<Uint8>(enabled?205:75)}):
+                (focused?UIShade(Color{32,58,79,255}):Color{26,42,59,static_cast<Uint8>(enabled?240:90)}));
             const auto ink=(preferences_.skin==1 || preferences_.skin==2)?Color{43,65,78,static_cast<Uint8>(enabled?255:100)}:Color{236,242,250,static_cast<Uint8>(enabled?255:100)};
             const int textHeight=gSmoothText&&gSmoothFonts[1]?TTF_FontHeight(gSmoothFonts[1]):7;
-            if(settingsCategory_==4&&!sourceManager_&&settingsRow_<int(ControlAction::Count)) {
+            if(settingsCategory_==4&&!sourceManager_&&!supportOpen_&&!controllersOpen_&&settingsRow_<int(ControlAction::Count)&&i!=3) {
                 const uint32_t buttons[]={0x8000,8,0x2000,0x4000};
                 const char *names[]={"REPLACE","ADD","CLEAR ALL","BACK"};
-                DrawControlButton(buttons[i],{rect.x+12,rect.y+8,28,24},ink);
-                DrawFittedText(renderer_,names[i],rect.x+46,rect.y+(rect.h-textHeight)/2,rect.w-52,1,ink,true);
-            }else DrawText(renderer_,label(actions[i],i),rect.x+88,rect.y+(rect.h-textHeight)/2,1,ink,true);
+                const int bindingSlot=i==4?3:i;
+                DrawControlButton(buttons[bindingSlot],{rect.x+12,rect.y+8,28,24},ink);
+                DrawFittedText(renderer_,names[bindingSlot],rect.x+46,rect.y+(rect.h-textHeight)/2,rect.w-52,1,ink,true);
+            }else DrawFittedText(renderer_,actions[i]==SettingsAction::Help?std::string(ActionButton(ControlAction::SettingsHelp))+"  HELP":label(actions[i],i),rect.x+6,rect.y+(rect.h-textHeight)/2,rect.w-12,1,ink,true);
         }
     }
     void DrawInjectionDialog(Color accent) {
         const PopupTextGlowScope glow(preferences_.skin==1);
         const bool glass=preferences_.skin==1 || preferences_.skin==2;
-        const Color ink=glass?Color{42,53,62,255}:Color{238,244,252,255};
-        FillRoundedRect(renderer_,{300,185,680,350},24,glass?Color{239,246,248,235}:Color{20,31,49,245});
+        const Color ink=glass?UIShade(Color{42,53,62,255}):UIShade(Color{238,244,252,255});
+        FillRoundedRect(renderer_,{300,185,680,350},24,glass?UIShade(Color{239,246,248,235}):UIShade(Color{20,31,49,245}));
         if(glass)DrawGlassSurface(renderer_,{300,185,680,350},24,accent,100,true);
         const auto &d=injectionDialog_;
         const bool confirm=d.state==InjectionDialog::State::Confirm;
@@ -9409,8 +11164,8 @@ private:
     void DrawScan(Color accent) {
         const bool glass=preferences_.skin==1 || preferences_.skin==2;
         const PopupTextGlowScope glow(glass);
-        const Color ink=glass?Color{42,53,62,255}:Color{238,244,252,255};
-        FillRoundedRect(renderer_,{270,160,740,410},24,glass?Color{239,246,248,245}:Color{20,31,49,250});
+        const Color ink=glass?UIShade(Color{42,53,62,255}):UIShade(Color{238,244,252,255});
+        FillRoundedRect(renderer_,{270,160,740,410},24,glass?UIShade(Color{239,246,248,245}):UIShade(Color{20,31,49,250}));
         if(glass)DrawGlassSurface(renderer_,{270,160,740,410},24,accent,100,true);
         const auto &p=scanState_.progress;
         DrawText(renderer_,!scanState_.error.empty()?"UPDATE STOPPED":mediaRefresh_?"UPDATING MEDIA":scanState_.finished?"SCAN COMPLETE":scanAddOnly_?"ADDING NEW GAMES":"COMPLETE SCAN",640,190,3,ink,true);
@@ -9446,8 +11201,8 @@ private:
     void DrawUpdate(Color accent) {
         const bool glass=preferences_.skin==1 || preferences_.skin==2;
         const PopupTextGlowScope glow(glass);
-        const Color ink=glass?Color{42,53,62,255}:Color{238,244,252,255};
-        FillRoundedRect(renderer_,{290,160,700,390},24,glass?Color{239,246,248,245}:Color{20,31,49,250});
+        const Color ink=glass?UIShade(Color{42,53,62,255}):UIShade(Color{238,244,252,255});
+        FillRoundedRect(renderer_,{290,160,700,390},24,glass?UIShade(Color{239,246,248,245}):UIShade(Color{20,31,49,250}));
         if(glass)DrawGlassSurface(renderer_,{290,160,700,390},24,accent,100,true);
         const auto &s=updateState_;const bool ask=s.state==UFlowUpdate::State::Available,busy=UFlowUpdate::Busy(s.state);
         const char *title=ask?"UPDATE AVAILABLE":busy?"UPDATING UFLOW":s.state==UFlowUpdate::State::Success?"UPDATE INSTALLED":"UPDATE FAILED";
@@ -9479,10 +11234,10 @@ private:
     void DrawLaunchOptions(Color accent) {
         const bool glass=preferences_.skin==1 || preferences_.skin==2;
         const PopupTextGlowScope glow(glass);
-        const Color ink=glass?Color{42,53,62,255}:Color{238,244,252,255};
+        const Color ink=glass?UIShade(Color{42,53,62,255}):UIShade(Color{238,244,252,255});
         const auto box=LaunchOptionsLayout();
         const SDL_Rect panel{290,box.top,700,box.height};
-        FillRoundedRect(renderer_,panel,24,glass?Color{239,246,248,245}:Color{20,31,49,250});
+        FillRoundedRect(renderer_,panel,24,glass?UIShade(Color{239,246,248,245}):UIShade(Color{20,31,49,250}));
         if(glass)DrawGlassSurface(renderer_,panel,24,accent,100,true);
         DrawText(renderer_,"LAUNCH OPTIONS",640,box.top+27,3,ink,true);
         DrawFittedText(renderer_,launchOptionsName_,330,box.top+76,launchOptions_.size()>kMaxLaunchOptions?550:620,2,ink);
@@ -9495,14 +11250,27 @@ private:
         }
         if(launchOptions_.size()>kMaxLaunchOptions)
             DrawText(renderer_,std::to_string(launchOptionsChoice_+1)+" / "+std::to_string(launchOptions_.size()),920,box.top+76,1,ink,true);
-        const std::string hints=LaunchOptionsCanSetDefault()?"A  LAUNCH      +  SET AS DEFAULT      B  CANCEL":"A  LAUNCH      B  CANCEL";
-        DrawText(renderer_,status_.empty()?hints:Ellipsize(status_,60),640,box.top+box.height-34,1,ink,true);
+        const int count=LaunchOptionsCanSetDefault()?4:2,width=600/count;
+        const char *labels[]={"LAUNCH","GAME","SYSTEM","CANCEL"};
+        const char *keys[]={"A","+","Y","B"};
+        for(int i=0;i<count;++i){const SDL_Rect button{340+i*width,box.top+box.height-102,width-6,54};
+            FillControlRoundedRect(renderer_,button,9,{accent.r,accent.g,accent.b,Uint8(launchOptionsFooter_==i?190:55)});
+            const int action=count==2&&i==1?3:i;
+            const bool isDefault=count==4&&(i==1||i==2);
+            DrawText(renderer_,keys[action],button.x+17,button.y+18,1,ink,true);
+            const int labelCenter=button.x+34+(button.w-34)/2;
+            DrawText(renderer_,labels[action],labelCenter,button.y+(isDefault?7:18),1,ink,true);
+            if(isDefault)DrawText(renderer_,"DEFAULT",labelCenter,button.y+27,1,ink,true);}
+        const std::string hints=LaunchOptionsCanSetDefault()?"+  GAME DEFAULT     Y  SYSTEM DEFAULT     B  CANCEL":"A  LAUNCH     B  CANCEL";
+        std::istringstream message(status_.empty()?hints:status_);std::string line;
+        int messageY=box.top+box.height-42;
+        while(std::getline(message,line)){DrawText(renderer_,line,640,messageY,1,ink,true);messageY+=20;}
     }
     void DrawWelcome(Color accent) {
         const bool glass=preferences_.skin==1 || preferences_.skin==2;
         const PopupTextGlowScope glow(glass);
-        const Color ink=glass?Color{42,53,62,255}:Color{238,244,252,255};
-        FillRoundedRect(renderer_,{240,220,800,280},24,glass?Color{239,246,248,242}:Color{20,31,49,245});
+        const Color ink=glass?UIShade(Color{42,53,62,255}):UIShade(Color{238,244,252,255});
+        FillRoundedRect(renderer_,{240,220,800,280},24,glass?UIShade(Color{239,246,248,242}):UIShade(Color{20,31,49,245}));
         if(glass)DrawGlassSurface(renderer_,{240,220,800,280},24,accent,100,true);
         DrawText(renderer_,"WELCOME TO UFLOW",640,252,3,ink,true);
         const auto settingsButton=ActionButton(ControlAction::Settings);
@@ -9513,11 +11281,11 @@ private:
     }
     void DrawToast(Color accent) {
         if(settings_&&settingsCategory_==4){
-            DrawFittedText(renderer_,status_,80,655,1120,1,SwitchSkin()?SwitchInk():preferences_.skin==1?Color{45,56,64,255}:Color{235,245,255,255});return;
+            DrawFittedText(renderer_,status_,80,655,1120,1,SwitchSkin()?SwitchInk():preferences_.skin==1?UIShade(Color{45,56,64,255}):UIShade(Color{235,245,255,255}));return;
         }
         const int width=std::min(820,TextWidth(status_,2)+64);
         FillRoundedRect(renderer_,{(kWidth-width)/2,568,width,42},16,{accent.r,accent.g,accent.b,235});
-        DrawText(renderer_,Ellipsize(status_,62),kWidth/2,581,2,{4,12,22,255},true);
+        DrawText(renderer_,Ellipsize(status_,62),kWidth/2,581,2,UIShade(Color{4,12,22,255}),true);
     }
 
     bool launchCapture_=false,launchAnimation_=false;
@@ -9525,6 +11293,7 @@ private:
     float launchYaw_=.055f,launchPitch_=0.f,launchRoll_=0.f;
     bool launchOptionsOpen_=false;
     int launchOptionsChoice_=0;
+    int launchOptionsFooter_=-1;
     static constexpr std::size_t kMaxLaunchOptions=5;
     std::vector<LaunchOption> launchOptions_;
     std::string launchOptionsKey_,launchOverrideKey_,launchOverrideId_;
@@ -9545,6 +11314,10 @@ private:
     std::string installMessage_;
     std::string installSpace_;
     TextureCache textures_;
+    NesCartridge::Material nesMaterial_;
+    SnesCartridge::Material snesMaterial_;
+    CartridgeModels::Materials cartridgeMaterials_;
+    Ps1Jewel::Materials ps1Material_;
     bool iconPreparationSkipped_=false;
     SDL_Texture *preparationLogo_=nullptr;
     SDL_Texture *preparationLogoGlow_=nullptr;
@@ -9638,10 +11411,10 @@ private:
 #endif
     const GameEntry *videoSelection_ = nullptr;
     VideoOptions videoOptions_;
-    Uint32 videoIsolationUntil_=0;
     bool showcaseLensReady_=false;
     std::uint32_t showcaseLensFrame_=0;
     bool videoConfigured_ = false;
+    bool videoUForceBanner_ = false;
     float showcaseProgress_=0.f;
     int showcaseTextSkin_=-1;
     std::string showcaseDescription_;
@@ -9674,7 +11447,8 @@ private:
     BindingCapture bindingCaptureState_;
     uint32_t controlHeld_=0;
     ControlChordInput controlChordInput_;
-    bool controlOverlayLast_=false,controlTransitionBlocked_=false;
+    bool controlOverlayLast_=false;
+    uint32_t transitionHeld_=0, previousControlHeld_=0;
     int sourceRow_ = 0;
     int sourceEditorRow_ = 0;
     int editingSourceIndex_ = -1;
@@ -9683,6 +11457,8 @@ private:
     MediaSource initialMediaDraft_;
     LibraryDefinition initialTypeDraft_;
     UFlowSupport::Client support_;
+    UFlowSupport::FreezeWatch *freezeWatch_=nullptr;
+    bool freezePrompt_=false;
     bool supportOpen_=false,supportFocus_=false,supportConfirm_=false,supportYes_=false;
     int supportRow_=0;
     std::string supportScanStage_;
@@ -9711,17 +11487,31 @@ private:
     bool scanStartPending_=false,scanRefreshSources_=false;
     bool scanFirstFrame_=false;
     bool mediaRefreshPending_=false,mediaRefresh_=false;
-    bool sourceMediaRefreshPending_=false;
+    bool sourceMediaRefreshPending_=false,scanKeepArtwork_=false;
     std::string mediaRefreshSelection_;
     Uint32 scanStarted_=0,scanElapsed_=0;
     std::size_t scanInvalid_=0;
     std::string status_;
     Uint32 statusUntil_ = 0;
     SDL_Texture *bookshelfTexture_=nullptr;
+    SDL_Texture *mediaMovingTexture_=nullptr;
     BrowseMotion::Bookshelf bookshelfMotion_;
+    int mediaShelfAnchor_=-1;
+    std::string boxShelfGeometryKey_;
+    std::vector<CaseProfile> boxShelfProfiles_;
+    std::vector<float> boxShelfCenters_;
+    unsigned boxShelfGeometryBuilds_=0;
+    std::string mediaShelfGeometryKey_;
+    std::vector<float> mediaShelfCenters_,mediaShelfWidths_;
+    float mediaShelfZoom_=1.f,mediaShelfGap_=0.f;
+    unsigned mediaShelfGeometryBuilds_=0;
+    struct MediaSpine {SDL_Texture *texture;int w,h;Uint32 used;};
+    std::map<std::string,MediaSpine> mediaSpines_,mediaCards_;
+    size_t mediaCardBytes_=0;Uint32 mediaCardUse_=0;unsigned mediaModelBuilds_=0,mediaModelHits_=0;
     std::string bookshelfKey_;
-    std::uint64_t bookshelfRevision_=0,bookshelfEpoch_=0;
-    bool bookshelfCached_=false,bookshelfNeedsArtwork_=false;
+    std::vector<std::pair<std::string,std::uint64_t>> bookshelfAssets_;
+    std::uint64_t bookshelfEpoch_=0;
+    bool bookshelfCached_=false;
     unsigned bookshelfBuilds_=0,bookshelfCacheHits_=0,bookshelfFaces_=0,bookshelfVertices_=0;
     SDL_Texture *sceneTexture_ = nullptr;
     SDL_Texture *blurTexture_ = nullptr;
@@ -9746,8 +11536,13 @@ private:
     unsigned caseDirectFallbacks_ = 0;
 #endif
     bool detailsBackdropReady_ = false;
+    SettingsWriter settingsWriter_;
+    unsigned settingsWriteRevision_=0;
     bool settingsDirty_ = false;
     Uint32 settingsSaveAfter_ = 0;
+    bool settingsExitPending_ = false;
+    FrameProfile::Recorder frameProfile_;
+    uint64_t profileInputUs_=0;
     unsigned performanceFrames_ = 0;
     double performanceTotalMs_ = 0, performanceMaxMs_ = 0;
     bool preview_ = false;
@@ -9817,6 +11612,7 @@ int main(int, char **) {
     // Initializing WHB ProcUI here disables that SDL shutdown path.
     OSReport("uFlow: main-entry-startup-probe-v4\n");
     const bool mounted=WHBMountSdCard()==1;
+    UFlowSupport::FreezeWatch freezeWatch("fs:/vol/external01/wiiu/apps/uFlow");
     // A previous aborted transition must not launch later from WiiFlow's icon.
     CancelWiiLaunchRequest();
     UFlowReturn::Clear(); // Explicitly exiting uFlow must still reach Wii U Menu.
@@ -9838,6 +11634,7 @@ int main(int, char **) {
     // radio controller connection service so a Pro Controller can pair after
     // uFlow has already launched.
     WPADEnableURCC(true);
+    KPADSetMaxControllers(WiiRemoteInput::ChannelCount);
     // Clear the system launch jingle even when the user's music setting is OFF.
     // Do this before the library scan so slow storage cannot prolong that sound.
     const auto startupAudioError=MenuMusic::SilenceStartup();
@@ -9867,6 +11664,7 @@ int main(int, char **) {
     OSDynLoad_Module launchArgsModule=nullptr;
     {
     Dashboard dashboard(renderer,games);
+    dashboard.OfferFreezeReport(freezeWatch);
     UFlowUpdate::Client updater;
     bool updateChecked=false,updateTouchHeld=false,updateHomeBlocked=false,launchOptionsTouchHeld=false;
     // Popups step once per D-pad press or left-stick push (same thresholds as the library).
@@ -9901,29 +11699,65 @@ int main(int, char **) {
     Uint32 verticalNext=0;
     Uint32 pageNext=0;
     bool touchHeld=false;
+    bool numberTouchHeld=false;
     bool zoomSliderHeld=false;
     WiiRemoteInput wiiRemote;
-    InputResumeGate inputResume;
+    DashboardInputRouter inputResume;
+    auto previousInputSource = DashboardInputRouter::Source::GamePad;
+    uint32_t previousPadHold = 0, previousStickDirections = 0, previousRemoteHold = 0;
+    bool previousPadTouch = false;
     int touchStartX=0,touchStartY=0,touchLastX=0,touchLastY=0;
 
+    bool backgroundCleanupPending=false;
     gPersistTrace=false;
     while (running) {
+        if(backgroundCleanupPending) {
+            // No SDL pump, rendering, or decoder restart before retirement.
+            // Keep the existing heartbeat timestamp so a stuck cleanup reports.
+            if(!dashboard.SystemBackgroundReady()){OSSleepTicks(OSMillisecondsToTicks(4));continue;}
+            // Submit queued SDL commands and retire GPU work while we still own
+            // the foreground. Worker shutdown can release imported video textures;
+            // do not leave their last queued draws for the ProcUI release callback.
+            freezeWatch.Transition("Background graphics queue drain");
+            Trace("background-render-flush-begin");
+            if(SDL_RenderFlush(renderer)<0)Trace("background-render-flush-error");
+            Trace("background-render-flush-complete");
+            GX2Flush();
+            Trace("background-gpu-drain-begin");
+            const bool gpuDrained=GX2DrawDone();
+            UFlow_HandoffStage(gpuDrained?20:19);
+            Trace(gpuDrained?"background-gpu-drain-complete":"background-gpu-drain-FAILED");
+            backgroundCleanupPending=false;
+            freezeWatch.Transition("Background media and graphics retired; foreground handoff pending");
+            Trace("system-background-workers-retired");
+            // ProcUI may legitimately block until foreground returns. Preserve
+            // the durable marker while suspending only the live timeout.
+            freezeWatch.Active(false);
+        }
+        freezeWatch.Active(foreground && !launchRequested);
+        freezeWatch.Beat(0);
         SDL_Event event;
-        while (SDL_PollEvent(&event)) {
+        while (running && !backgroundCleanupPending && SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
+                freezeWatch.Transition(event.type==SDL_QUIT?"Application exit cleanup":"Background media cleanup");
+                gPersistTrace=true;
                 heapOwnerWatch.Stop();
                 dashboard.StopScan();
                 updater.Stop();if(updateHomeBlocked){OSEnableHomeButtonMenu(true);updateHomeBlocked=false;}
                 Trace("sdl-quit-event");
                 running = false;
                 dashboard.StopMusic();
+                freezeWatch.Active(false);
                 Trace("system-quit-media-stop-complete");
             } else if (event.type == SDL_APP_WILLENTERBACKGROUND) {
+                freezeWatch.Transition(event.type==SDL_QUIT?"Application exit cleanup":"Background media cleanup");
+                gPersistTrace=true;
                 heapOwnerWatch.Stop();
                 dashboard.StopScan();
                 updater.Stop();
                 Trace("sdl-background-event");
                 dashboard.PrepareSystemBackground();
+                backgroundCleanupPending=true;
                 foreground = false;
                 touchHeld=false;
                 wiiRemote.Reset();
@@ -9934,6 +11768,8 @@ int main(int, char **) {
             } else if (event.type == SDL_APP_DIDENTERFOREGROUND) {
                 heapOwnerWatch.Start(visualRemote.Enabled() && !launchRequested);
                 foreground = true;
+                freezeWatch.Active(true);
+                gPersistTrace=false;
                 dashboard.ResumeSystemForeground();
                 wiiRemote.Reset();
                 inputResume.Arm();
@@ -9944,6 +11780,9 @@ int main(int, char **) {
                 previousCounter=SDL_GetPerformanceCounter();
             }
         }
+        if(backgroundCleanupPending)continue;
+        freezeWatch.Beat(1);
+        const auto profileInputStart=Dashboard::ProfileClock();
         if (!running) break;
         // No drawing or storage access once a title transition has started.
         // Keep pumping events so SDL can release the foreground to the next app.
@@ -9959,14 +11798,6 @@ int main(int, char **) {
         const std::string visualCommand = visualRemote.Poll();
         if (visualCommand == "stats") visualRemote.ReplyStats(dashboard.PerformanceStats());
         else if (visualCommand == "videostats") visualRemote.ReplyStats(dashboard.VideoStats());
-        else if (visualCommand == "videoisolateon" || visualCommand == "videoisolateoff") {
-            dashboard.IsolateVideo(visualCommand == "videoisolateon");
-            visualRemote.ReplyStats(dashboard.VideoStats());
-        }
-        else if (visualCommand == "videowakeon" || visualCommand == "videowakeoff") {
-            VideoDecoderWakePriority(visualCommand == "videowakeon");
-            visualRemote.ReplyStats("{\"decoder_wake_priority\":" + std::string(visualCommand == "videowakeon"?"true":"false") + "}");
-        }
         else if (visualCommand == "next" || visualCommand == "previous") {
             if (!dashboard.OverlayOpen()) dashboard.Move(visualCommand == "next" ? 1 : -1);
             visualRemote.ReplyStats(dashboard.VideoStats());
@@ -9989,17 +11820,34 @@ int main(int, char **) {
         if(!gamePadReady) input={};
         dashboard.UpdateSystemIndicators(gamePadReady,input.battery);
         input.hold&=0x0006fffcu;input.trigger&=0x0006fffcu; // Rebuild stick directions from analog axes, not VPAD emulation bits.
-        wiiRemote.Merge(input,ticks);
-        static uint32_t previousStickDirections=0;
+        VPADStatus remoteInput{};
+        wiiRemote.Merge(remoteInput,ticks);
         const uint32_t stickDirections=StickButton::Directions(input.leftStick.x,input.leftStick.y)|StickButton::RightDirections(input.rightStick.x,input.rightStick.y);
         input.hold|=stickDirections;input.trigger|=stickDirections&~previousStickDirections;
-        previousStickDirections=stickDirections;
+        const bool padTouch = input.tpNormal.touched;
+        const bool padActive = input.hold || input.trigger || padTouch ||
+            std::abs(input.leftStick.x) >= .28f || std::abs(input.leftStick.y) >= .32f ||
+            std::abs(input.rightStick.x) >= .28f || std::abs(input.rightStick.y) >= .32f;
+        const bool padPressed = input.trigger || (input.hold & ~previousPadHold) || (padTouch && !previousPadTouch);
+        const bool remotePressed = remoteInput.trigger || (remoteInput.hold & ~previousRemoteHold);
+        const auto source = inputResume.Select(ticks,gamePadReady,padActive,padPressed || padTouch,remoteInput.hold,remotePressed);
+        dashboard.ProfileControllerInput(wiiRemote.HasProSample(),gamePadReady,input.trigger!=0,
+            padPressed && inputResume.Allowed() && source==DashboardInputRouter::Source::GamePad);
+        if(gamePadReady){previousStickDirections=stickDirections;previousPadHold=input.hold;previousPadTouch=padTouch;}
+        previousRemoteHold=remoteInput.hold;
+        if(source!=previousInputSource){
+            heldHorizontal=heldVertical=heldPage=0;
+            previousInputSource=source;
+        }
+        if(!inputResume.Allowed())input={};
+        else if(source==DashboardInputRouter::Source::Remote)input=remoteInput;
         dashboard.SetControlHeld(input.hold|input.trigger,input.trigger);
         if(dashboard.OverlayOpen()||input.trigger)dashboard.CancelHomeSwipe();
         if(dashboard.CapturingBinding()) {
             dashboard.CaptureBinding(input.hold|input.trigger);
             // The assignment gesture belongs only to capture, including its hold.
-            inputResume.Arm();heldHorizontal=heldVertical=heldPage=0;touchHeld=false;
+            if(!dashboard.CapturingBinding())inputResume.Arm();
+            heldHorizontal=heldVertical=heldPage=0;touchHeld=false;
             dashboard.Render(delta);continue;
         }
         if(dashboard.DemoInput(input.hold || input.trigger || input.tpNormal.touched ||
@@ -10053,8 +11901,11 @@ int main(int, char **) {
                 if(point.touched&&point.validity==VPAD_VALID&&!touchHeld)dashboard.SystemOverlayTouch(point.x,point.y);touchHeld=point.touched;}
             if(dashboard.GalleryOpen())dashboard.GalleryInput(dx,dy,input.trigger&VPAD_BUTTON_A,input.trigger&VPAD_BUTTON_B);
             else dashboard.HomeNavigate(dx,dy,input.trigger&VPAD_BUTTON_A,input.trigger&VPAD_BUTTON_B);
-            if(dashboard.ConsumeShutdown()){dashboard.StopMusic();OSShutdown();running=false;continue;}
+            if(dashboard.ConsumeShutdown()){freezeWatch.Transition("Requested power off cleanup");dashboard.FinishSettingsSave();dashboard.StopMusic();freezeWatch.CleanExit();OSShutdown();running=false;continue;}
             dashboard.Render(delta);continue;
+        }
+        if(!dashboard.OverlayOpen() && dashboard.GlassFooterAvailable() && (input.trigger&VPAD_BUTTON_STICK_L)){
+            dashboard.FocusSystemButtons();dashboard.Render(delta);continue;
         }
         if(dashboard.CanOpenAlphabet() && dashboard.ButtonPressed(ControlAction::Alphabet,input.trigger))dashboard.OpenAlphabet();
         if(dashboard.AlphabetOpen()){
@@ -10095,9 +11946,15 @@ int main(int, char **) {
             if(gamePadReady){VPADGetTPCalibratedPointEx(VPAD_CHAN_0,VPAD_TP_1280X720,&point,&input.tpNormal);
                 if(point.touched&&point.validity==VPAD_VALID&&!launchOptionsTouchHeld){x=point.x;y=point.y;}}
             launchOptionsTouchHeld=gamePadReady&&point.touched;
-            const int direction=popupDirection(input);
+            static int lastX=0,lastY=0;
+            const int sx=input.leftStick.x>.48f?1:input.leftStick.x<-.48f?-1:0;
+            const int sy=input.leftStick.y>.48f?-1:input.leftStick.y<-.48f?1:0;
+            const int direction=(input.trigger&VPAD_BUTTON_UP)?-1:(input.trigger&VPAD_BUTTON_DOWN)?1:sy!=lastY?sy:0;
+            const int horizontal=(input.trigger&VPAD_BUTTON_RIGHT)?1:(input.trigger&VPAD_BUTTON_LEFT)?-1:sx!=lastX?sx:0;
+            lastX=sx;lastY=sy;
             dashboard.LaunchOptionsInput(direction,input.trigger&VPAD_BUTTON_A,input.trigger&VPAD_BUTTON_B,x,y,
-                                         input.trigger&VPAD_BUTTON_PLUS);
+                                         input.trigger&VPAD_BUTTON_PLUS,
+                                         horizontal,input.trigger&VPAD_BUTTON_Y);
             heldHorizontal=heldVertical=0;touchHeld=false;dashboard.Render(delta);continue;
         }
         std::uint32_t previewHold=input.hold;
@@ -10107,10 +11964,7 @@ int main(int, char **) {
         dashboard.VideoInput(!(inspectionInput && dashboard.VideoBehindInspection()) && (input.hold || input.trigger || input.tpNormal.touched ||
             std::abs(input.leftStick.x)>.28f || std::abs(input.leftStick.y)>.32f ||
             std::abs(input.rightStick.x)>.28f || std::abs(input.rightStick.y)>.32f));
-        const bool neutral = input.hold==0 && input.trigger==0 &&
-            std::abs(input.leftStick.x)<.28f && std::abs(input.leftStick.y)<.32f &&
-            std::abs(input.rightStick.x)<.28f && std::abs(input.rightStick.y)<.32f && !input.tpNormal.touched;
-        if(!inputResume.Allows(ticks,neutral)) {
+        if(!inputResume.Allowed()) {
             heldHorizontal=heldVertical=0;
             touchHeld=false;
             dashboard.Render(delta);
@@ -10166,11 +12020,13 @@ int main(int, char **) {
                 if(!touchHeld) {
                     touchStartX=touch.x; touchStartY=touch.y;
                     zoomSliderHeld=!modalInput && !dashboard.DetailsOpen() && dashboard.SettingsZoomTouch(touch.x,touch.y);
+                    numberTouchHeld=!zoomSliderHeld&&!modalInput&&!dashboard.DetailsOpen()&&dashboard.SettingsNumericTouch(touch.x,touch.y,ticks,true);
                 } else if(zoomSliderHeld)dashboard.SettingsZoomTouch(touch.x,touch.y,true);
+                else if(numberTouchHeld)dashboard.SettingsNumericTouch(touch.x,touch.y,ticks,false);
                 touchLastX=touch.x; touchLastY=touch.y; touchHeld=true;
             } else if(!touch.touched && touchHeld) {
                 touchHeld=false;
-                if(!zoomSliderHeld && std::abs(touchLastX-touchStartX)<60) {
+                if(!zoomSliderHeld && !numberTouchHeld && std::abs(touchLastX-touchStartX)<60) {
                     if(modalInput)dashboard.InjectionTouch(touchStartX,touchStartY);
                     else if(dashboard.DetailsOpen()) dashboard.DetailsTouch(touchStartX,touchStartY,touchLastY-touchStartY);
                     else dashboard.SettingsTouch(touchStartX,touchStartY,touchLastY-touchStartY);
@@ -10188,8 +12044,8 @@ int main(int, char **) {
                 }
                 if(dashboard.ButtonPressed(ControlAction::FocusSystemButtons,actionTrigger))dashboard.FocusSystemButtons();
                 const bool consumed=dashboard.HomeNavigate(move,(verticalEdge||verticalRepeat)?vertical:0,
-                    dashboard.ButtonPressed(ControlAction::Launch,actionTrigger),input.trigger&VPAD_BUTTON_B);
-                if(dashboard.ConsumeShutdown()){dashboard.StopMusic();OSShutdown();running=false;continue;}
+                    dashboard.SystemButtonsFocused()?bool(input.trigger&VPAD_BUTTON_A):dashboard.ButtonPressed(ControlAction::Launch,actionTrigger),input.trigger&VPAD_BUTTON_B);
+                if(dashboard.ConsumeShutdown()){freezeWatch.Transition("Requested power off cleanup");dashboard.FinishSettingsSave();dashboard.StopMusic();freezeWatch.CleanExit();OSShutdown();running=false;continue;}
                 if(consumed){dashboard.Render(delta);continue;}
             }
             const bool libraryInput=!dashboard.OverlayOpen();
@@ -10203,7 +12059,8 @@ int main(int, char **) {
                 else dashboard.CloseCoverInspect();
             }
             else if (dashboard.SettingsOpen()) {
-                dashboard.SettingsInput(horizontalEdge?horizontal:0,(verticalEdge||verticalRepeat)?vertical:0,
+                if(dashboard.ButtonPressed(ControlAction::SettingsHelp,input.trigger))dashboard.ToggleSettingsHelp();
+                else dashboard.SettingsInput(dashboard.SettingsHeldHorizontal(horizontal,horizontalEdge,ticks),(verticalEdge||verticalRepeat)?vertical:0,
                     input.trigger&VPAD_BUTTON_A,input.trigger&VPAD_BUTTON_B,input.trigger&VPAD_BUTTON_X,
                     input.trigger&VPAD_BUTTON_Y,input.trigger&VPAD_BUTTON_PLUS);
             }
@@ -10236,6 +12093,7 @@ int main(int, char **) {
             if((installedLaunch || dialogLaunch || optionLaunch || (!modalInput&&(dashboard.ConsumeDetailsLaunch() || (libraryInput && !dashboard.OverlayOpen() &&
                 dashboard.ButtonPressed(ControlAction::Launch,actionTrigger))))) && dashboard.Selected()) {
                 if(dashboard.GateTitleInstall(game)){dashboard.Render(delta);continue;}
+                dashboard.FinishSettingsSave();
                 const GameEntry historyGame=game;
                 dashboard.DismissVideo();
                 if(!optionLaunch&&!dialogLaunch)dashboard.ClearLaunchOverride(); // plain A uses the default
@@ -10251,7 +12109,7 @@ int main(int, char **) {
                         SDL_Event pending;
                         while(SDL_PollEvent(&pending)) {
                             if(pending.type==SDL_QUIT){running=false;dashboard.StopMusic();return false;}
-                            if(pending.type==SDL_APP_WILLENTERBACKGROUND){dashboard.PrepareSystemBackground();foreground=false;touchHeld=false;wiiRemote.Reset();inputResume.Arm();heldHorizontal=heldVertical=0;Trace("vc-background-input-reset-complete-v2");return false;}
+                            if(pending.type==SDL_APP_WILLENTERBACKGROUND){freezeWatch.Transition("Background during launch preparation");gPersistTrace=true;dashboard.PrepareSystemBackground();backgroundCleanupPending=true;foreground=false;touchHeld=false;wiiRemote.Reset();inputResume.Arm();heldHorizontal=heldVertical=0;Trace("vc-background-input-reset-complete-v2");return false;}
                         }
                         VPADStatus pad{};VPADReadError error;
                         const bool ready=VPADRead(VPAD_CHAN_0,&pad,1,&error)>0&&error==VPAD_READ_SUCCESS;
@@ -10275,15 +12133,15 @@ int main(int, char **) {
                 // Complete the visual transition before dispatching any title.
                 // Keep SDL/ProcUI events alive: HOME/background or B cancels it.
                 const auto animateLaunch=[&] {
-                    if(!dashboard.BeginLaunchAnimation())return true;
+                    if(!dashboard.BeginLaunchAnimation()){freezeWatch.Active(false);return true;}
                     const Uint32 started=SDL_GetTicks();
                     bool completed=false;
                     while(running&&foreground) {
                         SDL_Event event;
-                        while(SDL_PollEvent(&event)) {
+                        while(!backgroundCleanupPending&&SDL_PollEvent(&event)) {
                             if(event.type==SDL_QUIT)running=false;
                             if(event.type==SDL_APP_WILLENTERBACKGROUND) {
-                                dashboard.PrepareSystemBackground();foreground=false;
+                                freezeWatch.Transition("Background during launch preparation");gPersistTrace=true;dashboard.PrepareSystemBackground();backgroundCleanupPending=true;foreground=false;
                                 heapOwnerWatch.Stop();
                             }
                         }
@@ -10300,6 +12158,7 @@ int main(int, char **) {
                     }
                     dashboard.EndLaunchAnimation();
                     inputResume.Arm();heldHorizontal=heldVertical=0;touchHeld=false;
+                    if(completed)freezeWatch.Active(false);
                     return completed;
                 };
                 const auto launchPlan=dashboard.ConsumeLaunchPlan();
@@ -10419,11 +12278,12 @@ int main(int, char **) {
             }
             const auto requestedHomebrew=dashboard.ConsumeHomebrewRequest();
             if(running&&!launchRequested&&!requestedHomebrew.empty()) {
+                dashboard.FinishSettingsSave();
                 dashboard.SetStatus("OPENING EMULATOR ROM BROWSER",10000);dashboard.Render(delta);
                 const auto prepared=RPXLoader_PrepareLaunchFromSD(requestedHomebrew.c_str());
                 if(prepared==RPX_LOADER_RESULT_SUCCESS) {
                     if(!UFlowReturn::Arm()){dashboard.SetStatus("CANNOT SAVE RETURN-TO-UFLOW REQUEST",10000);continue;}
-                    dashboard.StopMusic();const auto result=RPXLoader_LaunchPreparedHomebrew();
+                    freezeWatch.Active(false);dashboard.StopMusic();const auto result=RPXLoader_LaunchPreparedHomebrew();
                     if(result==RPX_LOADER_RESULT_SUCCESS)launchRequested=true;
                     else{UFlowReturn::Clear();dashboard.ApplyMusic();dashboard.SetStatus(RPXLoader_GetStatusStr(result),10000);}
                 } else dashboard.SetStatus(RPXLoader_GetStatusStr(prepared),10000);
@@ -10432,12 +12292,15 @@ int main(int, char **) {
                 dashboard.StartScan();
             }
         }
+        freezeWatch.Beat(2);
+        dashboard.ProfileInput(Dashboard::ProfileClock()-profileInputStart);
         if (running && !launchRequested) dashboard.Render(delta);
         // Render is already paced by the display flip. An additional sleep here
         // steals 4ms from the next frame's budget. Background event-pumping above
         // still sleeps, and does not submit any rendering work.
     }
     heapOwnerWatch.Stop();
+    freezeWatch.Transition("Final application teardown");
     Trace("render-loop-stopped");
     }
     Trace("dashboard-destroyed");
@@ -10465,6 +12328,7 @@ int main(int, char **) {
     USBStorage::Unmount();
     SDL_Quit();
     Trace("sdl-quit-complete");
+    freezeWatch.CleanExit();
     if(mounted) {
         Trace("sd-unmount-request",true);
         WHBUnmountSdCard();
@@ -10485,17 +12349,37 @@ int main(int argc, char **argv) {
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND); InitSmoothFonts();
     bool ok;
     { std::vector<GameEntry> games; Dashboard dashboard(renderer, games);
-      if(std::string(argv[1])=="supportchecks")ok=dashboard.CheckSupport(argv[2]);
+      if(std::string(argv[1])=="skinscenechecks")ok=dashboard.CheckSkinScenes(argv[2]);
+      else if(std::string(argv[1])=="typesavechecks")ok=dashboard.CheckContentTypeSave(argv[2]);
+      else if(std::string(argv[1])=="glasspopupchecks")ok=dashboard.CheckGlassPopups(argv[2]);
+      else if(std::string(argv[1])=="contentlayoutchecks")ok=dashboard.CheckContentLayouts(argv[2]);
+      else if(std::string(argv[1])=="cartridgeperfchecks")ok=dashboard.CheckCartridgePerformance(argv[2]);
+      else if(std::string(argv[1])=="boxcolorchecks")ok=dashboard.CheckBoxColor(argv[2]);
+      else if(std::string(argv[1])=="mediafallbackchecks")ok=dashboard.CheckMediaBoxFallback(argv[2]);
+      else if(std::string(argv[1])=="modelchecks")ok=dashboard.CheckPreparedModels(argv[2]);
+      else if(std::string(argv[1])=="wiiureference")ok=dashboard.CheckWiiUMenuReference(argv[2]);
+      else if(std::string(argv[1])=="wiiuchecks")ok=dashboard.CheckWiiUMenu(argv[2]);
+      else if(std::string(argv[1])=="neschecks")ok=dashboard.CheckNesCartridge(argv[2]);
+      else if(std::string(argv[1])=="sneschecks")ok=dashboard.CheckSnesCartridge(argv[2]);
+      else if(std::string(argv[1])=="cartridgechecks")ok=dashboard.CheckAdditionalCartridges(argv[2]);
+      else if(std::string(argv[1])=="uforcecompletechecks")ok=dashboard.CheckUForceComplete(argv[2]);
+      else if(std::string(argv[1])=="uforcepopupchecks")ok=dashboard.CheckUForcePopups(argv[2]);
+      else if(std::string(argv[1])=="uforcechecks")ok=dashboard.CheckUForce(argv[2]);
+      else if(std::string(argv[1])=="supportchecks")ok=dashboard.CheckSupport(argv[2]);
       else if(std::string(argv[1])=="draftchecks")ok=dashboard.CheckDraftExit(argv[2]);
       else if(std::string(argv[1])=="scanchecks")ok=dashboard.CheckScanDialog(argv[2]);
       else if(std::string(argv[1])=="asyncbrowserchecks")ok=dashboard.CheckAsyncBrowser(argv[2]);
       else if(std::string(argv[1])=="asyncartworkchecks")ok=dashboard.CheckAsyncArtwork(argv[2]);
       else if(std::string(argv[1])=="artworkmemorychecks")ok=dashboard.CheckArtworkWorkingSet(argv[2]);
+      else if(std::string(argv[1])=="homevideochecks")ok=dashboard.CheckHomeVideoTransition();
       else if(std::string(argv[1])=="detailsvideochecks")ok=dashboard.CheckDetailsMediaVideo(argv[2]);
       else if(std::string(argv[1])=="homeupgradechecks")ok=dashboard.CheckHomeUpgrade(argv[2]);
       else if(std::string(argv[1])=="switchchecks")ok=dashboard.CheckSwitch(argv[2]);
       else if(std::string(argv[1])=="demochecks")ok=dashboard.CheckDemo(argv[2]);
       else if(std::string(argv[1])=="titleinstallchecks")ok=dashboard.CheckTitleInstaller();
+      else if(std::string(argv[1])=="numberdefaultschecks")ok=dashboard.CheckNumberDefaults(argv[2]);
+      else if(std::string(argv[1])=="settingshelpchecks")ok=dashboard.CheckSettingsHelp(argv[2]);
+      else if(std::string(argv[1])=="glassfooterchecks")ok=dashboard.CheckGlassFooter(argv[2]);
       else if(std::string(argv[1])=="alphabetchecks")ok=dashboard.CheckAlphabet(argv[2]);
       else if(std::string(argv[1])=="searchchecks")ok=dashboard.CheckSearch(argv[2]);
       else if(std::string(argv[1])=="sortingchecks")ok=dashboard.CheckSorting(argv[2]);

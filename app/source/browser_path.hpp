@@ -21,6 +21,13 @@ inline std::string Child(const std::string &path,const std::string &name){
     const auto base=Normalize(path);return base+(base.back()=='/'?"":"/")+name;
 }
 inline bool Container(const std::string &path){const auto p=Normalize(path);return p=="fs:/"||p=="fs:/vol";}
+template<class Exists> inline std::string NearestDirectory(std::string path,Exists exists){
+    if(path.empty())path="fs:/vol/external01";
+    if(path.rfind("fs:/",0)!=0&&path.rfind("usb1:/",0)!=0)return "fs:/vol";
+    path=Normalize(path);
+    while(!Container(path)&&!exists(path))path=Parent(path);
+    return path;
+}
 // CafeOS namespace parents need not support readdir/stat even when a mounted
 // child is accessible. Keep the virtual parent navigable, probe real volumes.
 template<class CanOpen> inline void AddNamespaceEntries(const std::string &path,std::vector<std::string> &names,CanOpen canOpen){

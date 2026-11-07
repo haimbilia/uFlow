@@ -17,9 +17,9 @@ include $(DEVKITPRO)/wut/share/wut_rules
 WUMS_ROOT := $(DEVKITPRO)/wums
 TARGET := uFlow
 BUILD := build
-SOURCES := source vendor/monocypher vendor/fatfs
+SOURCES := source vendor/monocypher vendor/fatfs vendor/bloopair/source
 DATA := data
-INCLUDES :=
+INCLUDES := vendor/bloopair/include
 
 CFLAGS := -g -Wall -Wextra -O2 -ffunction-sections $(MACHDEP)
 CFLAGS += $(INCLUDE) -D__WIIU__ -D__WUT__
@@ -66,7 +66,7 @@ else
 .PHONY: all
 DEPENDS := $(OFILES:.o=.d)
 all: $(OUTPUT).wuhb
-$(OUTPUT).wuhb: $(OUTPUT).rpx ../content/ui/logo.png ../content/ui/startup.mp4 $(wildcard ../content/skins/glass/background.mp4) $(wildcard ../content/sounds/*) ../content/updates/cacert.pem ../content/updates/install-helper.rpx
+$(OUTPUT).wuhb: $(OUTPUT).rpx $(wildcard ../content/controllers/*) ../content/ui/logo.png ../content/ui/startup.mp4 $(wildcard ../content/skins/glass/background.mp4) $(wildcard ../content/sounds/*) ../content/updates/cacert.pem ../content/updates/install-helper.rpx
 $(OUTPUT).rpx: $(OUTPUT).elf
 $(OUTPUT).elf: $(OFILES) $(foreach dir,$(LIBDIRS),$(wildcard $(dir)/lib/libSDL2.a))
 $(OFILES_SOURCES): $(HFILES)

@@ -10,10 +10,14 @@
 #include <mbedtls/aes.h>
 #include <mbedtls/sha1.h>
 #include <malloc.h>
+#include <ctime>
 
 FSAClientHandle fsaClient=-1;
 namespace {
 Setup::Progress callback;
+std::ofstream preparationLog;
+std::string preparationStep,preparationSlot;
+void PreparationNote(const std::string &text){preparationStep=text;while(!preparationStep.empty() && (preparationStep.back()=='\n' || preparationStep.back()=='\r'))preparationStep.pop_back();if(preparationLog.is_open()){preparationLog<<text;if(text.empty()||text.back()!='\n')preparationLog<<'\n';preparationLog.flush();Setup::Need(bool(preparationLog),"Cannot write vWii diagnostic report (check SD free space)");}}
 std::vector<Vwii::Title> prepared;
 Vwii::Bytes Digest(const Vwii::Bytes &b){Vwii::Bytes out(20);Setup::Need(mbedtls_sha1_ret(b.data(),b.size(),out.data())==0,"SHA-1 failed");return out;}
 struct Aligned {void *data;explicit Aligned(size_t n):data(memalign(64,(n+63)&~size_t(63))){Setup::Need(data!=nullptr,"Not enough memory for console I/O");}~Aligned(){free(data);}};
@@ -63,7 +67,7 @@ extern "C" bool GetCommonKeyFromOTP(uint8_t index,uint8_t out[16]){
 extern "C" void sha(const unsigned char *data,unsigned int size,unsigned char *out){Setup::Need(mbedtls_sha1_ret(data,size,out)==0,"Content hash failed");}
 extern "C" void aes_cbc_dec(unsigned char *key,unsigned char *iv,unsigned char *in,unsigned int n,unsigned char *out){Crypt(false,key,iv,in,n,out);}
 extern "C" void aes_cbc_enc(unsigned char *key,unsigned char *iv,unsigned char *in,unsigned int n,unsigned char *out){Crypt(true,key,iv,in,n,out);}
-extern "C" void WUPI_putstr(const char *text){Setup::Tick(callback,"Preparing vWii prerequisites",text,0,0);}
+extern "C" void WUPI_putstr(const char *text){if(std::string(text).starts_with("Preparing cIOS slot "))preparationSlot=text;PreparationNote(text);Setup::Tick(callback,"Preparing vWii prerequisites",text,0,0);}
 bool State::AppRunning(){Setup::Tick(callback,"Preparing vWii prerequisites","Reading this console's base IOS",0,0);return true;}
 bool ReadFileToBuffer(const std::string &path,uint8_t **out,uint32_t *size){
     auto bytes=path.starts_with("fs:")?ReadBundle(path):ReadFsa(path);*out=static_cast<uint8_t*>(memalign(64,(bytes.size()+63)&~size_t(63)));Setup::Need(*out!=nullptr,"Console buffer allocation failed");memcpy(*out,bytes.data(),bytes.size());*size=bytes.size();return true;
@@ -118,7 +122,7 @@ Title Forwarder(const Bytes &wad){
     for(unsigned i=0;i<n;++i){size_t p=0x1e4+i*36;auto size=U64(t.tmd,p+8);Setup::Need(size<=32*1024*1024,"Oversized WAD content");auto encrypted=take(align(size));Bytes data(encrypted.size());memset(iv,0,16);iv[0]=t.tmd[p+4];iv[1]=t.tmd[p+5];Crypt(false,key,iv,encrypted.data(),encrypted.size(),data.data());data.resize(size);t.contents[U32(t.tmd,p)]=std::move(data);}
     memset(key,0,16);Validate(t,Digest);return t;
 }
-Session PrepareConsole(const std::string &bundle,uint32_t selected,const std::vector<Setup::FileDef> &files,const Setup::Progress &progress){
+Session PrepareConsoleImpl(const std::string &bundle,uint32_t selected,const std::vector<Setup::FileDef> &files,const Setup::Progress &progress){
     Session s;if(!Required(selected))return s;callback=progress;prepared.clear();s.console=std::make_shared<Console>();
     for(const auto &f:files)if(f.path.starts_with("apps/d2x-cios-installer-vwii/"))Setup::Need(Setup::HashFile(bundle+"/payload/"+f.path,callback,"Verifying cIOS modules")==f.hash,"cIOS module hash mismatch");
     const auto root=bundle+"/console/";Title hbc;hbc.id=HBC;
@@ -130,6 +134,29 @@ Session PrepareConsole(const std::string &bundle,uint32_t selected,const std::ve
     std::vector<std::pair<int,bool>> slots;PrepareD2XBatch(bundle+"/payload/apps/d2x-cios-installer-vwii/d2x-v11-beta3-vWii",slots);
     Setup::Need(slots.size()==4&&std::all_of(slots.begin(),slots.end(),[](auto p){return p.second;})&&prepared.size()==6,"Could not prepare all vWii cIOS slots; no console writes performed");
     s.plan=Prepare(*s.console,std::move(prepared),Digest);callback={};return s;
+}
+Session PrepareConsole(const std::string &sd,const std::string &bundle,uint32_t selected,const std::vector<Setup::FileDef> &files,const Setup::Progress &progress){
+    if(!Required(selected))return {};
+    const std::string report=sd+"/.uflow-setup/vwii-preparation.txt";
+    Setup::Directory(sd,".uflow-setup");
+    preparationLog.open(report,std::ios::app);
+    Setup::Need(bool(preparationLog),"Cannot open SD:/.uflow-setup/vwii-preparation.txt (check SD free space)");
+    struct Cleanup {~Cleanup(){preparationLog.close();preparationLog.clear();callback={};prepared.clear();}} cleanup;
+    preparationStep.clear();preparationSlot.clear();
+    preparationLog<<"\n=== vWii preparation diagnostics v1; selected="<<selected<<"; build="<<__DATE__<<" "<<__TIME__<<"; timestamp="<<std::time(nullptr)<<" ===\n";
+    try {
+        PreparationNote("Validating bundled modules, HBC and forwarder");
+        auto session=PrepareConsoleImpl(bundle,selected,files,progress);
+        PreparationNote("PREPARATION COMPLETE; console writes have not started");
+        return session;
+    }catch(const std::exception &e){
+        const std::string reason=e.what();
+        preparationLog<<"FAILED: "<<reason<<"\nLast step: "<<preparationStep<<"\nNo console writes performed.\n";preparationLog.flush();
+        const bool saved=bool(preparationLog);
+        std::string detail=preparationSlot+preparationStep;
+        if(detail.size()>180)detail=detail.substr(0,177)+"...";
+        throw std::runtime_error(detail+"\n"+reason+"\n"+(saved?"Send SD:/.uflow-setup/vwii-preparation.txt":"Report write failed; check SD free space."));
+    }
 }
 void InstallConsole(Session &s,const std::string &report,const Setup::Progress &progress){
     if(!s.console)return;

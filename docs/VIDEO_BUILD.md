@@ -1,3 +1,5 @@
+2026.11.7: use uflow-builder:handoff (tools/handoff-diagnostics.Dockerfile, based on uflow-builder:video-import) for app builds. It retains the SDL foreground diagnostic hooks. The HOME/video investigation is unresolved. No Cloud overlay is needed or permitted for the public build.
+
 # Cover cache GPU safety (2026-10-02)
 
 The native BC3 importer is currently disabled after a console GPU hang. The app

@@ -1,0 +1,27 @@
+{
+  "system": "32x",
+  "source_triangles": 188540,
+  "dimensions_mm": [
+    113.0,
+    73.0,
+    17.044319152832053
+  ],
+  "levels": [
+    {
+      "triangles": 1800,
+      "vertices": 900,
+      "watertight": true,
+      "winding_consistent": true
+    },
+    {
+      "triangles": 900,
+      "vertices": 450,
+      "watertight": true,
+      "winding_consistent": true
+    }
+  ],
+  "source_sha256": {
+    "SEGA-32X_CartridgeShell-Bottom.stl": "d5b8c92f1a743ade08523e1c95566c22a45e3b1e9dd09d2ac99073dcd0a2be1e",
+    "SEGA-32X_CartridgeShell-Top.stl": "b7b0fad4859a61b5d6d1f8339ad62df6a95014bfce7c94d1546d6becd8f6dbb6"
+  }
+}

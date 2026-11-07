@@ -1,0 +1,1596 @@
+{
+  "schema": 1,
+  "particles": 48,
+  "trails": 1,
+  "nodes": [
+    {
+      "kind": "image",
+      "x": 0,
+      "y": 0,
+      "width": 1280,
+      "height": 720,
+      "source": "cosmos.png"
+    },
+    {
+      "kind": "text",
+      "x": 40,
+      "y": 32,
+      "width": 500,
+      "height": 48,
+      "text": "uFlow / Afterglow",
+      "scale": 3,
+      "color": "ink"
+    },
+    {
+      "kind": "text",
+      "x": 40,
+      "y": 100,
+      "width": 1000,
+      "height": 28,
+      "text": "{content-type} / {position}",
+      "scale": 1,
+      "color": "ink"
+    },
+    {
+      "kind": "library",
+      "x": 40,
+      "y": 142,
+      "width": 1200,
+      "height": 490,
+      "source": "thumbnail",
+      "columns": 4,
+      "rows": 2,
+      "gap": 20
+    },
+    {
+      "kind": "button",
+      "x": 40,
+      "y": 658,
+      "width": 140,
+      "height": 42,
+      "text": "Play",
+      "action": "launch",
+      "radius": 14
+    },
+    {
+      "kind": "button",
+      "x": 194,
+      "y": 658,
+      "width": 140,
+      "height": 42,
+      "text": "Details",
+      "action": "details",
+      "radius": 14
+    },
+    {
+      "kind": "button",
+      "x": 348,
+      "y": 658,
+      "width": 140,
+      "height": 42,
+      "text": "Settings",
+      "action": "settings",
+      "radius": 14
+    },
+    {
+      "kind": "button",
+      "x": 502,
+      "y": 658,
+      "width": 140,
+      "height": 42,
+      "text": "Search",
+      "action": "search",
+      "radius": 14
+    },
+    {
+      "kind": "button",
+      "x": 932,
+      "y": 658,
+      "width": 140,
+      "height": 42,
+      "text": "Previous",
+      "action": "previous-library",
+      "radius": 14
+    },
+    {
+      "kind": "button",
+      "x": 1086,
+      "y": 658,
+      "width": 140,
+      "height": 42,
+      "text": "Next",
+      "action": "next-library",
+      "radius": 14
+    },
+    {
+      "kind": "text",
+      "x": 1000,
+      "y": 24,
+      "width": 240,
+      "height": 48,
+      "text": "{profile}",
+      "style": "profile",
+      "scale": 1,
+      "color": "ink"
+    }
+  ],
+  "variants": [
+    {
+      "type": 0,
+      "layout": -1,
+      "nodes": [
+        {
+          "kind": "image",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "source": "cosmos.png",
+          "fit": "cover"
+        },
+        {
+          "kind": "effects",
+          "x": 0,
+          "y": 110,
+          "width": 1280,
+          "height": 540,
+          "source": "focus",
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "x": 38,
+          "y": 30,
+          "width": 160,
+          "height": 46,
+          "text": "uFlow",
+          "scale": 3,
+          "color": "accent"
+        },
+        {
+          "kind": "button",
+          "x": 214,
+          "y": 27,
+          "width": 120,
+          "height": 44,
+          "text": "Games",
+          "action": "all",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 350,
+          "y": 27,
+          "width": 150,
+          "height": 44,
+          "text": "Favorites",
+          "action": "favorites",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 516,
+          "y": 27,
+          "width": 140,
+          "height": 44,
+          "text": "Settings",
+          "action": "settings",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "text",
+          "x": 1000,
+          "y": 24,
+          "width": 240,
+          "height": 48,
+          "text": "{profile}",
+          "scale": 1,
+          "color": "ink",
+          "style": "profile"
+        },
+        {
+          "kind": "text",
+          "x": 1080,
+          "y": 105,
+          "width": 160,
+          "height": 28,
+          "text": "{position}",
+          "scale": 1,
+          "color": "accent"
+        },
+        {
+          "kind": "library",
+          "x": 0,
+          "y": 145,
+          "width": 1280,
+          "height": 470,
+          "source": "box",
+          "columns": 5,
+          "rows": 1,
+          "gap": 16,
+          "mode": "carousel",
+          "radius": 12
+        },
+        {
+          "kind": "button",
+          "x": 274,
+          "y": 548,
+          "width": 228,
+          "height": 46,
+          "text": "{play}  Play",
+          "action": "launch",
+          "radius": 26,
+          "style": "primary"
+        },
+        {
+          "kind": "text",
+          "x": 236,
+          "y": 626,
+          "width": 304,
+          "height": 44,
+          "text": "{title}",
+          "scale": 1,
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 40,
+          "y": 686,
+          "width": 770,
+          "height": 25,
+          "text": "{play} Play  /  {details} Details  /  {favorite} Favorite  /  {sort} Sort",
+          "scale": 1,
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 46,
+          "y": 105,
+          "width": 750,
+          "height": 30,
+          "text": "{content-type}",
+          "scale": 2,
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "x": 790,
+          "y": 687,
+          "width": 180,
+          "height": 25,
+          "scale": 1,
+          "text": "{system-buttons} Menu",
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 800,
+          "y": 106,
+          "width": 260,
+          "height": 26,
+          "scale": 1,
+          "text": "Model carousel",
+          "color": "ink"
+        }
+      ]
+    },
+    {
+      "type": 0,
+      "layout": 1,
+      "nodes": [
+        {
+          "kind": "image",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "source": "cosmos.png",
+          "fit": "cover"
+        },
+        {
+          "kind": "effects",
+          "x": 0,
+          "y": 110,
+          "width": 1280,
+          "height": 540,
+          "source": "focus",
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "x": 38,
+          "y": 30,
+          "width": 160,
+          "height": 46,
+          "text": "uFlow",
+          "scale": 3,
+          "color": "accent"
+        },
+        {
+          "kind": "button",
+          "x": 214,
+          "y": 27,
+          "width": 120,
+          "height": 44,
+          "text": "Games",
+          "action": "all",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 350,
+          "y": 27,
+          "width": 150,
+          "height": 44,
+          "text": "Favorites",
+          "action": "favorites",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 516,
+          "y": 27,
+          "width": 140,
+          "height": 44,
+          "text": "Settings",
+          "action": "settings",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "text",
+          "x": 1000,
+          "y": 24,
+          "width": 240,
+          "height": 48,
+          "text": "{profile}",
+          "scale": 1,
+          "color": "ink",
+          "style": "profile"
+        },
+        {
+          "kind": "text",
+          "x": 1080,
+          "y": 105,
+          "width": 160,
+          "height": 28,
+          "text": "{position}",
+          "scale": 1,
+          "color": "accent"
+        },
+        {
+          "kind": "library",
+          "x": 0,
+          "y": 145,
+          "width": 1280,
+          "height": 470,
+          "source": "cover",
+          "columns": 5,
+          "rows": 1,
+          "gap": 16,
+          "mode": "carousel",
+          "radius": 12
+        },
+        {
+          "kind": "button",
+          "x": 274,
+          "y": 548,
+          "width": 228,
+          "height": 46,
+          "text": "{play}  Play",
+          "action": "launch",
+          "radius": 26,
+          "style": "primary"
+        },
+        {
+          "kind": "text",
+          "x": 236,
+          "y": 626,
+          "width": 304,
+          "height": 44,
+          "text": "{title}",
+          "scale": 1,
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 40,
+          "y": 686,
+          "width": 770,
+          "height": 25,
+          "text": "{play} Play  /  {details} Details  /  {favorite} Favorite  /  {sort} Sort",
+          "scale": 1,
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 46,
+          "y": 105,
+          "width": 750,
+          "height": 30,
+          "text": "{content-type}",
+          "scale": 2,
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "x": 790,
+          "y": 687,
+          "width": 180,
+          "height": 25,
+          "scale": 1,
+          "text": "{system-buttons} Menu",
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 800,
+          "y": 106,
+          "width": 260,
+          "height": 26,
+          "scale": 1,
+          "text": "Cover carousel",
+          "color": "ink"
+        }
+      ]
+    },
+    {
+      "type": 0,
+      "layout": 2,
+      "nodes": [
+        {
+          "kind": "image",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "source": "cosmos.png",
+          "fit": "cover"
+        },
+        {
+          "kind": "effects",
+          "x": 0,
+          "y": 110,
+          "width": 1280,
+          "height": 540,
+          "source": "focus",
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "x": 38,
+          "y": 30,
+          "width": 160,
+          "height": 46,
+          "text": "uFlow",
+          "scale": 3,
+          "color": "accent"
+        },
+        {
+          "kind": "button",
+          "x": 214,
+          "y": 27,
+          "width": 120,
+          "height": 44,
+          "text": "Games",
+          "action": "all",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 350,
+          "y": 27,
+          "width": 150,
+          "height": 44,
+          "text": "Favorites",
+          "action": "favorites",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 516,
+          "y": 27,
+          "width": 140,
+          "height": 44,
+          "text": "Settings",
+          "action": "settings",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "text",
+          "x": 1000,
+          "y": 24,
+          "width": 240,
+          "height": 48,
+          "text": "{profile}",
+          "scale": 1,
+          "color": "ink",
+          "style": "profile"
+        },
+        {
+          "kind": "text",
+          "x": 1080,
+          "y": 105,
+          "width": 160,
+          "height": 28,
+          "text": "{position}",
+          "scale": 1,
+          "color": "accent"
+        },
+        {
+          "kind": "library",
+          "x": 34,
+          "y": 145,
+          "width": 1212,
+          "height": 470,
+          "source": "cover",
+          "columns": 5,
+          "rows": 1,
+          "gap": 16,
+          "mode": "row",
+          "radius": 12
+        },
+        {
+          "kind": "button",
+          "x": 526,
+          "y": 625,
+          "width": 228,
+          "height": 46,
+          "text": "{play}  Play",
+          "action": "launch",
+          "radius": 26,
+          "style": "primary"
+        },
+        {
+          "kind": "text",
+          "x": 40,
+          "y": 625,
+          "width": 460,
+          "height": 44,
+          "text": "{title}",
+          "scale": 1,
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 40,
+          "y": 686,
+          "width": 770,
+          "height": 25,
+          "text": "{play} Play  /  {details} Details  /  {favorite} Favorite  /  {sort} Sort",
+          "scale": 1,
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 46,
+          "y": 105,
+          "width": 750,
+          "height": 30,
+          "text": "{content-type}",
+          "scale": 2,
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "x": 790,
+          "y": 687,
+          "width": 180,
+          "height": 25,
+          "scale": 1,
+          "text": "{system-buttons} Menu",
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 800,
+          "y": 106,
+          "width": 260,
+          "height": 26,
+          "scale": 1,
+          "text": "Cover row",
+          "color": "ink"
+        }
+      ]
+    },
+    {
+      "type": 0,
+      "layout": 7,
+      "nodes": [
+        {
+          "kind": "image",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "source": "cosmos.png",
+          "fit": "cover"
+        },
+        {
+          "kind": "effects",
+          "x": 0,
+          "y": 110,
+          "width": 1280,
+          "height": 540,
+          "source": "focus",
+          "color": "accent"
+        },
+        {
+          "kind": "panel",
+          "x": 0,
+          "y": 0,
+          "width": 184,
+          "height": 720,
+          "color": "background",
+          "opacity": 215
+        },
+        {
+          "kind": "text",
+          "x": 28,
+          "y": 34,
+          "width": 145,
+          "height": 45,
+          "text": "uFlow",
+          "scale": 3,
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "x": 28,
+          "y": 78,
+          "width": 150,
+          "height": 28,
+          "text": "AFTERGLOW",
+          "scale": 1,
+          "color": "accent"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 166,
+          "width": 144,
+          "height": 48,
+          "text": "All games",
+          "action": "all",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 230,
+          "width": 144,
+          "height": 48,
+          "text": "Favorites",
+          "action": "favorites",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 294,
+          "width": 144,
+          "height": 48,
+          "text": "Search",
+          "action": "search",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 358,
+          "width": 144,
+          "height": 48,
+          "text": "Settings",
+          "action": "settings",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "text",
+          "x": 218,
+          "y": 38,
+          "width": 640,
+          "height": 54,
+          "text": "Box models",
+          "scale": 4,
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 550,
+          "y": 110,
+          "width": 400,
+          "height": 28,
+          "text": "{content-type}",
+          "scale": 1,
+          "color": "accent"
+        },
+        {
+          "kind": "button",
+          "x": 218,
+          "y": 104,
+          "width": 110,
+          "height": 40,
+          "text": "All",
+          "action": "all",
+          "radius": 14
+        },
+        {
+          "kind": "button",
+          "x": 342,
+          "y": 104,
+          "width": 170,
+          "height": 40,
+          "text": "Sort / Find",
+          "action": "sort",
+          "radius": 14
+        },
+        {
+          "kind": "library",
+          "x": 208,
+          "y": 165,
+          "width": 1040,
+          "height": 480,
+          "source": "box",
+          "columns": 4,
+          "rows": 2,
+          "gap": 20,
+          "radius": 12
+        },
+        {
+          "kind": "text",
+          "x": 1000,
+          "y": 84,
+          "width": 240,
+          "height": 20,
+          "text": "{position}",
+          "scale": 1,
+          "color": "ink"
+        },
+        {
+          "kind": "button",
+          "x": 32,
+          "y": 668,
+          "width": 210,
+          "height": 38,
+          "text": "Previous system",
+          "action": "previous-library",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 250,
+          "y": 668,
+          "width": 210,
+          "height": 38,
+          "text": "Next system",
+          "action": "next-library",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "text",
+          "text": "{profile}",
+          "color": "ink",
+          "scale": 1,
+          "style": "profile",
+          "x": 1000,
+          "y": 24,
+          "width": 240,
+          "height": 48
+        },
+        {
+          "kind": "text",
+          "x": 500,
+          "y": 676,
+          "width": 450,
+          "height": 25,
+          "scale": 1,
+          "text": "{system-buttons} Menu / B Back",
+          "color": "ink"
+        }
+      ]
+    },
+    {
+      "type": 3,
+      "layout": 0,
+      "nodes": [
+        {
+          "kind": "image",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "source": "cosmos.png",
+          "fit": "cover"
+        },
+        {
+          "kind": "image",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "source": "background",
+          "fit": "cover",
+          "opacity": 255
+        },
+        {
+          "kind": "effects",
+          "x": 610,
+          "y": 65,
+          "width": 660,
+          "height": 425,
+          "source": "ambient",
+          "color": "accent"
+        },
+        {
+          "kind": "image",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "source": "shade.png",
+          "fit": "cover"
+        },
+        {
+          "kind": "text",
+          "x": 38,
+          "y": 30,
+          "width": 160,
+          "height": 46,
+          "text": "uFlow",
+          "scale": 3,
+          "color": "accent"
+        },
+        {
+          "kind": "button",
+          "x": 214,
+          "y": 27,
+          "width": 120,
+          "height": 44,
+          "text": "Games",
+          "action": "all",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 350,
+          "y": 27,
+          "width": 150,
+          "height": 44,
+          "text": "Favorites",
+          "action": "favorites",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 516,
+          "y": 27,
+          "width": 140,
+          "height": 44,
+          "text": "Settings",
+          "action": "settings",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "text",
+          "x": 1000,
+          "y": 24,
+          "width": 240,
+          "height": 48,
+          "text": "{profile}",
+          "scale": 1,
+          "color": "ink",
+          "style": "profile"
+        },
+        {
+          "kind": "text",
+          "x": 56,
+          "y": 142,
+          "width": 500,
+          "height": 28,
+          "text": "{content-type}",
+          "scale": 1,
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "x": 56,
+          "y": 174,
+          "width": 610,
+          "height": 132,
+          "text": "{title}",
+          "scale": 5,
+          "color": "ink",
+          "style": "logo-title"
+        },
+        {
+          "kind": "text",
+          "x": 58,
+          "y": 322,
+          "width": 520,
+          "height": 54,
+          "text": "{description}",
+          "scale": 1,
+          "color": "ink"
+        },
+        {
+          "kind": "button",
+          "x": 56,
+          "y": 390,
+          "width": 202,
+          "height": 50,
+          "text": "{play}  Play",
+          "action": "launch",
+          "radius": 26,
+          "style": "primary"
+        },
+        {
+          "kind": "button",
+          "x": 278,
+          "y": 390,
+          "width": 194,
+          "height": 50,
+          "text": "{details}  Details",
+          "action": "details",
+          "radius": 26,
+          "style": "outline"
+        },
+        {
+          "kind": "library",
+          "x": 42,
+          "y": 486,
+          "width": 1196,
+          "height": 144,
+          "source": "background",
+          "columns": 5,
+          "rows": 1,
+          "gap": 20,
+          "mode": "row",
+          "radius": 12
+        },
+        {
+          "kind": "text",
+          "x": 40,
+          "y": 686,
+          "width": 770,
+          "height": 25,
+          "text": "{play} Play  /  {details} Details  /  {favorite} Favorite  /  {sort} Sort",
+          "scale": 1,
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 790,
+          "y": 687,
+          "width": 180,
+          "height": 25,
+          "scale": 1,
+          "text": "{system-buttons} Menu",
+          "color": "ink"
+        }
+      ]
+    },
+    {
+      "type": 3,
+      "layout": -1,
+      "nodes": [
+        {
+          "kind": "image",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "source": "cosmos.png",
+          "fit": "cover"
+        },
+        {
+          "kind": "effects",
+          "x": 0,
+          "y": 110,
+          "width": 1280,
+          "height": 540,
+          "source": "focus",
+          "color": "accent"
+        },
+        {
+          "kind": "panel",
+          "x": 0,
+          "y": 0,
+          "width": 184,
+          "height": 720,
+          "color": "background",
+          "opacity": 215
+        },
+        {
+          "kind": "text",
+          "x": 28,
+          "y": 34,
+          "width": 145,
+          "height": 45,
+          "text": "uFlow",
+          "scale": 3,
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "x": 28,
+          "y": 78,
+          "width": 150,
+          "height": 28,
+          "text": "AFTERGLOW",
+          "scale": 1,
+          "color": "accent"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 166,
+          "width": 144,
+          "height": 48,
+          "text": "All games",
+          "action": "all",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 230,
+          "width": 144,
+          "height": 48,
+          "text": "Favorites",
+          "action": "favorites",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 294,
+          "width": 144,
+          "height": 48,
+          "text": "Search",
+          "action": "search",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 358,
+          "width": 144,
+          "height": 48,
+          "text": "Settings",
+          "action": "settings",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "text",
+          "x": 218,
+          "y": 38,
+          "width": 640,
+          "height": 54,
+          "text": "Your games",
+          "scale": 4,
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 550,
+          "y": 110,
+          "width": 400,
+          "height": 28,
+          "text": "{content-type}",
+          "scale": 1,
+          "color": "accent"
+        },
+        {
+          "kind": "button",
+          "x": 218,
+          "y": 104,
+          "width": 110,
+          "height": 40,
+          "text": "All",
+          "action": "all",
+          "radius": 14
+        },
+        {
+          "kind": "button",
+          "x": 342,
+          "y": 104,
+          "width": 170,
+          "height": 40,
+          "text": "Sort / Find",
+          "action": "sort",
+          "radius": 14
+        },
+        {
+          "kind": "library",
+          "x": 208,
+          "y": 165,
+          "width": 1040,
+          "height": 480,
+          "source": "thumbnail",
+          "columns": 4,
+          "rows": 2,
+          "gap": 20,
+          "radius": 12
+        },
+        {
+          "kind": "text",
+          "x": 1000,
+          "y": 84,
+          "width": 240,
+          "height": 20,
+          "text": "{position}",
+          "scale": 1,
+          "color": "ink"
+        },
+        {
+          "kind": "button",
+          "x": 32,
+          "y": 668,
+          "width": 210,
+          "height": 38,
+          "text": "Previous system",
+          "action": "previous-library",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 250,
+          "y": 668,
+          "width": 210,
+          "height": 38,
+          "text": "Next system",
+          "action": "next-library",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "text",
+          "text": "{profile}",
+          "color": "ink",
+          "scale": 1,
+          "style": "profile",
+          "x": 1000,
+          "y": 24,
+          "width": 240,
+          "height": 48
+        },
+        {
+          "kind": "text",
+          "x": 500,
+          "y": 676,
+          "width": 450,
+          "height": 25,
+          "scale": 1,
+          "text": "{system-buttons} Menu / B Back",
+          "color": "ink"
+        }
+      ]
+    },
+    {
+      "type": 1,
+      "layout": -1,
+      "nodes": [
+        {
+          "kind": "image",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "source": "cosmos.png",
+          "fit": "cover"
+        },
+        {
+          "kind": "effects",
+          "x": 0,
+          "y": 110,
+          "width": 1280,
+          "height": 540,
+          "source": "focus",
+          "color": "accent"
+        },
+        {
+          "kind": "panel",
+          "x": 0,
+          "y": 0,
+          "width": 184,
+          "height": 720,
+          "color": "background",
+          "opacity": 215
+        },
+        {
+          "kind": "text",
+          "x": 28,
+          "y": 34,
+          "width": 145,
+          "height": 45,
+          "text": "uFlow",
+          "scale": 3,
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "x": 28,
+          "y": 78,
+          "width": 150,
+          "height": 28,
+          "text": "AFTERGLOW",
+          "scale": 1,
+          "color": "accent"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 166,
+          "width": 144,
+          "height": 48,
+          "text": "All games",
+          "action": "all",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 230,
+          "width": 144,
+          "height": 48,
+          "text": "Favorites",
+          "action": "favorites",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 294,
+          "width": 144,
+          "height": 48,
+          "text": "Search",
+          "action": "search",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 358,
+          "width": 144,
+          "height": 48,
+          "text": "Settings",
+          "action": "settings",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "text",
+          "x": 218,
+          "y": 38,
+          "width": 640,
+          "height": 54,
+          "text": "Game logos",
+          "scale": 4,
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 550,
+          "y": 110,
+          "width": 400,
+          "height": 28,
+          "text": "{content-type}",
+          "scale": 1,
+          "color": "accent"
+        },
+        {
+          "kind": "button",
+          "x": 218,
+          "y": 104,
+          "width": 110,
+          "height": 40,
+          "text": "All",
+          "action": "all",
+          "radius": 14
+        },
+        {
+          "kind": "button",
+          "x": 342,
+          "y": 104,
+          "width": 170,
+          "height": 40,
+          "text": "Sort / Find",
+          "action": "sort",
+          "radius": 14
+        },
+        {
+          "kind": "library",
+          "x": 208,
+          "y": 165,
+          "width": 1040,
+          "height": 480,
+          "source": "logo",
+          "columns": 4,
+          "rows": 2,
+          "gap": 20,
+          "radius": 12
+        },
+        {
+          "kind": "text",
+          "x": 1000,
+          "y": 84,
+          "width": 240,
+          "height": 20,
+          "text": "{position}",
+          "scale": 1,
+          "color": "ink"
+        },
+        {
+          "kind": "button",
+          "x": 32,
+          "y": 668,
+          "width": 210,
+          "height": 38,
+          "text": "Previous system",
+          "action": "previous-library",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 250,
+          "y": 668,
+          "width": 210,
+          "height": 38,
+          "text": "Next system",
+          "action": "next-library",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "text",
+          "text": "{profile}",
+          "color": "ink",
+          "scale": 1,
+          "style": "profile",
+          "x": 1000,
+          "y": 24,
+          "width": 240,
+          "height": 48
+        },
+        {
+          "kind": "text",
+          "x": 500,
+          "y": 676,
+          "width": 450,
+          "height": 25,
+          "scale": 1,
+          "text": "{system-buttons} Menu / B Back",
+          "color": "ink"
+        }
+      ]
+    },
+    {
+      "type": 2,
+      "layout": -1,
+      "nodes": [
+        {
+          "kind": "image",
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 720,
+          "source": "cosmos.png",
+          "fit": "cover"
+        },
+        {
+          "kind": "effects",
+          "x": 0,
+          "y": 110,
+          "width": 1280,
+          "height": 540,
+          "source": "focus",
+          "color": "accent"
+        },
+        {
+          "kind": "panel",
+          "x": 0,
+          "y": 0,
+          "width": 184,
+          "height": 720,
+          "color": "background",
+          "opacity": 215
+        },
+        {
+          "kind": "text",
+          "x": 28,
+          "y": 34,
+          "width": 145,
+          "height": 45,
+          "text": "uFlow",
+          "scale": 3,
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "x": 28,
+          "y": 78,
+          "width": 150,
+          "height": 28,
+          "text": "AFTERGLOW",
+          "scale": 1,
+          "color": "accent"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 166,
+          "width": 144,
+          "height": 48,
+          "text": "All games",
+          "action": "all",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 230,
+          "width": 144,
+          "height": 48,
+          "text": "Favorites",
+          "action": "favorites",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 294,
+          "width": 144,
+          "height": 48,
+          "text": "Search",
+          "action": "search",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 20,
+          "y": 358,
+          "width": 144,
+          "height": 48,
+          "text": "Settings",
+          "action": "settings",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "text",
+          "x": 218,
+          "y": 38,
+          "width": 640,
+          "height": 54,
+          "text": "Game media",
+          "scale": 4,
+          "color": "ink"
+        },
+        {
+          "kind": "text",
+          "x": 550,
+          "y": 110,
+          "width": 400,
+          "height": 28,
+          "text": "{content-type}",
+          "scale": 1,
+          "color": "accent"
+        },
+        {
+          "kind": "button",
+          "x": 218,
+          "y": 104,
+          "width": 110,
+          "height": 40,
+          "text": "All",
+          "action": "all",
+          "radius": 14
+        },
+        {
+          "kind": "button",
+          "x": 342,
+          "y": 104,
+          "width": 170,
+          "height": 40,
+          "text": "Sort / Find",
+          "action": "sort",
+          "radius": 14
+        },
+        {
+          "kind": "library",
+          "x": 208,
+          "y": 165,
+          "width": 1040,
+          "height": 480,
+          "source": "media",
+          "columns": 4,
+          "rows": 2,
+          "gap": 20,
+          "radius": 12
+        },
+        {
+          "kind": "text",
+          "x": 1000,
+          "y": 84,
+          "width": 240,
+          "height": 20,
+          "text": "{position}",
+          "scale": 1,
+          "color": "ink"
+        },
+        {
+          "kind": "button",
+          "x": 32,
+          "y": 668,
+          "width": 210,
+          "height": 38,
+          "text": "Previous system",
+          "action": "previous-library",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "button",
+          "x": 250,
+          "y": 668,
+          "width": 210,
+          "height": 38,
+          "text": "Next system",
+          "action": "next-library",
+          "radius": 14,
+          "style": "text"
+        },
+        {
+          "kind": "text",
+          "text": "{profile}",
+          "color": "ink",
+          "scale": 1,
+          "style": "profile",
+          "x": 1000,
+          "y": 24,
+          "width": 240,
+          "height": 48
+        },
+        {
+          "kind": "text",
+          "x": 500,
+          "y": 676,
+          "width": 450,
+          "height": 25,
+          "scale": 1,
+          "text": "{system-buttons} Menu / B Back",
+          "color": "ink"
+        }
+      ]
+    }
+  ]
+}

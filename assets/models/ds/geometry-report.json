@@ -1,0 +1,27 @@
+{
+  "system": "ds",
+  "source_sha256": "e7d0cb07ad0f3d4dbed5c5d13fdc75ad2290d00af4ff03c2d2b174ed3befc493",
+  "source_triangles": 1359,
+  "dimensions": [
+    34.84874197570614,
+    35.0,
+    2.640922847378435
+  ],
+  "source_watertight": false,
+  "levels": [
+    {
+      "triangles": 664,
+      "vertices": 424,
+      "watertight": false
+    },
+    {
+      "triangles": 524,
+      "vertices": 354,
+      "watertight": false
+    }
+  ],
+  "credit": "@littlengvfx",
+  "companion_sha256": [
+    "7c9b70d121963ab2616e18cb3b16aaa47e7d517117a287fb9bdb4f9cccfb501e"
+  ]
+}

@@ -34,9 +34,9 @@ void SetValue(UserSettings &settings, const std::string &key, int value) {
     else if (key == "background_motion") settings.backgroundMotion = enabled;
     else if (key == "startup_video") settings.startupVideo = enabled;
     else if (key == "demo_mode") settings.demoMode = enabled;
+    else if (key == "freeze_notifications") settings.freezeNotifications = enabled;
     else if (key == "demo_idle_seconds") settings.demoIdleSeconds = std::clamp(value,DemoMode::MinSeconds,DemoMode::MaxSeconds);
     else if (key == "preload_builtin_covers") settings.preloadBuiltInCovers = enabled;
-    else if (key == "use_box_art") settings.useBoxArt = enabled;
     else if (key == "use_backgrounds") settings.useBackgrounds = enabled;
     else if (key == "background_transparency") settings.backgroundTransparency = std::clamp(value, 0, 100);
     else if (key == "use_logos") settings.useLogos = enabled;
@@ -53,9 +53,9 @@ void SetValue(UserSettings &settings, const std::string &key, int value) {
     else if (key == "logo_layout") settings.logoLayout = std::clamp(value, 0, CoverPresentation::LayoutCount(CoverPresentation::Logo)-1);
     else if (key == "thumbnail_layout") settings.thumbnailLayout = std::clamp(value, 0, CoverPresentation::LayoutCount(CoverPresentation::Thumbnails)-1);
     else if (key == "media_layout") settings.mediaLayout = std::clamp(value, 0, CoverPresentation::LayoutCount(CoverPresentation::Media)-1);
-    else if (key == "alphabet_filter_mode") settings.alphabetFilterMode = enabled;
+    else if (key == "alphabet_default_filter") settings.alphabetFilterMode = enabled;
     else if (key == "sort_mode") settings.sortMode = std::clamp(value, 0, 6);
-    else if (key == "skin") settings.skin = std::clamp(value, 0, 3);
+    else if (key == "skin") settings.skin = std::clamp(value, 0, 5);
     else if (key == "welcome_dismissed") settings.welcomeDismissed = enabled;
     else if (key == "theme") settings.theme = std::clamp(value, 0, AccentThemes::Count-1);
     else if (key == "start_tab") settings.startTab = std::max(value, 0);
@@ -74,7 +74,7 @@ void SetValue(UserSettings &settings, const std::string &key, int value) {
 UserSettings LoadSettings() {
     UserSettings settings;
     settings.startOnBoot=UFlowStartup::Enabled();
-    std::ifstream input(kPath);
+    auto input=SavedFile::Open(kPath);
     std::string line;
     int controlsVersion=0;
     while (std::getline(input, line)) {
@@ -138,9 +138,11 @@ UserSettings LoadSettings() {
     return settings;
 }
 
-void SaveSettings(const UserSettings &settings) {
+bool SaveSettingsChecked(const UserSettings &settings) {
     if (!IsDirectory(kDirectory)) mkdir(kDirectory, 0777);
-    std::ofstream output(kPath, std::ios::trunc);
+    const std::string temporary=std::string(kPath)+".tmp";
+    std::ofstream output(temporary, std::ios::trunc);
+    if(!output)return false;
     output << "wrap_navigation=" << settings.wrapNavigation << '\n';
     output << "title_installer_enabled=" << settings.titleInstallerEnabled << '\n';
     output << "show_installed=" << settings.showInstalled << '\n';
@@ -151,9 +153,9 @@ void SaveSettings(const UserSettings &settings) {
     output << "background_motion=" << settings.backgroundMotion << '\n';
     output << "startup_video=" << settings.startupVideo << '\n';
     output << "demo_mode=" << settings.demoMode << '\n';
+    output << "freeze_notifications=" << settings.freezeNotifications << '\n';
     output << "demo_idle_seconds=" << std::clamp(settings.demoIdleSeconds,DemoMode::MinSeconds,DemoMode::MaxSeconds) << '\n';
     output << "preload_builtin_covers=" << settings.preloadBuiltInCovers << '\n';
-    output << "use_box_art=" << settings.useBoxArt << '\n';
     output << "use_backgrounds=" << settings.useBackgrounds << '\n';
     output << "background_transparency=" << std::clamp(settings.backgroundTransparency, 0, 100) << '\n';
     output << "use_logos=" << settings.useLogos << '\n';
@@ -165,7 +167,7 @@ void SaveSettings(const UserSettings &settings) {
     output << "inspection_zoom=" << std::clamp(settings.inspectionZoom,2,8) << '\n';
     output << "cover_zoom=" << std::clamp(settings.coverZoom, CoverZoom::Min, CoverZoom::Max) << '\n';
     output << "cover_layout=" << settings.coverLayout << '\n';
-    output << "alphabet_filter_mode=" << settings.alphabetFilterMode << '\n';
+    output << "alphabet_default_filter=" << settings.alphabetFilterMode << '\n';
     output << "sort_mode=" << settings.sortMode << '\n';
     output << "skin_id=" << settings.skinId << '\n';
     output << "skin=" << settings.skin << '\n';
@@ -190,7 +192,13 @@ void SaveSettings(const UserSettings &settings) {
         for(size_t i=0;i<settings.combos[action].size();++i){if(i)output<<',';output<<settings.combos[action][i];}
         output << '\n';
     }
+    output.flush();const bool written=bool(output);output.close();
+    if(!written||output.fail()){std::remove(temporary.c_str());return false;}
+    if(SavedFile::Commit(temporary,kPath))return true;
+    std::remove(temporary.c_str());return false;
 }
+
+void SaveSettings(const UserSettings &settings) { (void)SaveSettingsChecked(settings); }
 
 const char *OnOff(bool value) {
     return value ? "ON" : "OFF";
@@ -212,7 +220,7 @@ bool SetStartOnBoot(bool enabled) {
 const char *ControlActionName(ControlAction action) {
     static constexpr const char *names[] = {"LAUNCH GAME", "TITLE DETAILS", "FAVORITE", "OPEN SETTINGS",
         "PREVIOUS LIBRARY", "NEXT LIBRARY", "PAGE BACK", "PAGE FORWARD", "ZOOM FRONT COVER", "ZOOM BACK COVER",
-        "LAUNCH OPTIONS", "SORT LIBRARY", "A-Z SELECTOR", "NAVIGATE LEFT", "NAVIGATE RIGHT", "NAVIGATE UP", "NAVIGATE DOWN", "SYSTEM BUTTONS", "NEXT LAYOUT"};
+        "LAUNCH OPTIONS", "SORT LIBRARY", "A-Z SELECTOR", "NAVIGATE LEFT", "NAVIGATE RIGHT", "NAVIGATE UP", "NAVIGATE DOWN", "SYSTEM BUTTONS", "NEXT LAYOUT", "SETTINGS HELP"};
     const int index = static_cast<int>(action);
     return index >= 0 && index < static_cast<int>(ControlAction::Count) ? names[index] : "UNKNOWN";
 }

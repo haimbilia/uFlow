@@ -30,8 +30,8 @@ class GlassMaterial {
                 const float glint = std::exp(-((x-13.f)*(x-13.f)+(y-10.f)*(y-10.f))/55.f);
                 // Clear centre, bright outer rim and an inner caustic describe
                 // thickness without the old opaque grey fill/dark lower border.
-                r=245; g=250; b=253;
-                a=static_cast<Uint8>(coverage*std::min(255.f,32+188*rim*light+62*innerRim+37*sheen+65*glint));
+                r=245; g=250; b=246;
+                a=static_cast<Uint8>(coverage*std::min(255.f,48+165*rim*light+42*innerRim+44*sheen+45*glint));
             }
             auto *row = reinterpret_cast<Uint32 *>(static_cast<Uint8 *>(image->pixels) + y * image->pitch);
             row[x] = SDL_MapRGBA(image->format, r, g, b, a);

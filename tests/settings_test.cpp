@@ -7,15 +7,19 @@
 int main() {
     const std::string root="fs:/vol/external01/wiiu/apps/uFlow";
     assert(!std::filesystem::exists(root));
+    assert(LoadSettings().bindings[int(ControlAction::SettingsHelp)]==4);
+    assert(LoadSettings().freezeNotifications);
     assert(LoadSettings().backgroundTransparency==50);
     assert(LoadSettings().menuSoundsEnabled && LoadSettings().menuSoundsVolume==35);
     std::filesystem::create_directories(root);
     const auto path=root+"/uflow.cfg";
-    std::ofstream(path)<<"skin=1\nuse_backgrounds=1\nstartup_video=0\npreload_builtin_covers=0\n";
-    auto legacy=LoadSettings();
+    std::ofstream(path)<<"alphabet_filter_mode=1\nskin=1\nuse_backgrounds=1\nstartup_video=0\npreload_builtin_covers=0\n";
+    auto legacy=LoadSettings();assert(!legacy.alphabetFilterMode); // Old temporary Filter mode is not a default choice.
     legacy.menuSoundsEnabled=false;legacy.menuSoundsVolume=65;SaveSettings(legacy);
     assert(!LoadSettings().menuSoundsEnabled && LoadSettings().menuSoundsVolume==65);
     assert(!legacy.demoMode && legacy.demoIdleSeconds==30);
+    legacy.bindings[int(ControlAction::SettingsHelp)]=0x1000;SaveSettings(legacy);assert(LoadSettings().bindings[int(ControlAction::SettingsHelp)]==0x1000);
+    legacy.freezeNotifications=false;SaveSettings(legacy);assert(!LoadSettings().freezeNotifications);
     legacy.demoMode=true;legacy.demoIdleSeconds=75;SaveSettings(legacy);
     assert(LoadSettings().demoMode && LoadSettings().demoIdleSeconds==75);
     std::ofstream(path)<<"demo_idle_seconds=9999\n";assert(LoadSettings().demoIdleSeconds==600);
@@ -85,16 +89,16 @@ int main() {
     std::ofstream(path)<<"cover_zoom=invalid\n";assert(LoadSettings().coverZoom==120);
     assert(LoadSettings().coverType==CoverPresentation::Box);
     for(int type=0;type<3;++type) {
-        legacy.coverType=type;legacy.coverLayout=8;legacy.logoLayout=6;legacy.mediaLayout=3;
+        legacy.coverType=type;legacy.coverLayout=8;legacy.logoLayout=6;legacy.mediaLayout=4;
         SaveSettings(legacy);const auto round=LoadSettings();
-        assert(round.coverType==type && round.coverLayout==8 && round.logoLayout==6 && round.mediaLayout==3);
+        assert(round.coverType==type && round.coverLayout==8 && round.logoLayout==6 && round.mediaLayout==4);
     }
     for(int value=50;value<=200;value+=5){legacy.coverSpacing=value;SaveSettings(legacy);assert(LoadSettings().coverSpacing==value);}
     for(int old=0;old<3;++old){std::ofstream(path)<<"cover_spacing="<<old<<'\n';assert(LoadSettings().coverSpacing==75+old*25);}
     std::ofstream(path)<<"cover_spacing_percent=999\ncover_type=999\nlogo_layout=999\nmedia_layout=-1\ncover_layout=999\n";
     auto bounded=LoadSettings();assert(bounded.coverSpacing==200 && bounded.coverType==3 && bounded.logoLayout==6 && bounded.mediaLayout==0 && bounded.coverLayout==9);
     std::ofstream(path)<<"cover_spacing_percent=invalid\n";assert(LoadSettings().coverSpacing==100);
-    for(int skin:{2,3})for(int layout:{0,1}) {
+    for(int skin:{2,3,4,5})for(int layout:{0,1,2}) {
         legacy.skin=skin;legacy.coverType=CoverPresentation::Thumbnails;legacy.thumbnailLayout=layout;
         SaveSettings(legacy);const auto restored=LoadSettings();
         assert(restored.skin==skin && restored.coverType==CoverPresentation::Thumbnails && restored.thumbnailLayout==layout);
@@ -119,6 +123,7 @@ int main() {
     std::ofstream(path)<<"background_transparency=-10\n";
     assert(LoadSettings().backgroundTransparency==0);
     std::ofstream(path)<<"background_transparency=invalid\n";
+    assert(LoadSettings().freezeNotifications);
     assert(LoadSettings().backgroundTransparency==50);
     for(int value:{0,5,50,95,100}) {saved.backgroundTransparency=value;SaveSettings(saved);assert(LoadSettings().backgroundTransparency==value);}
     for(int theme=0;theme<AccentThemes::Count;++theme){
@@ -143,5 +148,13 @@ int main() {
     for(int value:{0,1,10,30}){saved.previewDelaySeconds=value;SaveSettings(saved);assert(LoadSettings().previewDelaySeconds==value);}
     std::ofstream(path)<<"preview_delay_seconds=-1\n";assert(LoadSettings().previewDelaySeconds==0);
     std::ofstream(path)<<"preview_delay_seconds=999\n";assert(LoadSettings().previewDelaySeconds==30);
+
+    // Retired toggle is ignored, without disturbing the user's chosen layout.
+    std::ofstream(path)<<"use_box_art=0\ncover_layout=2\ncover_zoom=140\n";
+    saved=LoadSettings();assert(saved.coverLayout==2 && saved.coverZoom==140);
+    SaveSettings(saved);
+    std::ifstream settingsFile(path);
+    const std::string settingsText((std::istreambuf_iterator<char>(settingsFile)),{});
+    assert(settingsText.find("use_box_art")==std::string::npos);
 
 }

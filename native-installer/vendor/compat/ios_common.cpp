@@ -52,7 +52,7 @@ std::unique_ptr<MemIOS> ReadBaseIOS(uint32_t baseIos) {
     }
     outIos->ticket = (TitleTicket*)tikBuf;
     if (outIos->ticketSize < sizeof(TitleTicket) || outIos->ticket->commonKeyIndex != 2 ||
-        (FromBE64(outIos->ticket->titleId) & 0xffffffffULL) != baseIos) return nullptr;
+        (FromBE64(outIos->ticket->titleId) & 0xffffffffULL) != baseIos) {Patcher_Log("Invalid base IOS ticket: size, vWii common-key index, or title ID mismatch\n");return nullptr;}
 
     // Read TMD
     path = "/vol/slccmpt01/title/00000001/" + ToHexString(baseIos, 8) + "/content/title.tmd";
@@ -62,15 +62,15 @@ std::unique_ptr<MemIOS> ReadBaseIOS(uint32_t baseIos) {
         return nullptr;
     }
     outIos->tmd = (TitleTmd*)tmdBuf;
-    if (outIos->tmdSize < sizeof(TitleTmd) || (FromBE64(outIos->tmd->titleId) & 0xffffffffULL) != baseIos) return nullptr;
+    if (outIos->tmdSize < sizeof(TitleTmd) || (FromBE64(outIos->tmd->titleId) & 0xffffffffULL) != baseIos) {Patcher_Log("Invalid base IOS TMD size or title ID\n");return nullptr;}
 
     // Parse TMD contents
     uint16_t numContents = FromBE16(outIos->tmd->numContents);
-    if (!numContents || numContents > 128 || outIos->tmdSize < sizeof(TitleTmd) + numContents*sizeof(TitleContentRecord)) return nullptr;
+    if (!numContents || numContents > 128 || outIos->tmdSize < sizeof(TitleTmd) + numContents*sizeof(TitleContentRecord)) {Patcher_Log("Invalid base IOS content table: count="+std::to_string(numContents)+", TMD bytes="+std::to_string(outIos->tmdSize)+"\n");return nullptr;}
     outIos->numContents = numContents;
     outIos->maxContents = numContents + 10; // Extra space for modules
     outIos->contents = (MemContent*)calloc(outIos->maxContents, sizeof(MemContent));
-    if (!outIos->contents) { outIos->numContents=0; return nullptr; }
+    if (!outIos->contents) { outIos->numContents=0; Patcher_Log("Cannot allocate base IOS content table\n");return nullptr; }
 
     // Reallocate TMD buffer to have space for maxContents
     uint32_t maxTmdSize = outIos->tmdSize + (10 * sizeof(TitleContentRecord));
@@ -107,7 +107,7 @@ std::unique_ptr<MemIOS> ReadBaseIOS(uint32_t baseIos) {
         uint8_t digest[20];
         sha(outIos->contents[i].data,outIos->contents[i].size,digest);
         if (outIos->contents[i].size != FromBE64(outIos->tmd->contents[i].size) ||
-            memcmp(digest,outIos->tmd->contents[i].hash.data(),20)) return nullptr;
+            memcmp(digest,outIos->tmd->contents[i].hash.data(),20)) {Patcher_Log("Base IOS content size/hash mismatch: cid="+ToHexString(cid,8)+", expected bytes="+std::to_string(FromBE64(outIos->tmd->contents[i].size))+", got="+std::to_string(outIos->contents[i].size)+"\n");return nullptr;}
     }
 
     return outIos;

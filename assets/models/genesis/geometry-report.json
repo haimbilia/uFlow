@@ -1,0 +1,23 @@
+{
+  "source_sha256": "86571a43c2daa98848220d99be68e1b35d4c285567f4775238d67a2528438624",
+  "dimensions_mm": [
+    108.5,
+    69.5,
+    16.5
+  ],
+  "label_mm": [
+    76.4,
+    58.7
+  ],
+  "screw_spacing_mm": 70,
+  "levels": [
+    {
+      "triangles": 1800,
+      "vertices": 906
+    },
+    {
+      "triangles": 900,
+      "vertices": 456
+    }
+  ]
+}

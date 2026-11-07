@@ -10,7 +10,7 @@
 
 enum class ControlAction {
     Launch, Details, Favorite, Settings, PreviousLibrary, NextLibrary, PageBack, PageForward,
-    ZoomFront, ZoomBack, LaunchOptions, Sort, Alphabet, NavigateLeft, NavigateRight, NavigateUp, NavigateDown, FocusSystemButtons, NextLayout, Count
+    ZoomFront, ZoomBack, LaunchOptions, Sort, Alphabet, NavigateLeft, NavigateRight, NavigateUp, NavigateDown, FocusSystemButtons, NextLayout, SettingsHelp, Count
 };
 
 namespace StickButton {
@@ -40,8 +40,8 @@ struct UserSettings {
     bool preloadBuiltInCovers = true;
     bool startupVideo = true;
     bool demoMode = false;
+    bool freezeNotifications = true;
     int demoIdleSeconds = DemoMode::DefaultSeconds;
-    bool useBoxArt = true;
     bool useBackgrounds = true;
     int backgroundTransparency = 50;
     bool useLogos = true;
@@ -73,12 +73,13 @@ struct UserSettings {
     bool startOnBoot = false;
     std::array<std::vector<uint32_t>,static_cast<int>(ControlAction::Count)> combos;
     std::uint32_t bindings[static_cast<int>(ControlAction::Count)] = {
-        0x8000, 0x1000, 0x2000, 0x0008, 0x0020, 0x0010, 0x0080, 0x0040, StickButton::RUp, StickButton::RDown, 0x0004, 0x4000, 0x20000, 0x0800|StickButton::Left, 0x0400|StickButton::Right, 0x0200|StickButton::Up, 0x0100|StickButton::Down, 0x40000, 0
+        0x8000, 0x1000, 0x2000, 0x0008, 0x0020, 0x0010, 0x0080, 0x0040, StickButton::RUp, StickButton::RDown, 0x0004, 0x4000, 0x20000, 0x0800|StickButton::Left, 0x0400|StickButton::Right, 0x0200|StickButton::Up, 0x0100|StickButton::Down, 0x40000, 0, 0x0004
     };
 };
 
 UserSettings LoadSettings();
 void SaveSettings(const UserSettings &settings);
+bool SaveSettingsChecked(const UserSettings &settings);
 const char *OnOff(bool value);
 bool SetStartOnBoot(bool enabled);
 const char *ControlActionName(ControlAction action);

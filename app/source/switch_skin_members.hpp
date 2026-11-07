@@ -7,7 +7,12 @@
         const std::string root="fs:/vol/content/skins";
 #endif
         skins_=Skin::Discover(root,"fs:/vol/external01/wiiu/apps/uFlow/skins");
-        for(const auto &skin:skins_)if(skin.id==preferences_.skinId){preferences_.skin=skin.engine;break;}
+        for(const auto &skin:skins_)if(skin.id==preferences_.skinId){preferences_.skin=skin.engine;return;}
+        // A deleted SD skin must not keep its old engine active without a package.
+        for(const auto &skin:skins_)if(skin.engine==preferences_.skin){preferences_.skinId=skin.id;return;}
+        const auto fallback=std::find_if(skins_.begin(),skins_.end(),[](const auto&s){return s.id=="glass";});
+        const auto &skin=fallback==skins_.end()?skins_.front():*fallback;
+        preferences_.skinId=skin.id;preferences_.skin=skin.engine;
     }
     const Skin::Definition &SkinSpec() const {
         for(const auto &skin:skins_)if(skin.id==preferences_.skinId&&skin.engine==preferences_.skin)return skin;
@@ -20,7 +25,9 @@
         const auto &skin=skins_[(index+direction%int(skins_.size())+int(skins_.size()))%skins_.size()];
         preferences_.skinId=skin.id;preferences_.skin=skin.engine;
         if(SwitchSkin())preferences_.coverType=CoverPresentation::Thumbnails;
+        if(UForceSkin())preferences_.thumbnailLayout=0;
     }
+    int HomeDockY() const {return WiiUMenuLayout()?650:SkinSpec().dockY;}
     bool SwitchSkin() const {return preferences_.skin>=2;}
     static Color SkinColor(const std::array<unsigned char,4> &c){return {c[0],c[1],c[2],c[3]};}
     Color SwitchBackground() const {return SkinColor(SkinSpec().background);}
@@ -85,7 +92,7 @@
     void DrawProfile(int x,int y,int size,bool label) {
         const Color ink=SwitchSkin()?SwitchInk():preferences_.skin==1?Color{48,61,71,255}:Color{237,244,255,255};
         FillSmoothDot(renderer_,x+size*.5f,y+size*.5f,size*.5f+3,{255,255,255,230});
-        FillSmoothDot(renderer_,x+size*.5f,y+size*.5f,size*.5f,{66,103,132,255});
+        FillSmoothDot(renderer_,x+size*.5f,y+size*.5f,size*.5f,UForceSkin()?SwitchMuted():Color{66,103,132,255});
         if(profileTexture_){SDL_Rect rect{x,y,size,size};SDL_RenderCopy(renderer_,profileTexture_,nullptr,&rect);}
         else {
             FillSmoothDot(renderer_,x+size*.5f,y+size*.37f,size*.17f,{239,244,249,255});
@@ -102,16 +109,16 @@
     }
     void DrawSwitchHeader() {
         DrawWallChromeShade(true);
-        const auto &skin=SkinSpec();DrawProfile(skin.avatarX,skin.avatarY,skin.avatarSize,true);
+        const auto &skin=SkinSpec();DrawProfile(skin.avatarX,WiiUMenuLayout()?16:skin.avatarY,WiiUMenuLayout()?44:skin.avatarSize,true);
         char clock[16]="12:00";
 #ifndef UFLOW_HOST_PREVIEW
         const auto now=std::time(nullptr);if(const auto *t=std::localtime(&now))std::strftime(clock,sizeof(clock),"%H:%M",t);
 #endif
-        DrawText(renderer_,clock,1030,50,3,SwitchInk(),true);
-        DrawFittedText(renderer_,LibraryLabel(CurrentLibraryId())+"   "+LibraryPosition(),610,58,300,2,SwitchInk());
+        DrawText(renderer_,clock,1030,WiiUMenuLayout()?24:50,3,SwitchInk(),true);
+        DrawFittedText(renderer_,LibraryLabel(CurrentLibraryId())+"   "+LibraryPosition(),610,WiiUMenuLayout()?32:58,300,2,SwitchInk());
         DrawSystemIndicators();
-        if(Selected())DrawFittedText(renderer_,Selected()->name,100,145,1080,3,SwitchAccent());
-        if(!searchQuery_.empty() || alphabetFilter_)DrawFittedText(renderer_,"FILTER: "+searchQuery_+(alphabetFilter_?"  "+AlphabetLabel(alphabetFilter_):""),400,105,720,1,SwitchAccent());
+        if(Selected()&&!WiiUMenuLayout())DrawFittedText(renderer_,Selected()->name,100,145,1080,3,SwitchAccent());
+        if(!searchQuery_.empty() || alphabetFilter_)DrawFittedText(renderer_,"FILTER: "+searchQuery_+(alphabetFilter_?"  "+AlphabetLabel(alphabetFilter_):""),400,WiiUMenuLayout()?60:105,720,1,SwitchAccent());
     }
     static void DrawArc(SDL_Renderer *renderer,float x,float y,float radius,float start,float end,Color color) {
         SetColor(renderer,color);
@@ -129,21 +136,21 @@
 #endif
     }
     void DrawSystemIndicators() {
-        const auto ink=SwitchInk();
-        for(int band=0;band<3;++band)DrawArc(renderer_,1120,76,float(9+band*8),-2.35f,-.79f,networkConnected_?ink:SwitchMuted());
-        FillSmoothDot(renderer_,1120,76,3,networkConnected_?ink:SwitchMuted());
-        if(!networkConnected_){SetColor(renderer_,ink);SDL_RenderDrawLine(renderer_,1100,55,1136,81);}
-        SetColor(renderer_,ink);SDL_Rect outline{1171,53,48,25};for(int i=0;i<3;++i){SDL_RenderDrawRect(renderer_,&outline);++outline.x;++outline.y;outline.w-=2;outline.h-=2;}
-        SDL_Rect nub{1219,60,5,11};SDL_RenderFillRect(renderer_,&nub);
-        if(batteryLevel_>0){SDL_Rect level{1177,59,36*batteryLevel_/6,13};SetColor(renderer_,batteryLevel_<=1?Color{237,75,75,255}:ink);SDL_RenderFillRect(renderer_,&level);}
-        else DrawText(renderer_,batteryLevel_==0?"+":"?",1195,56,2,ink,true);
+        const auto ink=SwitchInk();const int dy=WiiUMenuLayout()?-26:0;
+        for(int band=0;band<3;++band)DrawArc(renderer_,1120,76+dy,float(9+band*8),-2.35f,-.79f,networkConnected_?ink:SwitchMuted());
+        FillSmoothDot(renderer_,1120,76+dy,3,networkConnected_?ink:SwitchMuted());
+        if(!networkConnected_){SetColor(renderer_,ink);SDL_RenderDrawLine(renderer_,1100,55+dy,1136,81+dy);}
+        SetColor(renderer_,ink);SDL_Rect outline{1171,53+dy,48,25};for(int i=0;i<3;++i){SDL_RenderDrawRect(renderer_,&outline);++outline.x;++outline.y;outline.w-=2;outline.h-=2;}
+        SDL_Rect nub{1219,60+dy,5,11};SDL_RenderFillRect(renderer_,&nub);
+        if(batteryLevel_>0){SDL_Rect level{1177,59+dy,36*batteryLevel_/6,13};SetColor(renderer_,batteryLevel_<=1?Color{237,75,75,255}:ink);SDL_RenderFillRect(renderer_,&level);}
+        else DrawText(renderer_,batteryLevel_==0?"+":"?",1195,56+dy,2,ink,true);
     }
     int batteryLevel_=-1;
     bool networkInitialized_=false,networkConnected_=false;
     Uint32 networkPoll_=0,lastPadSeen_=0;
-    void DrawDockIcon(int index,int cx,int cy,Color ink) {
+    void DrawDockIcon(int index,int cx,int cy,Color ink,bool useCustom=true) {
         const auto &custom=SkinSpec().icons[index];
-        if(!custom.empty()){const auto image=textures_.Get(custom);if(image.texture){SDL_Rect r{cx-24,cy-24,48,48};SDL_RenderCopy(renderer_,image.texture,nullptr,&r);return;}}
+        if(useCustom&&!custom.empty()){const auto image=textures_.Get(custom);if(image.texture){SDL_Rect r{cx-24,cy-24,48,48};SDL_RenderCopy(renderer_,image.texture,nullptr,&r);return;}}
         SetColor(renderer_,ink);
         const auto line=[&](int x1,int y1,int x2,int y2){for(int n=-1;n<=1;++n)SDL_RenderDrawLine(renderer_,cx+x1+n,cy+y1,cx+x2+n,cy+y2);};
         const auto rect=[&](int x,int y,int w,int h){for(int n=0;n<3;++n){SDL_Rect r{cx+x+n,cy+y+n,w-2*n,h-2*n};SDL_RenderDrawRect(renderer_,&r);}};
@@ -159,15 +166,15 @@
         const auto &skin=SkinSpec();
         static constexpr const char *labels[]={"NOTIFICATIONS","WEB BROWSER","SCREENSHOTS","CONTROLLERS","SETTINGS","POWER"};
         const Color colors[]={{238,74,85,255},{234,160,20,255},{47,134,229,255},SwitchInk(),SwitchInk(),SwitchInk()};
-        for(int i=0;i<6;++i){const int cx=skin.dockX+i*skin.dockGap,cy=skin.dockY;
-            if(dockFocus_==i)FillSmoothDot(renderer_,float(cx),float(cy),42,SwitchAccent());
-            FillSmoothDot(renderer_,float(cx),float(cy),36,preferences_.skin==2?Color{255,255,255,255}:Color{73,73,73,255});
+        for(int i=0;i<6;++i){const int cx=skin.dockX+i*skin.dockGap,cy=HomeDockY();
+            if(dockFocus_==i)FillSmoothDot(renderer_,float(cx),float(cy),WiiUMenuLayout()?30:42,SwitchAccent());
+            FillSmoothDot(renderer_,float(cx),float(cy),WiiUMenuLayout()?26:36,preferences_.skin==2?Color{255,255,255,255}:Color{73,73,73,255});
             DrawDockIcon(i,cx,cy,colors[i]);
-            if(dockFocus_==i)DrawText(renderer_,labels[i],cx,cy+49,1,SwitchInk(),true);
+            if(dockFocus_==i)DrawText(renderer_,labels[i],cx,cy+(WiiUMenuLayout()?31:49),1,SwitchInk(),true);
         }
-        SetColor(renderer_,SwitchMuted());SDL_RenderDrawLine(renderer_,30,646,1250,646);
-        DrawFittedText(renderer_,std::string(ActionButton(ControlAction::FocusSystemButtons))+"  SYSTEM BUTTONS",54,675,550,2,SwitchInk());
-        DrawFittedText(renderer_,std::string(ActionButton(ControlAction::Settings))+"  OPTIONS     "+ActionButton(ControlAction::Launch)+(dockFocus_>=0?"  SELECT":"  START"),790,675,430,2,SwitchInk(),true);
+        SetColor(renderer_,SwitchMuted());SDL_RenderDrawLine(renderer_,30,WiiUMenuLayout()?695:646,1250,WiiUMenuLayout()?695:646);
+        DrawFittedText(renderer_,std::string(ActionButton(ControlAction::FocusSystemButtons))+"  SYSTEM BUTTONS",54,WiiUMenuLayout()?697:675,550,2,SwitchInk());
+        DrawFittedText(renderer_,std::string(ActionButton(ControlAction::Settings))+"  OPTIONS     "+ActionButton(ControlAction::Launch)+(dockFocus_>=0?"  SELECT":"  START"),790,WiiUMenuLayout()?697:675,430,2,SwitchInk(),true);
     }
     void DrawThumbnail(const GameEntry &game,SDL_Rect rect,bool selected,Color accent,float opacity) {
         const int edge=std::min(rect.w,rect.h);rect.x+=(rect.w-edge)/2;rect.y+=(rect.h-edge)/2;rect.w=rect.h=edge;

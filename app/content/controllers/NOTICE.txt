@@ -1,0 +1,4 @@
+Bloopair v1.1.0 by GaryOderNichts and contributors.
+GPL-2.0-or-later; see LICENSE.
+Corresponding source: https://github.com/GaryOderNichts/Bloopair/tree/v1.1.0
+The module runs at Aroma boot; restart Wii U after installation.

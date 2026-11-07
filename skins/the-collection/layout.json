@@ -1,0 +1,231 @@
+{
+  "schema": 2,
+  "nodes": [
+    {
+      "kind": "image",
+      "x": 0,
+      "y": 0,
+      "width": 1280,
+      "height": 720,
+      "source": "wood-v2.png"
+    },
+    {
+      "kind": "text",
+      "x": 38,
+      "y": 25,
+      "width": 150,
+      "height": 48,
+      "text": "uFlow",
+      "scale": 3,
+      "color": "ink"
+    },
+    {
+      "kind": "text",
+      "x": 196,
+      "y": 32,
+      "width": 300,
+      "height": 40,
+      "text": "The Collection",
+      "scale": 2,
+      "color": "ink"
+    },
+    {
+      "kind": "button",
+      "x": 490,
+      "y": 24,
+      "width": 140,
+      "height": 40,
+      "text": "All games",
+      "action": "all",
+      "radius": 20,
+      "style": "text"
+    },
+    {
+      "kind": "button",
+      "x": 635,
+      "y": 24,
+      "width": 140,
+      "height": 40,
+      "text": "Favorites",
+      "action": "favorites",
+      "radius": 20,
+      "style": "text"
+    },
+    {
+      "kind": "button",
+      "x": 780,
+      "y": 24,
+      "width": 130,
+      "height": 40,
+      "text": "Settings",
+      "action": "settings",
+      "radius": 20,
+      "style": "text"
+    },
+    {
+      "kind": "text",
+      "x": 1050,
+      "y": 24,
+      "width": 198,
+      "height": 48,
+      "text": "{profile}",
+      "scale": 1,
+      "color": "ink",
+      "style": "profile"
+    },
+    {
+      "kind": "library",
+      "x": 34,
+      "y": 52,
+      "width": 884,
+      "height": 602,
+      "source": "box",
+      "mode": "shelf",
+      "columns": 26,
+      "rows": 2,
+      "gap": 3,
+      "case-height": 200,
+      "angles": [
+        95
+      ],
+      "selected-angle": -12,
+      "selected-scale": 130,
+      "pullout": 30,
+      "animation-ms": 200,
+      "color": "muted",
+      "shelf-baselines": [
+        234,
+        552
+      ],
+      "shelf-slopes": [
+        18,
+        -14
+      ]
+    },
+    {
+      "kind": "text",
+      "x": 936,
+      "y": 179,
+      "width": 308,
+      "height": 26,
+      "text": "SELECTED GAME",
+      "scale": 1,
+      "color": "accent"
+    },
+    {
+      "kind": "text",
+      "x": 932,
+      "y": 222,
+      "width": 314,
+      "height": 143,
+      "text": "{title}",
+      "scale": 4,
+      "color": "ink"
+    },
+    {
+      "kind": "text",
+      "x": 936,
+      "y": 355,
+      "width": 300,
+      "height": 28,
+      "text": "{genre}",
+      "scale": 1,
+      "color": "ink"
+    },
+    {
+      "kind": "text",
+      "x": 936,
+      "y": 382,
+      "width": 300,
+      "height": 28,
+      "text": "{players}",
+      "scale": 1,
+      "color": "ink"
+    },
+    {
+      "kind": "button",
+      "x": 936,
+      "y": 432,
+      "width": 310,
+      "height": 70,
+      "text": "{play}   Play",
+      "action": "launch",
+      "radius": 20,
+      "style": "primary"
+    },
+    {
+      "kind": "button",
+      "x": 936,
+      "y": 530,
+      "width": 310,
+      "height": 42,
+      "text": "{favorite}   Favorite",
+      "action": "favorite",
+      "radius": 20,
+      "style": "text"
+    },
+    {
+      "kind": "button",
+      "x": 936,
+      "y": 580,
+      "width": 310,
+      "height": 42,
+      "text": "{details}   Game details",
+      "action": "details",
+      "radius": 20,
+      "style": "text"
+    },
+    {
+      "kind": "button",
+      "x": 32,
+      "y": 670,
+      "width": 220,
+      "height": 40,
+      "text": "Previous system",
+      "action": "previous-library",
+      "radius": 20,
+      "style": "text"
+    },
+    {
+      "kind": "button",
+      "x": 265,
+      "y": 670,
+      "width": 210,
+      "height": 40,
+      "text": "Next system",
+      "action": "next-library",
+      "radius": 20,
+      "style": "text"
+    },
+    {
+      "kind": "text",
+      "x": 535,
+      "y": 681,
+      "width": 255,
+      "height": 28,
+      "text": "{system-buttons}  Controls",
+      "scale": 1,
+      "color": "ink"
+    },
+    {
+      "kind": "text",
+      "x": 850,
+      "y": 681,
+      "width": 190,
+      "height": 28,
+      "text": "{sort}  Sort",
+      "scale": 1,
+      "color": "ink"
+    },
+    {
+      "kind": "text",
+      "x": 1140,
+      "y": 681,
+      "width": 110,
+      "height": 28,
+      "text": "{position}",
+      "scale": 1,
+      "color": "ink"
+    }
+  ]
+}

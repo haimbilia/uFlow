@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
@@ -13,9 +14,23 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
-#ifndef UFLOW_HOST_PREVIEW
-#include <curl/curl.h>
-#endif
+namespace {
+static_assert(std::atomic<unsigned>::is_always_lock_free);
+std::atomic<unsigned> handoffSequence{0};
+std::atomic<unsigned> handoffEvents[64]{};
+const char *HandoffName(unsigned id) {
+    static const char *names[]={"none","draw-release begin","draw-release returned","process-messages begin","process-messages returned",
+        "release callback begin","release GPU wait begin","release GPU wait succeeded","release GPU wait FAILED",
+        "scan buffers freed","MEM1 heap destroy begin","MEM1 heap destroyed","foreground heap destroyed",
+        "display enables restored","release callback complete","acquire callback begin","acquire callback complete",
+        "save callback begin","save callback complete","app GPU wait FAILED","app GPU wait succeeded"};
+    return id<std::size(names)?names[id]:"unknown";
+}
+}
+extern "C" void UFlow_HandoffStage(unsigned stage) {
+    const unsigned seq=handoffSequence.fetch_add(1)+1;
+    handoffEvents[seq%64].store((seq<<8)|(stage&255),std::memory_order_release);
+}
 namespace UFlowSupport {
 std::string Quote(const std::string &s) {
     const char hex[]="0123456789abcdef"; std::string out="\"";
@@ -99,6 +114,77 @@ std::string Inventory(const std::string &root) {
     return out;
 }
 }
+struct FreezeWatch::Impl {
+    std::string root;
+    std::atomic<bool> stop{false},active{false};
+    std::atomic<uint32_t> beat{0};
+    std::atomic<int> phase{0};
+    std::mutex mutex; std::condition_variable wake; std::thread worker;
+    bool pending=false; int timeout;
+    static uint32_t Now(){return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());}
+    void Capture(const std::string &reason) {
+        const std::string body="Build "+std::to_string(UFlowUpdate::BuildSequence)+"\n"+reason+
+            "\nLast session checkpoint\n"+Tail(root+"/session-active").substr(0,512)+
+            "\nPrevious startup log\n"+Tail(root+"/uflow.log").substr(0,5500)+
+            "\nPrevious support log\n"+Tail(root+"/support-session.log").substr(0,6000)+
+            "\nSDL foreground handoff\n"+Tail(root+"/handoff.log");
+        if(Write(root+"/freeze-report.log",body))Write(root+"/freeze-pending","1\n");
+    }
+    Impl(std::string r,int ms):root(std::move(r)),timeout(ms) {
+        pending=std::ifstream(root+"/freeze-pending").good();
+        if(std::ifstream(root+"/session-active").good()){
+            Capture("Previous session ended unexpectedly. Freeze or power loss possible.");
+            pending=std::ifstream(root+"/freeze-pending").good();
+        }
+        worker=std::thread([this]{
+            bool reported=false;unsigned savedSequence=0;std::string handoffLog;
+            while(!stop){
+                std::unique_lock lock(mutex);wake.wait_for(lock,std::chrono::milliseconds(250),[&]{return stop.load();});lock.unlock();
+                if(stop)break;
+                // Also retain callback progress while normal background waiting is paused.
+                const unsigned end=handoffSequence.load();bool changed=false;
+                for(unsigned seq=std::max(savedSequence+1,end>63?end-63:1u);seq<=end;++seq) {
+                    const unsigned event=handoffEvents[seq%64].load(std::memory_order_acquire);
+                    if((event>>8)!=seq)break;
+                    handoffLog+=std::to_string(seq)+" "+HandoffName(event&255)+"\n";
+                    savedSequence=seq;changed=true;
+                }
+                if(changed){if(handoffLog.size()>12000)handoffLog.erase(0,handoffLog.find('\n',handoffLog.size()-10000)+1);
+                    Write(root+"/handoff.log",handoffLog);}
+                if(!active){reported=false;continue;}
+                const auto lastBeat=beat.load();
+                const auto elapsed=Now()-lastBeat;
+                if(elapsed<static_cast<uint32_t>(timeout)){reported=false;continue;}
+                if(!reported){
+                    Capture("Main loop unresponsive for "+std::to_string(elapsed/1000)+" seconds. Phase "+std::to_string(phase.load())+" (0 events, 1 input/update, 2 render, 3 HOME/exit cleanup).");
+                    reported=true;
+                }
+            }
+        });
+    }
+    ~Impl(){stop=true;wake.notify_all();if(worker.joinable())worker.join();}
+};
+FreezeWatch::FreezeWatch(std::string root,int timeoutMs):impl(new Impl(std::move(root),timeoutMs)){}
+FreezeWatch::~FreezeWatch()=default;
+void FreezeWatch::Beat(int phase){impl->phase=phase;impl->beat=Impl::Now();}
+void FreezeWatch::Active(bool active){
+    if(active==impl->active.load())return;
+    Beat();
+    if(active)Write(impl->root+"/session-active","active\n");
+    impl->active=active;
+}
+void FreezeWatch::Transition(const std::string &stage){
+    Beat(3);impl->active=true;
+    Write(impl->root+"/session-active","transition "+Redact(stage).substr(0,384)+"\n");
+}
+void FreezeWatch::CleanExit(){
+    impl->active=false;impl->stop=true;impl->wake.notify_all();
+    if(impl->worker.joinable())impl->worker.join();
+    std::remove((impl->root+"/session-active").c_str());
+}
+bool FreezeWatch::Pending()const{return impl->pending;}
+void FreezeWatch::Acknowledge(){impl->pending=false;std::remove((impl->root+"/freeze-pending").c_str());}
+
 struct Client::Impl {
     std::string root,report;std::mutex mutex;std::condition_variable wake;
     Snapshot state;std::deque<std::string> events;std::thread worker;
@@ -107,40 +193,6 @@ struct Client::Impl {
     explicit Impl(std::string r):root(std::move(r)) { worker=std::thread([this]{Run();}); }
     ~Impl(){stop=true;wake.notify_all();if(worker.joinable())worker.join();}
     std::string Events(){std::string out;for(const auto &e:events)out+=e;return out;}
-    std::string Upload(const std::string &body) {
-#ifdef UFLOW_HOST_PREVIEW
-        (void)body;throw std::runtime_error("Uploads are disabled in the host preview.");
-#else
-        CURL *curl=curl_easy_init();if(!curl)throw std::runtime_error("HTTPS initialization failed.");
-        std::string response;auto *headers=curl_slist_append(nullptr,"Content-Type: application/json");
-        curl_easy_setopt(curl,CURLOPT_URL,"https://karotech.io/wp-json/karo-uflow/v1/reports");
-        curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
-        curl_easy_setopt(curl,CURLOPT_POSTFIELDS,body.c_str());
-        curl_easy_setopt(curl,CURLOPT_POSTFIELDSIZE,long(body.size()));
-        curl_easy_setopt(curl,CURLOPT_CAINFO,"fs:/vol/content/updates/cacert.pem");
-        curl_easy_setopt(curl,CURLOPT_SSL_VERIFYPEER,1L);curl_easy_setopt(curl,CURLOPT_SSL_VERIFYHOST,2L);
-        curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,0L);curl_easy_setopt(curl,CURLOPT_PROTOCOLS_STR,"https");
-        curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,10L);curl_easy_setopt(curl,CURLOPT_TIMEOUT,30L);
-        curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);curl_easy_setopt(curl,CURLOPT_NOPROGRESS,0L);
-        curl_easy_setopt(curl,CURLOPT_XFERINFODATA,this);
-        curl_easy_setopt(curl,CURLOPT_XFERINFOFUNCTION,+[](void *p,curl_off_t,curl_off_t,curl_off_t,curl_off_t)->int{return static_cast<Impl*>(p)->stop?1:0;});
-        curl_easy_setopt(curl,CURLOPT_WRITEDATA,&response);
-        curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,+[](char *p,size_t a,size_t b,void *v)->size_t{
-            auto &s=*static_cast<std::string*>(v);if(a && b>4096/a)return 0;auto n=a*b;
-            if(s.size()+n>4096)return 0;s.append(p,n);return n;});
-        const auto result=curl_easy_perform(curl);long status=0;curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
-        curl_slist_free_all(headers);curl_easy_cleanup(curl);
-        if(result!=CURLE_OK || status!=201)throw std::runtime_error("Upload failed. SD report kept; try later.");
-        const auto key=response.find("\"report_id\"");
-        const auto colon=key==std::string::npos?key:response.find(':',key+11);
-        const auto quote=colon==std::string::npos?colon:response.find('"',colon+1);
-        const auto end=quote==std::string::npos?quote:response.find('"',quote+1);
-        auto id=end==std::string::npos?std::string():response.substr(quote+1,end-quote-1);
-        if(id.size()!=15 || id.substr(0,3)!="UF-" || id.substr(3).find_first_not_of("0123456789abcdef")!=std::string::npos)
-            throw std::runtime_error("Unexpected server response. SD report kept.");
-        return id;
-#endif
-    }
     void Run() {
         while(!stop) {
             std::unique_lock lock(mutex);
@@ -156,9 +208,9 @@ struct Client::Impl {
                     std::string body="{\"schema\":1,\"build\":"+std::to_string(UFlowUpdate::BuildSequence)+
                         ",\"redacted\":true,\"games\":"+std::to_string(g)+",\"libraries\":"+std::to_string(l)+
                         ",\"media\":"+std::to_string(m)+",\"settings\":"+Quote(NumericSettings(root)+Inventory(root))+
-                        ",\"events\":"+Quote(recent)+",\"logs\":{";
+                        ",\"events\":"+Quote(Tail(root+"/freeze-report.log")+recent)+",\"logs\":{";
                     bool first=true;
-                    for(const char *name:{"uflow.log","installed-scan.log","usb-storage.log","wii-launch.log","support-session.log"}) {
+                    for(const char *name:{"uflow.log","installed-scan.log","usb-storage.log","wii-launch.log","support-session.log","handoff.log"}) {
                         if(!first)body+=',';
                         first=false;body+=Quote(name)+":"+Quote(Tail(root+"/"+name));
                     }
@@ -167,12 +219,10 @@ struct Client::Impl {
                     body+="}}";
                     if(body.size()>262144 || !Write(root+"/support-report.json",body))throw std::runtime_error("Cannot save report. Check SD free space.");
                     report=std::move(body);
-                    {std::lock_guard guard(mutex);state.saved=true;state.message="Sending report...";}
-                    const auto id=Upload(report);std::lock_guard guard(mutex);state.reportId=id;
-                    state.message="Sent. Share this report ID when asking for help.";
+                    {std::lock_guard guard(mutex);state.saved=true;state.message="Saved: SD:/wiiu/apps/uFlow/support-report.json";}
                 }
-            } catch(const std::exception &e){std::lock_guard guard(mutex);state.message=state.saved?"Send failed. Saved: SD:/wiiu/apps/uFlow/support-report.json":e.what();}
-              catch(...){std::lock_guard guard(mutex);state.message=state.saved?"Send failed. Saved: SD:/wiiu/apps/uFlow/support-report.json":"Report operation failed. Try again.";}
+            } catch(const std::exception &e){std::lock_guard guard(mutex);state.message=state.saved?"Saved: SD:/wiiu/apps/uFlow/support-report.json":e.what();}
+              catch(...){std::lock_guard guard(mutex);state.message=state.saved?"Saved: SD:/wiiu/apps/uFlow/support-report.json":"Report operation failed. Try again.";}
             if(task){std::lock_guard guard(mutex);state.busy=false;}
         }
     }

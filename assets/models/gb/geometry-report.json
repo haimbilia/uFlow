@@ -1,0 +1,23 @@
+{
+  "system": "gb",
+  "source_sha256": "f766de734b7661b85f8bd33fa2f54515be0a21f1493bdab4d64c5f31fb73eae6",
+  "source_triangles": 11252,
+  "dimensions": [
+    57.000025579473004,
+    65.00003814697266,
+    7.6999998092651385
+  ],
+  "source_watertight": true,
+  "levels": [
+    {
+      "triangles": 1000,
+      "vertices": 502,
+      "watertight": true
+    },
+    {
+      "triangles": 600,
+      "vertices": 302,
+      "watertight": true
+    }
+  ]
+}

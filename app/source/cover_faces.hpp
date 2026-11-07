@@ -23,6 +23,18 @@ Selection Resolve(const GameEntry &game,Face face,float backEnd,float frontStart
     if(!game.defaultSleevePath.empty() && available(game.defaultSleevePath))return sleeve(game.defaultSleevePath);
     return {};
 }
+// A successful face does not depend on an unused fallback being decoded.
+// Pending higher-priority artwork must never become a permanent cached placeholder.
+template<class Known,class Available>
+bool Resolved(const GameEntry &game,Known known,Available available) {
+    if(!known(game.fullCoverPath))return false;
+    if(!game.fullCoverPath.empty() && available(game.fullCoverPath))return true;
+    for(const auto *part:{&game.coverPath,&game.backCoverPath,&game.spinePath}) {
+        if(!known(*part))return false;
+        if((part->empty() || !available(*part)) && !known(game.defaultSleevePath))return false;
+    }
+    return true;
+}
 struct Fit { float x0=0,y0=0,x1=1,y1=1; };
 // Recognize only the known legacy N64 generic sleeve, which was authored
 // as a wide landscape strip. Never infer standalone face orientation.

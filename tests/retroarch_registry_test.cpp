@@ -18,6 +18,8 @@ void Put(const std::string &path, const std::string &body) {
 int main() {
     const std::string root = "fs:/vol/external01";
     assert(!fs::exists(root));
+    // The shared adapter exists on a fresh Core install without any .ufmod files.
+    assert(FindLauncherModule(kSharedRetroArchModule)->protocol==kRetroArchProtocol);
     const std::string manifest =
         "UFLOW-MODULE-1\nid=ps1\nname=PlayStation (RetroArch)\nversion=1.0.0\n"
         "system=PlayStation\nextensions=.cue,.chd,.pbp\n"
@@ -168,5 +170,15 @@ int main() {
     other.id = "ps1-custom";
     assert(!LegacyRetroArchEntry(other, *module));                    // only the module's own id
 
+    // Independent core choices share one built-in protocol; no new manifests.
+    const auto *shared=FindLauncherModule(kSharedRetroArchModule);
+    assert(shared&&shared->protocol==kRetroArchProtocol&&shared->executable.empty());
+    LauncherDefinition first{"snes-core-a","SNES A",LauncherKind::Emulator,"SNES",".sfc,.smc","retroarch/cores/a.rpx",true,kSharedRetroArchModule};
+    first.contentBundle="wiiu/apps/retroarch.wuhb";
+    auto second=first;second.id="snes-core-b";second.name="SNES B";second.executable="retroarch/cores/b.rpx";
+    assert(SaveLaunchers({first,second}));auto coreLaunchers=LoadLaunchers();
+    for(const auto &expected:{first,second}){auto it=std::find_if(coreLaunchers.begin(),coreLaunchers.end(),[&](const auto &l){return l.id==expected.id;});
+        assert(it!=coreLaunchers.end()&&IsRetroArchLauncher(*it)&&it->executable==expected.executable&&it->contentBundle==expected.contentBundle);
+        assert(LauncherMatchesFile(*it,"/games/test.sfc"));}
     std::cout << "PASS: legacy PS1 entry attaches, user paths/extensions persist, NONE sticks, module compatibility, custom entries untouched\n";
 }

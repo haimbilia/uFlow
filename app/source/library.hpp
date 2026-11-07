@@ -33,12 +33,16 @@ struct LibraryDefinition {
     int caseHeightMm = 190;
     int caseThicknessMm = 14;
     bool mediaByContentType = false;
+    std::string boxModel="auto",mediaModel="auto";
+    int viewType=-1,viewLayout=0; // -1 inherits Display settings; otherwise a content-type override.
+    int boxColor=-1; // -1 keeps skin/model material; otherwise packed 0xRRGGBB.
 };
 
 struct GameMedia {
     std::string cover,full,back,spine,sleeve,background,logo,video;
     float backEnd=0,frontStart=0;
     std::string physical;
+    std::string cartridgeLabel;
 };
 
 struct GameEntry {
@@ -83,12 +87,15 @@ struct GameEntry {
     std::string navigationLibraryId; // Transient category; never changes media or launch routing.
     std::string mediaLibraryId; // Transient applied appearance; launch/source identity stays intact.
     std::shared_ptr<const GameMedia> sourceMedia;
+    std::string defaultMediaLibraryId; // Transient system owning fallback artwork.
+    std::string metadataPath; // Resolved text metadata, refreshed from media sources.
+    std::string cartridgeLabelPath; // Artwork applied to a 3D cartridge label.
     std::string physicalMediaPath; // Transparent disc/cartridge art, separate from its case.
 };
 
-inline GameMedia CaptureGameMedia(const GameEntry &g){return {g.coverPath,g.fullCoverPath,g.backCoverPath,g.spinePath,g.defaultSleevePath,g.backgroundPath,g.logoPath,g.previewPath,g.defaultBackEnd,g.defaultFrontStart,g.physicalMediaPath};}
-inline void SetGameMedia(GameEntry &g,const GameMedia &m){g.coverPath=m.cover;g.fullCoverPath=m.full;g.backCoverPath=m.back;g.spinePath=m.spine;g.defaultSleevePath=m.sleeve;g.backgroundPath=m.background;g.logoPath=m.logo;g.previewPath=m.video;g.defaultBackEnd=m.backEnd;g.defaultFrontStart=m.frontStart;g.physicalMediaPath=m.physical;}
-inline void RestoreSourceMedia(GameEntry &g){if(g.sourceMedia)SetGameMedia(g,*g.sourceMedia);g.sourceMedia.reset();g.mediaLibraryId.clear();}
+inline GameMedia CaptureGameMedia(const GameEntry &g){return {g.coverPath,g.fullCoverPath,g.backCoverPath,g.spinePath,g.defaultSleevePath,g.backgroundPath,g.logoPath,g.previewPath,g.defaultBackEnd,g.defaultFrontStart,g.physicalMediaPath,g.cartridgeLabelPath};}
+inline void SetGameMedia(GameEntry &g,const GameMedia &m){g.coverPath=m.cover;g.fullCoverPath=m.full;g.backCoverPath=m.back;g.spinePath=m.spine;g.defaultSleevePath=m.sleeve;g.backgroundPath=m.background;g.logoPath=m.logo;g.previewPath=m.video;g.defaultBackEnd=m.backEnd;g.defaultFrontStart=m.frontStart;g.physicalMediaPath=m.physical;g.cartridgeLabelPath=m.cartridgeLabel;}
+inline void RestoreSourceMedia(GameEntry &g){if(g.sourceMedia)SetGameMedia(g,*g.sourceMedia);g.sourceMedia.reset();g.mediaLibraryId.clear();g.defaultMediaLibraryId.clear();}
 
 struct ScanResult {
     std::vector<GameEntry> games;
@@ -110,7 +117,7 @@ struct ContentSource {
 };
 
 // Append values: existing persisted types/fixtures retain their meaning.
-enum class MediaType { Cover, FullCover, Background, Logo, Preview, Metadata, BackCover, Spine, PhysicalMedia, Count };
+enum class MediaType { Cover, FullCover, Background, Logo, Preview, Metadata, BackCover, Spine, PhysicalMedia, CartridgeLabel, Count };
 inline constexpr int kMediaTypeCount=static_cast<int>(MediaType::Count);
 inline bool IsCoverMedia(MediaType type) {
     return type==MediaType::Cover || type==MediaType::FullCover || type==MediaType::BackCover || type==MediaType::Spine;
@@ -149,8 +156,12 @@ const char *MediaLibraryName(int library);
 std::vector<MediaSource> LoadMediaSources();
 bool SaveMediaSources(const std::vector<MediaSource> &sources);
 bool MediaRefreshNeeded();
+bool MediaRefreshIsScoped();
 bool RequestMediaRefresh();
+void ReadMediaFile(GameEntry &game,MediaType type,const std::string &path);
+void ApplyMediaPatch(GameEntry &game,const GameEntry &patch,unsigned mask);
 void CompleteMediaRefresh();
+void RefreshPendingLibraryMedia(std::vector<GameEntry> &games,const std::vector<LibraryDefinition> &libraries,const ScanObserver &progress = {});
 void RefreshLibraryMedia(std::vector<GameEntry> &games,const ScanObserver &progress = {});
 void EnrichLibraryMedia(std::vector<GameEntry> &games,const ScanObserver &progress = {},const std::vector<MediaSource> *scopedSources=nullptr);
 void ApplyContentTypeMedia(std::vector<GameEntry> &games,const std::vector<LibraryDefinition> &libraries,const ScanObserver &progress={});
@@ -175,8 +186,11 @@ void InvalidateLibraryCache();
 std::vector<ContentSource> LoadContentSources();
 bool SaveContentSources(const std::vector<ContentSource> &sources,bool invalidateCache=true);
 std::vector<LibraryDefinition> LoadLibraries();
-bool SaveLibraries(const std::vector<LibraryDefinition> &libraries,bool invalidateCache=true);
+bool SaveLibraries(const std::vector<LibraryDefinition> &libraries,bool invalidateCache=true,std::string *error=nullptr);
 std::vector<std::string> ListDirectories(const std::string &path,
     const BrowserCancelled &cancelled = {}, std::string *error = nullptr);
 bool DirectoryExists(const std::string &path);
 void SaveFavorites(const std::vector<GameEntry> &games);
+
+// Read a title's own metadata without scanning the library; call on a worker.
+std::string ReadGameRegion(const GameEntry&game);

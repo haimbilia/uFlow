@@ -6,7 +6,6 @@
 #include <cmath>
 
 // Authenticated live-check A/B control; no persisted setting or system-thread changes.
-void VideoDecoderWakePriority(bool enabled);
 
 // Fixed source-frame cadence keeps selection identical before and after
 // decoding. Reference frames outside it must still be decoded, but need not

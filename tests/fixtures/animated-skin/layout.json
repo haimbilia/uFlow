@@ -1,0 +1,146 @@
+{
+  "schema": 1,
+  "particles": 192,
+  "trails": 3,
+  "nodes": [
+    {
+      "kind": "library",
+      "x": 40,
+      "y": 120,
+      "width": 1200,
+      "height": 450,
+      "columns": 4,
+      "rows": 2,
+      "source": "thumbnail"
+    }
+  ],
+  "variants": [
+    {
+      "type": 0,
+      "nodes": [
+        {
+          "kind": "effects",
+          "x": 0,
+          "y": 70,
+          "width": 1280,
+          "height": 540,
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "text": "{title}",
+          "x": 50,
+          "y": 20,
+          "width": 600,
+          "height": 40
+        },
+        {
+          "kind": "library",
+          "mode": "carousel",
+          "x": 40,
+          "y": 120,
+          "width": 1200,
+          "height": 450,
+          "columns": 5,
+          "rows": 1,
+          "source": "thumbnail",
+          "gap": 24
+        },
+        {
+          "kind": "button",
+          "x": 50,
+          "y": 650,
+          "width": 180,
+          "height": 40,
+          "text": "Play",
+          "action": "launch"
+        }
+      ]
+    },
+    {
+      "type": 3,
+      "layout": 0,
+      "nodes": [
+        {
+          "kind": "effects",
+          "x": 0,
+          "y": 70,
+          "width": 1280,
+          "height": 540,
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "text": "{title}",
+          "x": 50,
+          "y": 20,
+          "width": 600,
+          "height": 40
+        },
+        {
+          "kind": "library",
+          "mode": "row",
+          "x": 40,
+          "y": 120,
+          "width": 1200,
+          "height": 450,
+          "columns": 5,
+          "rows": 1,
+          "source": "thumbnail",
+          "gap": 24
+        },
+        {
+          "kind": "button",
+          "x": 50,
+          "y": 650,
+          "width": 180,
+          "height": 40,
+          "text": "Play",
+          "action": "launch"
+        }
+      ]
+    },
+    {
+      "type": 3,
+      "nodes": [
+        {
+          "kind": "effects",
+          "x": 0,
+          "y": 70,
+          "width": 1280,
+          "height": 540,
+          "color": "accent"
+        },
+        {
+          "kind": "text",
+          "text": "{title}",
+          "x": 50,
+          "y": 20,
+          "width": 600,
+          "height": 40
+        },
+        {
+          "kind": "library",
+          "mode": "grid",
+          "x": 40,
+          "y": 120,
+          "width": 1200,
+          "height": 450,
+          "columns": 4,
+          "rows": 2,
+          "source": "thumbnail",
+          "gap": 24
+        },
+        {
+          "kind": "button",
+          "x": 50,
+          "y": 650,
+          "width": 180,
+          "height": 40,
+          "text": "Play",
+          "action": "launch"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "system": "gba",
+  "source_sha256": "97103fff25a912396e89eb4ef04afd6d44343290ce2a4a2ae1b283195bd7e6e3",
+  "source_triangles": 87804,
+  "dimensions": [
+    59.98817838728428,
+    34.41699981689453,
+    9.321796417236328
+  ],
+  "source_watertight": true,
+  "levels": [
+    {
+      "triangles": 1000,
+      "vertices": 502,
+      "watertight": true
+    },
+    {
+      "triangles": 600,
+      "vertices": 302,
+      "watertight": true
+    }
+  ]
+}

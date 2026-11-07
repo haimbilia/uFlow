@@ -3,8 +3,8 @@
 #include <cmath>
 #include <cstdint>
 
-inline float AdvanceBookshelfPosition(float position,float target,float seconds,int speed,bool rapid=false) {
-    const float duration=rapid?(speed==0?.14f:speed==1?.12f:.10f):(speed==0?1.6f:speed==1?1.3f:1.f);
+inline float AdvanceBookshelfPosition(float position,float target,float seconds,int speed,bool rapid=false,bool media=false) {
+    const float duration=media?(rapid?.10f:(speed==0?.70f:speed==1?.50f:.36f)):rapid?(speed==0?.14f:speed==1?.12f:.10f):(speed==0?1.6f:speed==1?1.3f:1.f);
     const float distance=target-position;
     const float amount=std::min(std::abs(distance),std::max(1.f,std::abs(distance))*std::max(0.f,seconds)/duration);
     return position+std::copysign(amount,distance);
@@ -13,11 +13,11 @@ inline float AdvanceBookshelfPosition(float position,float target,float seconds,
 namespace BrowseMotion {
 struct Bookshelf {
     bool rapid=false;
-    float Advance(float position,float target,float seconds,int speed) {
+    float Advance(float position,float target,float seconds,int speed,bool media=false) {
         // Repeated inputs/pages must not queue seconds of individual spins.
         // Keep catch-up active through the last cover, until it is fully at rest.
         rapid=rapid || std::abs(target-position)>1.01f;
-        position=AdvanceBookshelfPosition(position,target,seconds,speed,rapid);
+        position=AdvanceBookshelfPosition(position,target,seconds,speed,rapid,media);
         if(std::abs(target-position)<.002f){position=target;rapid=false;}
         return position;
     }

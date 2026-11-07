@@ -1,4 +1,6 @@
+#include "prepared_models.hpp"
 #include "library.hpp"
+#include "cover_presentation.hpp"
 #include "console_language.hpp"
 #include "browser_path.hpp"
 #include "directory_entry.hpp"
@@ -30,6 +32,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,7 +46,7 @@ constexpr const char *kSourcesFile = "fs:/vol/external01/wiiu/apps/uFlow/content
 constexpr const char *kLibrariesFile = "fs:/vol/external01/wiiu/apps/uFlow/libraries.cfg";
 constexpr const char *kLibraryCacheFile = "fs:/vol/external01/wiiu/apps/uFlow/cache/library-v1.bin";
 constexpr std::uint32_t kLibraryCacheMagic = 0x55464C43; // UFLC
-constexpr std::uint32_t kLibraryCacheVersion = 10; // Locale header; versions 7-9 migrate without dropping games.
+constexpr std::uint32_t kLibraryCacheVersion = 12; // Recheck legacy over-broad MSX classification; record layout unchanged.
 constexpr std::uint32_t kLibraryCacheMaxEntries = 8192;
 constexpr std::uint32_t kLibraryCacheMaxString = 256 * 1024;
 constexpr std::size_t kLibraryCacheMaxBytes = 32 * 1024 * 1024;
@@ -171,6 +174,18 @@ std::string DetectVCSystem(const std::string &base,const std::string &meta) {
     if(meta.empty())return {}; // Missing/unmounted source: retry on a later load.
     return WiiUVC::System(XmlValue(meta,"product_code"),IsFile(base+"/code/fw.img"),
         IsDirectory(base+"/content/pceemu"),IsFile(base+"/code/m2engage.rpx"));
+}
+
+std::string WiiURegion(const std::string&meta){
+    const auto product=XmlValue(meta,"product_code");
+    if(product.size()>=4)switch(product.back()){
+        case 'E':return "USA";case 'P':return "Europe";case 'J':return "Japan";case 'K':return "Korea";
+    }
+    const auto mask=XmlValue(meta,"region");
+    if(!mask.empty())switch(std::strtoul(mask.c_str(),nullptr,16)){
+        case 1:return "Japan";case 2:return "USA";case 4:return "Europe";case 64:return "Korea";
+    }
+    return ""; // Multi-region/unknown: do not guess.
 }
 
 std::string SaveKey(const std::string &titleId, const std::string &folder) {
@@ -319,6 +334,7 @@ bool ScanInstalledGames(ScanResult &result, const std::vector<GameEntry> *cached
             game.name = MetaName(meta);
             if (game.name.empty()) game.name = "INSTALLED TITLE " + game.titleId;
             game.publisher = MetaText(meta, "publisher");
+            game.region = WiiURegion(meta);
             game.vcSystem = DetectVCSystem(game.absolutePath,meta);
             game.coverPath = FindCover(metaPath, game.titleId);
             if (game.coverPath.empty()) game.coverPath = CacheInstalledIcon(metaPath + "/iconTex.tga", game.titleId);
@@ -343,6 +359,7 @@ void ReadWiiUMetadata(GameEntry &game, const std::string &base, const std::strin
     game.vcSystem = DetectVCSystem(base,meta);
     game.name = MetaName(meta);
     game.publisher = MetaText(meta, "publisher");
+            game.region = WiiURegion(meta);
     game.coverPath = FindCover(base, game.titleId, base + "/meta/iconTex.tga");
     if(game.coverPath==base+"/meta/iconTex.tga") {
         const auto cached=BuiltinIconCache::Store(game.coverPath,kAppDirectory);
@@ -540,7 +557,7 @@ bool WriteCacheGame(std::ofstream &output, const GameEntry &game) {
         if(!WriteValue(output,p.titleId)||!WriteValue(output,p.bytes)||!WriteValue(output,p.version)||!WriteValue(output,kind)||
            !WriteCacheString(output,p.path)||!WriteCacheString(output,p.error))return false;
     }
-    return WriteCacheString(output,game.vcSystem) && WriteCacheString(output,game.physicalMediaPath);
+    return WriteCacheString(output,game.vcSystem) && WriteCacheString(output,game.physicalMediaPath) && WriteCacheString(output,game.cartridgeLabelPath);
 }
 
 bool ReadCacheGame(CacheReader &reader, GameEntry &game,std::uint32_t version) {
@@ -571,10 +588,18 @@ bool ReadCacheGame(CacheReader &reader, GameEntry &game,std::uint32_t version) {
     }
     if(version>=8&&!reader.String(game.vcSystem))return false;
     if(version>=9&&!reader.String(game.physicalMediaPath))return false;
+    if(version>=11&&!reader.String(game.cartridgeLabelPath))return false;
     return !game.absolutePath.empty();
 }
 
 } // namespace
+
+std::string ReadGameRegion(const GameEntry&game){
+    if(!game.region.empty())return game.region;
+    if(game.platform!=Platform::WiiU||game.absolutePath.empty())return "";
+    return WiiURegion(ReadTextFile(game.absolutePath+"/meta/meta.xml"));
+}
+
 
 const char *PlatformName(Platform platform) {
     switch (platform) {
@@ -632,6 +657,12 @@ std::vector<LibraryDefinition> LoadLibraries() {
             library.caseThicknessMm=preset.thickness;
         }
         if(parts.size()>12)library.mediaByContentType=Trim(parts[12])=="1";
+        if(parts.size()>13&&PreparedModels::Valid(Trim(parts[13]),true))library.boxModel=Trim(parts[13]);
+        if(parts.size()>14&&PreparedModels::Valid(Trim(parts[14]),false))library.mediaModel=Trim(parts[14]);
+        if(parts.size()>16){const int type=std::atoi(parts[15].c_str()),layout=std::atoi(parts[16].c_str());
+            if(type>=0&&type<CoverPresentation::TypeCount&&layout>=0&&layout<CoverPresentation::LayoutCount(type)){library.viewType=type;library.viewLayout=layout;}}
+        if(parts.size()>17){try{size_t used=0;const auto field=Trim(parts[17]);const int color=std::stoi(field,&used);
+            if(used==field.size()&&color>=-1&&color<=0xffffff)library.boxColor=color;}catch(...){} }
         // Older installers wrote DVD dimensions for every system. Upgrade only
         // that legacy tuple; custom sizes and versioned saves remain untouched.
         if(parts.size()<12 && library.caseWidthMm==135 && library.caseHeightMm==190 && library.caseThicknessMm==14) {
@@ -640,24 +671,38 @@ std::vector<LibraryDefinition> LoadLibraries() {
         if(!library.id.empty()&&!library.name.empty()) libraries.push_back(std::move(library));
     }
     if(!input.is_open()) libraries={{"wiiu","Wii U",Platform::WiiU,GameLauncher::WiiFlow,".rpx",true,0},{"wii","Wii",Platform::Wii,GameLauncher::WiiFlow,".wbfs",true,1},{"gamecube","GameCube",Platform::GameCube,GameLauncher::WiiFlow,".iso,.gcm",true,2}};
+    if(!input.is_open())for(auto &library:libraries){const auto models=PreparedModels::For(library.id);library.boxModel=models.box;library.mediaModel=models.media;}
     if(TitleInstall::Available()&&std::none_of(libraries.begin(),libraries.end(),[](const auto&l){return l.id=="install";}))
         libraries.push_back({"install","Install Content",Platform::WiiU,GameLauncher::WiiFlow,".tmd",true,100,"title-installer"});
     std::sort(libraries.begin(),libraries.end(),[](const auto&a,const auto&b){return a.order<b.order;}); return libraries;
 }
 
-bool SaveLibraries(const std::vector<LibraryDefinition> &libraries,bool invalidateCache) {
+bool SaveLibraries(const std::vector<LibraryDefinition> &libraries,bool invalidateCache,std::string *error) {
+    if(error)error->clear();
+    const auto fail=[&](const std::string &message,int code=0){if(error)*error=message+(code?": "+std::string(std::strerror(code)):"");return false;};
     std::set<std::string> ids;
     for(const auto &l:libraries) if(l.id.empty() || l.name.empty() || !ids.insert(l.id).second ||
         (l.id+l.name+l.extensions+l.launcherId).find_first_of("\t\r\n")!=std::string::npos ||
         l.caseWidthMm<50||l.caseWidthMm>200||l.caseHeightMm<50||l.caseHeightMm>250||
-        l.caseThicknessMm<2||l.caseThicknessMm>40) return false;
-    EnsureDirectory(kAppDirectory); const std::string temporary=std::string(kLibrariesFile)+".tmp";
-    std::ofstream output(temporary,std::ios::trunc);
-    for(const auto &library:libraries) output<<library.id<<'\t'<<library.name<<'\t'<<DefaultLibraryId(library.parser)<<'\t'<<(library.launcher==GameLauncher::USBLoaderGX?"usbloadergx":"wiiflow")<<'\t'<<library.extensions<<'\t'<<library.enabled<<'\t'<<library.order<<'\t'<<library.launcherId<<'\t'<<library.caseWidthMm<<'\t'<<library.caseHeightMm<<'\t'<<library.caseThicknessMm<<"\t1\t"<<library.mediaByContentType<<"\n";
-    output.flush(); const bool ok=static_cast<bool>(output); output.close();
-    const bool saved = ok && !output.fail() && SavedFile::Commit(temporary,kLibrariesFile);
-    if (saved&&invalidateCache) InvalidateLibraryCache();
-    return saved;
+        l.boxColor< -1||l.boxColor>0xffffff||l.caseThicknessMm<2||l.caseThicknessMm>40||!PreparedModels::Valid(l.boxModel,true)||!PreparedModels::Valid(l.mediaModel,false)||l.viewType< -1||l.viewType>=CoverPresentation::TypeCount||
+        (l.viewType>=0&&(l.viewLayout<0||l.viewLayout>=CoverPresentation::LayoutCount(l.viewType)))) return fail("Invalid content type: "+l.name);
+    EnsureDirectory(kAppDirectory);
+    // Use a fresh staging name: a stale .tmp may be locked or read-only on FAT.
+    static unsigned serial=0;std::string temporary;struct stat info{};
+    do{temporary=std::string(kLibrariesFile)+".write-"+std::to_string(++serial);}while(stat(temporary.c_str(),&info)==0);
+    std::ostringstream output;
+    for(const auto &library:libraries) output<<library.id<<'\t'<<library.name<<'\t'<<DefaultLibraryId(library.parser)<<'\t'<<(library.launcher==GameLauncher::USBLoaderGX?"usbloadergx":"wiiflow")<<'\t'<<library.extensions<<'\t'<<library.enabled<<'\t'<<library.order<<'\t'<<library.launcherId<<'\t'<<library.caseWidthMm<<'\t'<<library.caseHeightMm<<'\t'<<library.caseThicknessMm<<"\t1\t"<<library.mediaByContentType<<'\t'<<library.boxModel<<'\t'<<library.mediaModel<<'\t'<<library.viewType<<'\t'<<library.viewLayout<<'\t'<<library.boxColor<<"\n";
+    const auto bytes=output.str();errno=0;
+    FILE *file=std::fopen(temporary.c_str(),"wb");
+    if(!file)return fail("Cannot open content-type staging file",errno);
+    bool ok=std::fwrite(bytes.data(),1,bytes.size(),file)==bytes.size();int code=errno;
+    if(std::fflush(file)!=0){ok=false;code=errno;}
+    if(std::fclose(file)!=0){ok=false;code=errno;}
+    if(!ok){std::remove(temporary.c_str());return fail("Cannot write content types",code?code:EIO);}
+    errno=0;
+    if(!SavedFile::Commit(temporary,kLibrariesFile)){code=errno;std::remove(temporary.c_str());return fail("Cannot replace content types",code?code:EIO);}
+    if(invalidateCache)InvalidateLibraryCache();
+    return true;
 }
 
 std::vector<ContentSource> LoadContentSources() {
@@ -1095,6 +1140,10 @@ bool LoadLibraryCache(std::vector<GameEntry> &games) {
     for(auto &game:cached)if(game.platform==Platform::WiiU&&game.installPackages.empty()&&game.vcSystem.empty()){
         game.vcSystem=DetectVCSystem(game.absolutePath,ReadTextFile(game.absolutePath+"/meta/meta.xml"));
         migrated=migrated||!game.vcSystem.empty();
+    }
+    if(version<12)for(auto &game:cached)if(game.platform==Platform::WiiU&&game.vcSystem=="msx"&&game.installPackages.empty()){
+        const auto meta=ReadTextFile(game.absolutePath+"/meta/meta.xml");
+        if(!meta.empty())game.vcSystem=DetectVCSystem(game.absolutePath,meta);
     }
     games = std::move(cached);
     if(migrated)SaveLibraryCache(games);

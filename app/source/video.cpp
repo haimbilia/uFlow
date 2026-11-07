@@ -39,7 +39,6 @@ int UFlow_BindNV12(SDL_Texture *,const uint8_t *,int,size_t,const uint8_t *,int,
 }
 
 namespace {
-std::atomic<bool> decoderWakePriority{false};
 #ifndef UFLOW_HOST_PREVIEW
 void ReleaseTextureFrame(void *opaque) {
     auto *frame=static_cast<AVFrame *>(opaque);
@@ -122,7 +121,6 @@ struct ReorderFrames {
 };
 }
 
-void VideoDecoderWakePriority(bool enabled) { decoderWakePriority.store(enabled); }
 
 struct VideoPlayer::Impl {
     explicit Impl(SDL_Renderer *r) : renderer(r) {
@@ -794,24 +792,12 @@ struct VideoPlayer::Impl {
         unsigned packetsWithoutVideo = 0;
 #ifndef UFLOW_HOST_PREVIEW
         auto *budgetThread=OSGetCurrentThread();
-        const auto originalPriority=OSGetThreadPriority(budgetThread);
-        auto appliedPriority=originalPriority;
         auto budgetCpu=OSGetThreadCoreTime(budgetThread,7);
         auto budgetAt=SDL_GetTicks();
         auto budgetDecoded=decoded.load();
         auto budgetDecodeUs=decodeUs.load();
 #endif
         while (Running()) {
-#ifndef UFLOW_HOST_PREVIEW
-            // UVD completion must be consumed promptly even while rendering is
-            // runnable. WUT user priority 14 is native 78: ahead of the UI's 80,
-            // below SDL audio's 77. Keep affinity and system threads untouched.
-            const auto desiredPriority=decoderWakePriority.load()?std::min(originalPriority,14):originalPriority;
-            if(desiredPriority!=appliedPriority && OSSetThreadPriority(budgetThread,desiredPriority)) {
-                appliedPriority=desiredPriority;
-                OSReport("uFlow: video-wake-priority user=%d\n",appliedPriority);
-            }
-#endif
             const int read = reader.Read(d.packet);
             if (read < 0) {
                 reader.Finish(read==AVERROR_EOF && decoded.load()>0);

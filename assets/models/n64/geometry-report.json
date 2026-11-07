@@ -1,0 +1,23 @@
+{
+  "system": "n64",
+  "source_sha256": "90521e8a58b15859e35bbf90c5b39e9d668535ac463db047dc0776b8aab12358",
+  "source_triangles": 3348,
+  "dimensions": [
+    115.5,
+    75.9689556825906,
+    18.600000381469727
+  ],
+  "source_watertight": true,
+  "levels": [
+    {
+      "triangles": 1000,
+      "vertices": 502,
+      "watertight": true
+    },
+    {
+      "triangles": 600,
+      "vertices": 302,
+      "watertight": true
+    }
+  ]
+}

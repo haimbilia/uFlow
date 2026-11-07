@@ -24,6 +24,14 @@ inline std::string DesiredMediaLibrary(const GameEntry &game,const std::vector<L
         for(const auto &library:libraries)if(library.id==id&&library.mediaByContentType)return id;
     return game.libraryId;
 }
+inline bool ContentTypeMediaNeeded(const GameEntry &game,const std::vector<LibraryDefinition> &libraries){
+    if(DesiredMediaLibrary(game,libraries)!=(game.mediaLibraryId.empty()?game.libraryId:game.mediaLibraryId))return true;
+    // Even shared-artwork injections need their own system's placeholder.
+    const auto target=game.platform==Platform::WiiU && game.installPackages.empty() &&
+        GameLibraryId(game)!=game.libraryId &&
+        std::any_of(libraries.begin(),libraries.end(),[&](const auto &l){return l.id==GameLibraryId(game);})?GameLibraryId(game):std::string{};
+    return target!=game.defaultMediaLibraryId;
+}
 inline void ApplyVCCategories(std::vector<GameEntry> &games,const UserSettings &settings,
                               const std::vector<ContentSource> &sources) {
     for(auto &game:games){

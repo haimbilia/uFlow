@@ -5,4 +5,4 @@ enum { VPAD_BUTTON_A=0x8000, VPAD_BUTTON_B=0x4000, VPAD_BUTTON_X=0x2000, VPAD_BU
     VPAD_BUTTON_DOWN=0x100, VPAD_BUTTON_L=0x20, VPAD_BUTTON_R=0x10,
     VPAD_BUTTON_STICK_R=0x20000, VPAD_BUTTON_STICK_L=0x40000,
     VPAD_BUTTON_PLUS=8, VPAD_BUTTON_ZL=4, VPAD_BUTTON_ZR=2 };
-struct VPADStatus { uint32_t hold=0, trigger=0; };
+struct VPADStatus { uint32_t hold=0, trigger=0; struct Stick {float x=0,y=0;} leftStick{},rightStick{}; };

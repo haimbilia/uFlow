@@ -1,4 +1,5 @@
 #include "library.hpp"
+#include "media_filename.hpp"
 #include <cassert>
 #include <algorithm>
 #include <filesystem>
@@ -11,12 +12,81 @@ void Write(const std::string &path,const std::string &data="image") {
 }
 int main() {
     assert(!fs::exists(root)); // run only in the disposable test directory
+    const auto regionRoot=root+"/regional-sleeves";
+    Write(regionRoot+"/Disney's Aladdin (Japan).jpg");
+    Write(regionRoot+"/Disney's Aladdin.jpg");
+    std::vector<MediaSource> regionSources{{MediaType::FullCover,3,regionRoot,true,0}};
+    GameEntry regionGame;regionGame.platform=Platform::Files;regionGame.name="Disney's Aladdin (USA)";
+    regionSources[0].library=int(regionGame.platform);
+    auto checkRegion=[&](const std::string &expected){std::vector<GameEntry> entries{regionGame};EnrichLibraryMedia(entries,{},&regionSources);assert(entries[0].fullCoverPath==expected);};
+    checkRegion(regionRoot+"/Disney's Aladdin.jpg");
+    Write(regionRoot+"/Disney's Aladdin (USA).jpg");
+    checkRegion(regionRoot+"/Disney's Aladdin (USA).jpg");
+    regionGame.name="Disney's Aladdin (Japan)";checkRegion(regionRoot+"/Disney's Aladdin (Japan).jpg");
+    regionGame.name="Disney's Aladdin (Europe)";checkRegion(regionRoot+"/Disney's Aladdin.jpg");
+    fs::remove(regionRoot+"/Disney's Aladdin.jpg");checkRegion("");
+    Write(regionRoot+"/Disney's Aladdin (USA, Europe).jpg");checkRegion(regionRoot+"/Disney's Aladdin (USA, Europe).jpg");
+    regionGame.name="Disney's Aladdin";regionGame.region="Japan";checkRegion(regionRoot+"/Disney's Aladdin (Japan).jpg");
+    const auto jsonPath=root+"/json-test/Streets of Rage.json";
+    Write(jsonPath,R"({"schema_version":1,"title":"Streets of Rage","details":{"description":"Line one\nLine two","developer":"Sega","publisher":"Sega of America","genres":["Action","Beat 'em Up"],"release_date":"1991-08-02","max_players":2,"age_rating":"Not Rated"}})");
+    GameEntry jsonGame;jsonGame.name="Streets of Rage (World) (En,Ja) (Rev A)";
+    ReadMediaFile(jsonGame,MediaType::Metadata,jsonPath);
+    assert(jsonGame.name=="Streets of Rage (World) (En,Ja) (Rev A)");
+    assert(jsonGame.description=="Line one\nLine two" && jsonGame.publisher=="Sega of America" && jsonGame.developer=="Sega");
+    assert(jsonGame.genre=="Action, Beat 'em Up" && jsonGame.releaseYear=="1991" && jsonGame.players=="2" && jsonGame.rating=="Not Rated");
+    assert(ListMediaFiles(root+"/json-test",MediaType::Metadata)==std::vector<std::string>{"Streets of Rage.json"});
+    Write(jsonPath,"{broken");ReadMediaFile(jsonGame,MediaType::Metadata,jsonPath);assert(jsonGame.publisher=="Sega of America");
+    Write(jsonPath,"\xef\xbb\xbf{\"description\":\"Flat schema\",\"year\":1992}");ReadMediaFile(jsonGame,MediaType::Metadata,jsonPath);assert(jsonGame.description=="Flat schema" && jsonGame.releaseYear=="1992");
+    Write(jsonPath,std::string(1024*1024+1,' '));ReadMediaFile(jsonGame,MediaType::Metadata,jsonPath);assert(jsonGame.description=="Flat schema");
+
+    GameEntry regional;regional.platform=Platform::WiiU;regional.absolutePath=root+"/region-title";
+    Write(regional.absolutePath+"/meta/meta.xml","<menu><product_code>WUP-P-BXAE</product_code></menu>");
+    assert(ReadGameRegion(regional)=="USA");
+    Write(regional.absolutePath+"/meta/meta.xml","<menu><product_code>WUP-P-BXAP</product_code></menu>");
+    assert(ReadGameRegion(regional)=="Europe");
+    Write(regional.absolutePath+"/meta/meta.xml","<menu><region>00000002</region></menu>");
+    assert(ReadGameRegion(regional)=="USA");
+    Write(regional.absolutePath+"/meta/meta.xml","<menu><region>00000007</region></menu>");
+    assert(ReadGameRegion(regional).empty());
+    GameEntry target;target.name="Keep title";target.titleId="000500001010ec00";target.coverPath="existing cover";target.logoPath="old logo";target.favorite=true;
+    GameEntry patch=target;ReadMediaFile(patch,MediaType::Logo,"new readable logo.png");
+    ApplyMediaPatch(target,patch,1u<<int(MediaType::Logo));
+    assert(target.logoPath=="new readable logo.png"&&target.coverPath=="existing cover"&&target.favorite&&target.name=="Keep title");
+    target.fullCoverPath=target.defaultSleevePath="fallback sleeve";
+    ReadMediaFile(patch,MediaType::Cover,"Downloaded Game [000500001010ec00].png");
+    ApplyMediaPatch(target,patch,1u<<int(MediaType::Cover));
+    assert(target.fullCoverPath.empty()&&target.defaultSleevePath=="fallback sleeve");
+    Write(root+"/new.ini","description=New description\ngenre=Racing\n");
+    ReadMediaFile(patch,MediaType::Metadata,root+"/new.ini");ApplyMediaPatch(target,patch,1u<<int(MediaType::Metadata));
+    assert(target.description=="New description"&&target.genre=="Racing"&&target.coverPath=="Downloaded Game [000500001010ec00].png");
+    const auto fuzzyRoot=root+"/fuzzy";
+    std::vector<MediaSource> fuzzySources{{MediaType::Cover,0,fuzzyRoot,true,0}};
+    GameEntry fuzzyGame;fuzzyGame.platform=Platform::WiiU;fuzzyGame.name="A Day at the Carnival by Thornbury Software LLC";fuzzyGame.publisher="Thornbury Software";
+    Write(fuzzyRoot+"/A Day at the Carnivall.png");
+    std::vector<GameEntry> fuzzyGames{fuzzyGame};EnrichLibraryMedia(fuzzyGames,{},&fuzzySources);
+    assert(fuzzyGames[0].coverPath==fuzzyRoot+"/A Day at the Carnivall.png");
+    Write(fuzzyRoot+"/A Day at the Carnivax.png");fuzzyGames={fuzzyGame};EnrichLibraryMedia(fuzzyGames,{},&fuzzySources);assert(fuzzyGames[0].coverPath.empty());
+    fs::remove(fuzzyRoot+"/A Day at the Carnivax.png");
+    fuzzyGame.name="A Day at the Carnival 2";fuzzyGames={fuzzyGame};EnrichLibraryMedia(fuzzyGames,{},&fuzzySources);assert(fuzzyGames[0].coverPath.empty());
+    fuzzyGame.name="A Day at the Carnival (Demo)";fuzzyGames={fuzzyGame};EnrichLibraryMedia(fuzzyGames,{},&fuzzySources);assert(fuzzyGames[0].coverPath.empty());
+    fuzzyGame.name="A Day at the Carnival";fuzzySources[0].library=2;fuzzyGames={fuzzyGame};EnrichLibraryMedia(fuzzyGames,{},&fuzzySources);assert(fuzzyGames[0].coverPath.empty());fuzzySources[0].library=0;
+    Write(fuzzyRoot+"/A Day at the Carnival.png");fuzzyGames={fuzzyGame};EnrichLibraryMedia(fuzzyGames,{},&fuzzySources);assert(fuzzyGames[0].coverPath==fuzzyRoot+"/A Day at the Carnival.png");
+    fs::remove(fuzzyRoot+"/A Day at the Carnival.png");fs::remove(fuzzyRoot+"/A Day at the Carnivall.png");
+    Write(fuzzyRoot+"/A Day at the Carnivall [000500001010ec00].png");fuzzyGame.titleId="000500001010ec01";fuzzyGames={fuzzyGame};EnrichLibraryMedia(fuzzyGames,{},&fuzzySources);assert(fuzzyGames[0].coverPath.empty());
     const auto defaults=LoadMediaSources();
     assert(defaults.size()==kMediaTypeCount && defaults[1].type==MediaType::FullCover);
     GameEntry wiiu; wiiu.platform=Platform::WiiU; wiiu.name="140"; wiiu.titleId="00050000101fa800";
     Write(defaults[0].path+"/00050000101FA800.PNG");
     std::vector<GameEntry> games{wiiu}; EnrichLibraryMedia(games);
     assert(games[0].coverPath==defaults[0].path+"/00050000101FA800.PNG");
+    assert(MediaFilename::Readable("Mario Kart 8 (USA)","000500001010ec00")=="Mario Kart 8 (USA) [000500001010ec00]");
+    assert(MediaFilename::Readable("../Bad:Title?", "000500001010ec00").find('/')==std::string::npos);
+    fs::remove(games[0].coverPath);
+    const auto named=defaults[0].path+"/Different search title [00050000101fa800].png";
+    Write(named);games={wiiu};EnrichLibraryMedia(games);assert(games[0].coverPath==named);
+    auto otherRegion=wiiu;otherRegion.titleId="00050000101fa801";games={otherRegion};EnrichLibraryMedia(games);assert(games[0].coverPath!=named);
+    fs::remove(named);
+    Write(defaults[0].path+"/00050000101FA800.PNG");
     const auto shared=root+"/art/shared", scoped=root+"/art/wiiu", wrong=root+"/art/gamecube";
     const auto nested=root+"/art/nested", metadata=root+"/art/info", videos=root+"/art/videos";
     Write(shared+"/140.jpg"); Write(scoped+"/00050000101fa800.JPEG"); Write(wrong+"/00050000101fa800.png");
@@ -203,7 +273,18 @@ int main() {
     games={dsGame};EnrichLibraryMedia(games);assert(games[0].physicalMediaPath==mediaPath+"/Default.png");
     dsGame.name="Actual";games={dsGame};EnrichLibraryMedia(games);assert(games[0].physicalMediaPath==mediaPath+"/Actual.png");
     assert(SaveLibraryCache(games));assert(LoadLibraryCache(cached));assert(cached[0].physicalMediaPath==games[0].physicalMediaPath);
+    // Label artwork is independent of a full cartridge image and survives cache reload.
+    const auto labelsPath=root+"/ds/labels";
+    Write(labelsPath+"/Actual.jpg");
+    games={dsGame};EnrichLibraryMedia(games);
+    assert(games[0].cartridgeLabelPath==labelsPath+"/Actual.jpg");
+    assert(games[0].physicalMediaPath==mediaPath+"/Actual.png");
+    assert(SaveLibraryCache(games));assert(LoadLibraryCache(cached));
+    assert(cached[0].cartridgeLabelPath==games[0].cartridgeLabelPath);
+    const auto savedAppearance=CaptureGameMedia(games[0]);GameEntry restored;
+    SetGameMedia(restored,savedAppearance);assert(restored.cartridgeLabelPath==games[0].cartridgeLabelPath);
     dsGame.libraryId="other";games={dsGame};EnrichLibraryMedia(games);assert(games[0].physicalMediaPath.empty());
+    assert(games[0].cartridgeLabelPath.empty());
     std::cout<<"PASS: optional default files, persistence/cache, relative/absolute paths, real/native media priority, scope/order, disabled/missing defaults, video settings, metadata and filtered file browser\n";
     std::cout<<"PASS: default media, persistence, PNG/TGA/JPEG, numeric names, case, ID/name priority, platform scope, depth, disabled/empty/unavailable paths, INI and video indexing\n";
     std::cout<<"PASS: video options migration, persistence, limits, MP4/AVI names, source scope/depth/disabled resolution\n";

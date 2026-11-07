@@ -178,7 +178,7 @@ int main(int argc,char **argv){
                 Setup::Need(FreeSpace()>=plan.bytes+64*1024*1024ULL,"Not enough SD space for selected files and staging reserve.");
 #ifndef UFLOW_SETUP_PREVIEW
                 consoleSession=Vwii::Session{};
-                consoleSession=Vwii::PrepareConsole(bundle,selected,BundledFiles(),Progress);
+                consoleSession=Vwii::PrepareConsole(sd,bundle,selected,BundledFiles(),Progress);
 #endif
                 message=std::to_string(plan.bytes/1024/1024)+" MiB to install. "+std::to_string(plan.preserved)+" existing settings/resource files will be kept.";
 #ifndef UFLOW_SETUP_PREVIEW

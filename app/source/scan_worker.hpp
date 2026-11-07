@@ -65,9 +65,9 @@ private:
                 if(refreshSources_){
                     std::vector<GameEntry> cached;
                     persistMedia=LoadLibraryCache(cached);
-                    RefreshLibraryMedia(result.games,report);
+                    RefreshPendingLibraryMedia(result.games,mediaLibraries_,report);
                 }
-                ApplyContentTypeMedia(result.games,mediaLibraries_,report);
+                else ApplyContentTypeMedia(result.games,mediaLibraries_,report);
             }
             else {
                 result=scan_(report);

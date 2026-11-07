@@ -166,7 +166,7 @@ void PrepareD2XBatch(const std::string& versionFolder, std::vector<std::pair<int
     tinyxml2::XMLError parseResult = doc.Parse((const char*)xmlData, xmlSize);
     free(xmlData);
     if (parseResult != tinyxml2::XML_SUCCESS) {
-        Patcher_Log("Failed to parse ciosmaps.xml\n");
+        Patcher_Log("Failed to parse ciosmaps.xml: error="+std::to_string(parseResult)+", line="+std::to_string(doc.ErrorLineNum())+"\n");
         for (const auto& config : s_d2xConfigs) {
             slotResults.push_back({config.slot, false});
         }
@@ -204,7 +204,7 @@ void PrepareD2XBatch(const std::string& versionFolder, std::vector<std::pair<int
         }
         
         if (FromBE16(ios->tmd->titleVersion) != baseEl->UnsignedAttribute("version")) {
-            Patcher_Log("Unexpected base IOS revision; refusing to patch.\n");
+            Patcher_Log("Slot "+std::to_string(config.slot)+", base IOS "+std::to_string(config.base)+": revision mismatch; expected "+std::to_string(baseEl->UnsignedAttribute("version"))+", got "+std::to_string(FromBE16(ios->tmd->titleVersion))+". Refusing to patch.\n");
             slotResults.push_back({config.slot, false});
             return;
         }
@@ -215,6 +215,7 @@ void PrepareD2XBatch(const std::string& versionFolder, std::vector<std::pair<int
             const char* moduleAttr = cEl->Attribute("module");
             
             if (moduleAttr) {
+                Patcher_Log("Slot "+std::to_string(config.slot)+": injecting module "+moduleAttr+", TMD index "+std::to_string(tmdModuleId)+"\n");
                 if (!AppendModule(*ios, versionFolder, moduleAttr, tmdModuleId)) {
                     slotFailed = true;
                     break;
@@ -245,6 +246,7 @@ void PrepareD2XBatch(const std::string& versionFolder, std::vector<std::pair<int
                     const char* newb = pEl->Attribute("newbytes");
                     if (orig && newb) {
                         if (!ApplyBinaryPatch(content, offset, ParseHexBytes(orig), ParseHexBytes(newb))) {
+                            Patcher_Log("Slot "+std::to_string(config.slot)+", base "+std::to_string(config.base)+": patch mismatch/bounds failure, content "+ToHexString(id,8)+", offset "+ToHexString(offset,8)+", content bytes "+std::to_string(content->size)+"\n");
                             slotFailed = true;
                             break;
                         }
@@ -271,12 +273,13 @@ void PrepareD2XBatch(const std::string& versionFolder, std::vector<std::pair<int
         }
         
         if (!slotFailed) {
+            Patcher_Log("Slot "+std::to_string(config.slot)+": validating prepared title\n");
             bool ok = WritePatchedIOS(config.slot, *ios);
             slotResults.push_back({config.slot, ok});
             if (ok) {
                 Patcher_Log("Prepared slot " + std::to_string(config.slot) + ".\n");
             } else {
-                Patcher_Log("Failed to write slot " + std::to_string(config.slot) + ".\n");
+                Patcher_Log("Failed to prepare slot " + std::to_string(config.slot) + ".\n");
             }
         } else {
             slotResults.push_back({config.slot, false});

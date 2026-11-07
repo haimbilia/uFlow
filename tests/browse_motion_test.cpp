@@ -58,6 +58,20 @@ int main() {
         const float expected=speed==0?1.6f:speed==1?1.3f:1.f;
         assert(std::abs(elapsed-expected)<.03f && !motion.rapid);
     }
+    // Media shelf turns are short and never build up a multi-item spin queue.
+    for(int speed:{0,1,2})for(int fps:{15,30,60,120}){
+        BrowseMotion::Bookshelf motion;float position=0,elapsed=0;
+        while(position!=1.f && elapsed<1.f){position=motion.Advance(position,1,1.f/fps,speed,true);elapsed+=1.f/fps;}
+        const float expected=speed==0?.70f:speed==1?.50f:.36f;
+        assert(position==1.f && elapsed<=expected+1.f/fps+.01f);
+        for(int target:{8,13,4,21,2})for(int frame=0;frame<2;++frame){
+            const float before=std::abs(target-position);
+            position=motion.Advance(position,float(target),1.f/fps,speed,true);
+            assert(std::abs(target-position)<=before);
+        }
+        elapsed=0;while(position!=2.f && elapsed<.8f){position=motion.Advance(position,2,1.f/fps,speed,true);elapsed+=1.f/fps;}
+        assert(position==2.f && elapsed<.8f);
+    }
     std::cout << "PASS: held scrolling, release, reverse, wrap/end stops, 10-120 fps, all speeds; worst stop "
               << worstStop << " s; Fast stop " << worstFastStop << " s, top-speed ramp " << worstFastRamp
               << " s; 1347-cover backlog settles within 1 s; single-step roll preserved\n";
