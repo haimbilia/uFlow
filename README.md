@@ -5,7 +5,7 @@ uFlow is a cover-first Wii U game library inspired by the fast console workflow
 of Aurora. One interface discovers Wii U, Wii, and GameCube games on FAT32 media;
 platform-specific launch adapters stay hidden behind a single **Launch** action.
 
-uFlow is mostly vibecoded, if download at your own risk
+uFlow is mostly vibecoded, download at your own risk.
 
 **[Downloads, setup guides and showcase videos](https://karotech.io/uflow/)**
 
