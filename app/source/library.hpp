@@ -194,3 +194,5 @@ void SaveFavorites(const std::vector<GameEntry> &games);
 
 // Read a title's own metadata without scanning the library; call on a worker.
 std::string ReadGameRegion(const GameEntry&game);
+// GameTDB artwork ID (e.g. "AMKE01"), empty when unknown; reads meta.xml, so call on a worker.
+std::string GameTdbId(const GameEntry&game);

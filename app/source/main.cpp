@@ -29,6 +29,7 @@
 #ifndef UFLOW_HOST_PREVIEW
 #include "updater.hpp"
 #endif
+#include "gametdb_covers.hpp"
 #include "launchers.hpp"
 #include "launcher_overrides.hpp"
 #include <dirent.h>
@@ -5646,6 +5647,7 @@ public:
         if(scanOpen_ && scanState_.finished && close){scanOpen_=false;detailsBackdropReady_=false;ApplyMusic();}
     }
     void PollScan() {
+        PollCoverDownload();
 
 
 
@@ -7421,6 +7423,7 @@ public:
                 return;
             }
             if(row.kind==MediaDirectoryRow::Scan) { SourceScan(); return; }
+            if(row.kind==MediaDirectoryRow::Download) { CoverDownloadActivate(); return; }
             if(row.kind==MediaDirectoryRow::Help) { mediaHelp_=true; return; }
             actual=row.kind==MediaDirectoryRow::Directory?row.source:SourceCount();
         }
@@ -7579,6 +7582,32 @@ public:
         if(!RequestMediaRefresh()){SetStatus("COULD NOT START MEDIA UPDATE",5000);return;}
         sourceMediaRefreshPending_=true;
         settings_=sourceManager_=sourceEditor_=false;
+    }
+
+    // GameTDB covers land in the shared media folders; the regular media refresh applies them.
+    void CoverDownloadActivate() {
+        if(coverDownloader_.Poll().running) { coverDownloader_.Cancel(); SetStatus("COVER DOWNLOAD CANCELLED"); return; }
+        if(preview_) { SetStatus("COVER DOWNLOAD UNAVAILABLE IN PREVIEW",5000); return; }
+        if(!coverDownloader_.Start(games_,GameTdbCovers::ChooseTargets(mediaSources_))) { SetStatus("COULD NOT START COVER DOWNLOAD",5000); return; }
+        coverDownloadReported_=false;
+        SetStatus("DOWNLOADING FROM GAMETDB");
+    }
+    void PollCoverDownload() {
+        const auto state=coverDownloader_.Poll();
+        if(!state.finished || coverDownloadReported_) return;
+        coverDownloadReported_=true;
+        if(coverDownloader_.TakeNewArtwork()) {
+            if(RequestMediaRefresh()) sourceMediaRefreshPending_=true;
+            else { SetStatus("COVERS SAVED - USE REFRESH MEDIA",6000); return; }
+        }
+        if(state.cancelled) return;
+        std::string summary=!state.error.empty()?state.error+" - ":"";
+        summary+="GAMETDB: "+std::to_string(state.saved)+" COVERS, "+std::to_string(state.metadata)+" METADATA, "+std::to_string(state.missing)+" WITHOUT COVERS";
+        if(state.databaseError) summary+=", DATABASE UNAVAILABLE";
+        if(state.skipped) summary+=", "+std::to_string(state.skipped)+" ALREADY PRESENT";
+        if(state.failed) summary+=", "+std::to_string(state.failed)+" NOT SAVED";
+        if(state.saved||state.metadata) summary+=settings_?" - APPLIED WHEN SETTINGS CLOSE":"";
+        SetStatus(summary,7000);
     }
 
     bool VideoSourceEditing() const { return mediaMode_ && draftMediaSource_.type == MediaType::Preview; }
@@ -10974,9 +11003,21 @@ private:
                     SourceCount()+static_cast<int>(entry.kind)-static_cast<int>(MediaDirectoryRow::Add);
             }
             if (sourceIndex>=SourceCount()) {
-                constexpr const char *mediaActions[]={"+  ADD DIRECTORY","REFRESH MEDIA","MEDIA SETUP GUIDE"};
+                constexpr const char *mediaActions[]={"+  ADD DIRECTORY","REFRESH MEDIA","DOWNLOAD COVERS & METADATA (GAMETDB)","MEDIA SETUP GUIDE"};
                 constexpr const char *libraryActions[]={"+  ADD DIRECTORY","ADD NEW GAMES","COMPLETE SCAN"};
                 const int action=sourceIndex-SourceCount();
+                if(mediaMode_ && action==2) {
+                    const auto download=coverDownloader_.Poll();
+                    std::string label=mediaActions[action],detail="Saves missing covers, full sleeves and game details by title ID. Existing files are kept.";
+                    if(download.running) {
+                        label="DOWNLOADING FROM GAMETDB  "+std::to_string(download.done)+" / "+std::to_string(download.total);
+                        detail=(download.current.empty()?std::string("Connecting..."):download.current)+"  -  A cancels";
+                    } else if(download.finished && !download.cancelled)
+                        detail=download.error.empty()?std::to_string(download.saved)+" covers, "+std::to_string(download.metadata)+" metadata files downloaded.":download.error;
+                    DrawFittedText(renderer_,label,x+10,y,715,2,selected?text:muted);
+                    DrawFittedText(renderer_,detail,x+10,y+26,715,1,muted);
+                    continue;
+                }
                 DrawText(renderer_,(mediaMode_?mediaActions:libraryActions)[action],x+10,y+(action&& !mediaMode_?0:8),2,selected?text:muted);
                 if(!mediaMode_ && action)DrawFittedText(renderer_,action==1?"Keeps existing games, including disconnected drives.":"Replaces catalog. Large libraries may take a long time.",x+10,y+26,715,1,muted);
                 continue;
@@ -11488,6 +11529,7 @@ private:
     bool scanFirstFrame_=false;
     bool mediaRefreshPending_=false,mediaRefresh_=false;
     bool sourceMediaRefreshPending_=false,scanKeepArtwork_=false;
+    GameTdbCovers::Downloader coverDownloader_;bool coverDownloadReported_=true;
     std::string mediaRefreshSelection_;
     Uint32 scanStarted_=0,scanElapsed_=0;
     std::size_t scanInvalid_=0;

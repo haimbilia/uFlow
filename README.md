@@ -186,5 +186,9 @@ on one platform cannot destabilize the whole library.
 Library settings offer **Add new games** to keep existing/offline entries, and
 **Complete scan** to rebuild the list from currently connected sources. Large
 complete scans can take a long time. The Media tab's **Refresh media** updates
-artwork/video/metadata for existing games only. Saving a source preserves the
+artwork/video/metadata for existing games only, and **Download covers &
+metadata (GameTDB)** fetches missing covers, full sleeves and game details
+(from `wiiutdb.xml` / `wiitdb.xml`) for Wii U, Wii and GameCube games over the
+internet (see [Content and media setup](docs/CONTENT_AND_MEDIA.md#downloading-from-gametdb)).
+Saving a source preserves the
 catalog; no game files or saves are deleted by either scan mode.
