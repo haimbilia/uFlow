@@ -1,5 +1,6 @@
 #include "prepared_models.hpp"
 #include "library.hpp"
+#include "gametdb.hpp"
 #include "cover_presentation.hpp"
 #include "console_language.hpp"
 #include "browser_path.hpp"
@@ -598,6 +599,15 @@ std::string ReadGameRegion(const GameEntry&game){
     if(!game.region.empty())return game.region;
     if(game.platform!=Platform::WiiU||game.absolutePath.empty())return "";
     return WiiURegion(ReadTextFile(game.absolutePath+"/meta/meta.xml"));
+}
+
+std::string GameTdbId(const GameEntry&game){
+    if(!game.installPackages.empty())return {};
+    if(game.platform==Platform::Wii||game.platform==Platform::GameCube)return GameTdb::DiscId(game.titleId);
+    if(game.platform!=Platform::WiiU||game.absolutePath.empty())return {};
+    if(!game.vcSystem.empty()&&game.vcSystem!="wiiu")return {}; // Injected VC titles have no retail artwork.
+    const auto meta=ReadTextFile(game.absolutePath+"/meta/meta.xml");
+    return GameTdb::WiiUId(XmlValue(meta,"product_code"),XmlValue(meta,"company_code"));
 }
 
 

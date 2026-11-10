@@ -30,7 +30,7 @@ inline std::string Text(const std::string &label){
     static const std::pair<const char*,const char*> entries[]={
         {"GENERAL","Choose the skin, startup library, navigation behavior and default A-Z mode. Audio settings are also here."},
         {"LIBRARY","Add folders containing games, choose their content type and launcher, then scan. Add new games keeps existing catalog entries; a complete scan rebuilds the catalog."},
-        {"MEDIA","Configure folders for covers, logos, backgrounds and previews. Match artwork by title ID or game name. A library-specific folder takes priority over an all-libraries folder."},
+        {"MEDIA","Configure folders for covers, logos, backgrounds and previews. Match artwork by title ID or game name. A library-specific folder takes priority over an all-libraries folder. Download covers & metadata fetches missing covers, full sleeves and game details from GameTDB by title ID."},
         {"DISPLAY","Choose how the library is presented. Layout, spacing, artwork and animation settings affect browsing; they do not change your game files."},
         {"CONTROLS","Select an action to remap it. Hold the desired buttons together and release to assign a combination. Help defaults to Minus and can be remapped here."},
         {"LAUNCHERS","Choose how games are started. Point each launcher at its installed executable or core and assign compatible file extensions. Removing an entry does not delete the emulator or games."},

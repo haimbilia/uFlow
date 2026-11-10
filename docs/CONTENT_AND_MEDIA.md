@@ -41,6 +41,10 @@ Manual scans are available only inside the Library/Media settings.
   during scanning. Use this to apply removals or rebuild existing game metadata.
 - **Media > Refresh media** updates artwork, video and metadata associations for
   the existing catalog only. It does not discover or remove games.
+- **Media > Download covers & metadata (GameTDB)** fetches missing front covers,
+  full sleeves and game details for the current catalog from
+  [GameTDB](https://www.gametdb.com/) over HTTPS, then refreshes media when
+  Settings closes. See [Downloading from GameTDB](#downloading-from-gametdb).
 
 Saving content paths/types preserves the catalog until you choose a scan.
 Startup adds newly installed titles without removing disconnected installed
@@ -195,6 +199,39 @@ downscaled during decoding; source images are limited to 8192 pixels per side
 and 16 million pixels. PNG uses a row buffer (including interlaced images), and
 JPEG uses reduced-size decoding. Texture memory keeps the existing limits.
 TGA retains the 2048-pixel/four-million-pixel limit.
+
+### Downloading from GameTDB
+
+**Settings > Media > Download covers & metadata (GameTDB)** downloads artwork and
+game details for every Wii U, Wii and GameCube game in the catalog. The Wii U
+needs an internet connection.
+
+- Wii U titles use the GameTDB ID built from `meta.xml` (`product_code` +
+  `company_code`, e.g. `WUP-P-AMKE` + `0001` → `AMKE01`); Wii and GameCube use
+  the disc ID. Virtual Console injections, installation packages and other
+  content types are skipped.
+- Files go to the first enabled **All Libraries** directory of each media type
+  (front covers, full sleeves, metadata); without one, the defaults
+  `/wiiu/apps/uFlow/media/{covers,fullcovers,metadata}` are used. Files are named
+  by title ID (`00050000101c9400.jpg`, `rmge01.png`, `gale01.json`), so they match
+  like any other media.
+- Existing files are never replaced. Delete a file to download it again.
+- **Metadata** comes from GameTDB's databases: `wiiutdb.xml` for Wii U and
+  `wiitdb.xml` for Wii and GameCube (about 1.4 MB and 8.5 MB zipped). Each is
+  downloaded once per run, only when some game still lacks a metadata file, and
+  read in a streaming pass so the 33 MB `wiitdb.xml` is never held in memory.
+  Title and synopsis follow the console language, then English. The saved JSON
+  holds synopsis, developer, publisher, genres, region, age rating (for example
+  `ESRB E`), release date and player count.
+- Cover region follows the game ID (USA → `US`, Japan → `JA`, PAL → its
+  language, then `EN`), falling back to other regions when needed.
+- Wii U art is GameTDB's HQ JPEG (front about 768×1080, sleeve about 1632×1080).
+  Wii/GameCube use the standard 160×224 front and the 1024×680 HQ sleeve.
+- A dropped connection or slow DNS lookup is retried once. A game whose
+  download still fails is counted as not saved and the rest continue; the run
+  stops with a network error only after three games in a row fail.
+- Selecting the action again while it runs cancels it. Downloaded files are
+  applied by a media refresh when Settings closes.
 
 ### Optional default files
 
