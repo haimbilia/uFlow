@@ -1,4 +1,5 @@
 #pragma once
+#include "perspective_geometry.hpp"
 #include "nes_cartridge_data.hpp"
 #include "nes_back_label.hpp"
 #include <SDL2/SDL.h>
@@ -106,7 +107,7 @@ inline void Draw(SDL_Renderer *renderer, SDL_Rect rect, SDL_Texture *label, Mate
     const auto project=[&](Point p){const float perspective=2.8f/(2.8f-p.z);return SDL_FPoint{centerX+p.x*size*perspective,centerY-p.y*size*perspective};};
     std::array<Point,maxPoints> transformed{};
     for(int i=0;i<pointCount;++i)transformed[i]=rotate(points[i]);
-    std::array<SDL_Vertex,maxFaces*3> vertices{};int used=0;
+    std::array<SDL_Vertex,maxFaces*3> vertices{};static std::array<float,maxFaces*3> clipW;int used=0;
     const Uint8 alpha=Uint8(255*std::clamp(opacity,0.f,1.f));
     // Inverse-rotated eye in source coordinates. The compiled BSP splits
     // intersecting depth ranges; centroid sorting is not sufficient for recesses.
@@ -120,8 +121,8 @@ inline void Draw(SDL_Renderer *renderer, SDL_Rect rect, SDL_Texture *label, Mate
         const Uint8 l=Uint8(255*std::clamp(.44f+.56f*(-.35f*n.x+.4f*n.y+.85f*n.z)/length,.24f,1.f));
         const auto pa=points[f.a],pb=points[f.b],pc=points[f.c];
         const bool back=(pb.x-pa.x)*(pc.y-pa.y)-(pb.y-pa.y)*(pc.x-pa.x)<0;
-        for(auto k:{f.a,f.b,f.c})vertices[used++]={project(transformed[k]),{l,l,l,alpha},
-            {(std::clamp(points[k].x/.9f+.5f,0.f,1.f)+(back?1.f:0.f))*.5f,std::clamp(.5f-points[k].y,0.f,1.f)}};
+        for(auto k:{f.a,f.b,f.c}){clipW[used]=2.8f-transformed[k].z;vertices[used++]={project(transformed[k]),{l,l,l,alpha},
+            {(std::clamp(points[k].x/.9f+.5f,0.f,1.f)+(back?1.f:0.f))*.5f,std::clamp(.5f-points[k].y,0.f,1.f)}};}
     };
     const auto visit=[&](auto &&self,int index)->void{
         if(index<0)return;
@@ -132,7 +133,7 @@ inline void Draw(SDL_Renderer *renderer, SDL_Rect rect, SDL_Texture *label, Mate
         self(self,front?node.front:node.back);
     };
     visit(visit,0);
-    if(SDL_RenderGeometry(renderer,material.Get(renderer),vertices.data(),used,nullptr,0)<0)SDL_Log("NES shell draw: %s",SDL_GetError());
+    if(PerspectiveGeometry::Draw(renderer,material.Get(renderer),vertices.data(),clipW.data(),used)<0)SDL_Log("NES shell draw: %s",SDL_GetError());
     // The source mesh has a recessed label panel right of the grip ridges.
     float labelWidth=.413f,labelHeight=.675f,frontStart=0.f,wrapDepth=0.f;
     int textureWidth=0,textureHeight=0;
@@ -154,9 +155,9 @@ inline void Draw(SDL_Renderer *renderer, SDL_Rect rect, SDL_Texture *label, Mate
             {labelX-labelWidth*.5f,.499f,.0683f},
             {labelX+labelWidth*.5f,.499f,.0683f}};
         const SDL_FPoint topUv[]={{0,0},{1,0},{1,frontStart},{0,frontStart}};
-        SDL_Vertex band[4];
-        for(int i=0;i<4;++i)band[i]={project(rotate(top[i])),{225,225,225,alpha},topUv[i]};
-        SDL_RenderGeometry(renderer,label,band,4,indices,6);
+        SDL_Vertex band[4];float w[4];
+        for(int i=0;i<4;++i){auto q=rotate(top[i]);w[i]=2.8f-q.z;band[i]={project(q),{225,225,225,alpha},topUv[i]};}
+        PerspectiveGeometry::Draw(renderer,label,band,w,4,indices,6);
     }
     if(wrapDepth==0.f && edgeLogo && eye.y>.499f){
         const auto topQuad=[&](float width,float depth,SDL_Texture *texture,SDL_Color tint){
@@ -164,9 +165,9 @@ inline void Draw(SDL_Renderer *renderer, SDL_Rect rect, SDL_Texture *label, Mate
                 {labelX-width*.5f,.500f,-depth*.5f},{labelX-width*.5f,.500f,depth*.5f},
                 {labelX+width*.5f,.500f,depth*.5f}};
             const SDL_FPoint uv[]={{1,1},{0,1},{0,0},{1,0}};
-            SDL_Vertex band[4];
-            for(int i=0;i<4;++i)band[i]={project(rotate(top[i])),tint,uv[i]};
-            SDL_RenderGeometry(renderer,texture,band,4,indices,6);
+            SDL_Vertex band[4];float w[4];
+            for(int i=0;i<4;++i){auto q=rotate(top[i]);w[i]=2.8f-q.z;band[i]={project(q),tint,uv[i]};}
+            PerspectiveGeometry::Draw(renderer,texture,band,w,4,indices,6);
         };
         topQuad(.413f,.115f,nullptr,{37,39,42,alpha});
         int w=0,h=0;
@@ -181,10 +182,10 @@ inline void Draw(SDL_Renderer *renderer, SDL_Rect rect, SDL_Texture *label, Mate
         {labelX-labelWidth*.5f,labelY-labelHeight*.5f,.0683f},
         {labelX+labelWidth*.5f,labelY-labelHeight*.5f,.0683f}};
     const SDL_FPoint uv[]={{0,frontStart},{1,frontStart},{1,1},{0,1}};
-    SDL_Vertex sticker[4];
+    SDL_Vertex sticker[4];float w[4];
     const SDL_Color tint=label?SDL_Color{255,255,255,alpha}:SDL_Color{139,141,138,alpha};
-    for(int i=0;i<4;++i)sticker[i]={project(rotate(corners[i])),tint,uv[i]};
-    SDL_RenderGeometry(renderer,label,sticker,4,indices,6);
+    for(int i=0;i<4;++i){auto q=rotate(corners[i]);w[i]=2.8f-q.z;sticker[i]={project(q),tint,uv[i]};}
+    PerspectiveGeometry::Draw(renderer,label,sticker,w,4,indices,6);
     // Restrained laminate sheen follows the same plane as the printed label.
     if(label){
         for(int i=0;i<4;++i){sticker[i].color={255,255,255,Uint8(alpha*(i<2?.10f:.01f))};}

@@ -1,0 +1,12 @@
+{
+  "width_mm": 66.72793579101562,
+  "height_mm": 41.66396713256836,
+  "depth_mm": 6.299999952316284,
+  "front_cutoff_mm": 10.030793190002441,
+  "source_triangles": 15632,
+  "sources": {
+    "source-top.stl": "88e28fbe26616fa50efd91e718f1a1cc9f763aa78b2da34bffd006fb2d0df320",
+    "source-bottom.stl": "f6af435bbe7605cd625a96372c98115e280dcaeb3af52d6cd1cbb4f6d25369e8"
+  },
+  "method": "Display LODs retain assembled STL envelope; print interior supports omitted. Internals are baked material detail."
+}

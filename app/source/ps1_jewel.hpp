@@ -1,4 +1,5 @@
 #pragma once
+#include "perspective_geometry.hpp"
 #include "ps1_jewel_data.hpp"
 #include <SDL2/SDL.h>
 #include <png.h>
@@ -11,7 +12,7 @@ namespace Ps1Jewel {
 inline float DiscAngle(unsigned milliseconds){return (milliseconds%3000)*6.28318530718f/3000.f;}
 struct Art {SDL_Texture *texture=nullptr;float u0=0,u1=1;};
 class Materials {
-    SDL_Texture *shell_=nullptr,*disc_=nullptr;
+    SDL_Texture *shell_=nullptr,*disc_=nullptr,*plain_=nullptr;
     static SDL_Texture *Load(SDL_Renderer *r,const unsigned char *data,size_t size){
         png_image im{};im.version=PNG_IMAGE_VERSION;
         if(!png_image_begin_read_from_memory(&im,data,size))return nullptr;
@@ -22,7 +23,30 @@ class Materials {
         png_image_free(&im);return t;
     }
 public:
-    ~Materials(){SDL_DestroyTexture(shell_);SDL_DestroyTexture(disc_);}
+    ~Materials(){SDL_DestroyTexture(shell_);SDL_DestroyTexture(disc_);SDL_DestroyTexture(plain_);}
+    SDL_Texture *PlainShell(SDL_Renderer *r){
+        if(plain_)return plain_;
+        // A neutral optical-plastic lid with molded rim and ribbed hinge.
+        // Built once, shared by every unbranded jewel case; artwork stays below it.
+        constexpr int side=512;std::vector<Uint8> pixels(side*side*4);
+        for(int y=0;y<side;++y)for(int x=0;x<side;++x){
+            const int edge=std::min({x,y,side-1-x,side-1-y});
+            int value=235,alpha=5;
+            if(edge<2){value=55;alpha=220;}
+            else if(edge<5){value=245;alpha=205;}
+            else if(edge<8){value=110;alpha=140;}
+            else if(edge<11){value=230;alpha=120;}
+            else if(x<48){value=(x%5<2)?115:57;alpha=230;}
+            else {
+                const float band=std::max(0.f,1.f-std::abs(float(x)-y*.48f-165.f)/85.f);
+                alpha=5+int(17*band);
+            }
+            auto *p=&pixels[(y*side+x)*4];p[0]=p[1]=p[2]=Uint8(value);p[3]=Uint8(alpha);
+        }
+        plain_=SDL_CreateTexture(r,SDL_PIXELFORMAT_RGBA32,SDL_TEXTUREACCESS_STATIC,side,side);
+        if(plain_){SDL_UpdateTexture(plain_,nullptr,pixels.data(),side*4);SDL_SetTextureBlendMode(plain_,SDL_BLENDMODE_BLEND);SDL_SetTextureScaleMode(plain_,SDL_ScaleModeLinear);}
+        return plain_;
+    }
     SDL_Texture *Shell(SDL_Renderer *r){if(!shell_)shell_=Load(r,ShellPng,sizeof(ShellPng));return shell_;}
     SDL_Texture *Disc(SDL_Renderer *r){if(!disc_)disc_=Load(r,DiscPng,sizeof(DiscPng));return disc_;}
 };
@@ -37,10 +61,10 @@ void Draw(SDL_Renderer *r,Project project,Materials &materials,bool media,Art fr
     SDL_BlendMode old;SDL_GetRenderDrawBlendMode(r,&old);SDL_SetRenderDrawBlendMode(r,SDL_BLENDMODE_BLEND);
     const int indices[]={0,1,2,0,2,3};
     const auto quad=[&](const Face &f,SDL_Texture *texture,SDL_Color ink){
-        SDL_Vertex v[4];for(int k=0;k<4;++k){const auto &c=f.c[k];v[k]={project(c.p.x,c.p.y,c.p.z).point,ink,{c.u,c.v}};}
+        SDL_Vertex v[4];float w[4];for(int k=0;k<4;++k){const auto &c=f.c[k];const auto q=project(c.p.x,c.p.y,c.p.z);w[k]=project.camera-q.depth;v[k]={q.point,ink,{c.u,c.v}};}
         const float cross=(v[1].position.x-v[0].position.x)*(v[2].position.y-v[0].position.y)-(v[1].position.y-v[0].position.y)*(v[2].position.x-v[0].position.x);
         if(cross>=0)return;
-        SDL_RenderGeometry(r,texture,v,4,indices,6);
+        PerspectiveGeometry::Draw(r,texture,v,w,4,indices,6);
     };
     std::array<int,13> order{};for(int i=0;i<13;++i)order[i]=i;
     const auto depth=[&](int i){float z=0;for(const auto &c:Faces[i].c)z+=project(c.p.x,c.p.y,c.p.z).depth;return z;};
@@ -50,18 +74,19 @@ void Draw(SDL_Renderer *r,Project project,Materials &materials,bool media,Art fr
         auto *texture=discArt?discArt:materials.Disc(r);
         const auto a=project(-.39f,-.48f,-.036f).point,b=project(.48f,-.48f,-.036f).point,c=project(.48f,.49f,-.036f).point;
         if((b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x)<0){
-            constexpr int segments=64;SDL_Vertex vertices[(segments+1)*2];int triangles[segments*6];
+            constexpr int segments=64;SDL_Vertex vertices[(segments+1)*2];float w[(segments+1)*2];int triangles[segments*6];
             for(int i=0;i<=segments;++i)for(int inner=0;inner<2;++inner){
                 const float theta=i*6.28318530718f/segments,radius=inner?.145f:1.f;
                 const float x=std::cos(theta)*radius,y=std::sin(theta)*radius;
                 const float u=.5f+.5f*std::cos(theta-angle)*radius,v=.5f-.5f*std::sin(theta-angle)*radius;
-                vertices[i*2+inner]={project(.0456f+x*.430f,.0055f+y*.489f,-.036f).point,{248,248,248,alpha},{u,v}};
+                const auto q=project(.0456f+x*.430f,.0055f+y*.489f,-.036f);w[i*2+inner]=project.camera-q.depth;
+                vertices[i*2+inner]={q.point,{248,248,248,alpha},{u,v}};
                 if(i<segments){int *t=triangles+i*6;t[0]=i*2;t[1]=i*2+2;t[2]=i*2+1;t[3]=i*2+1;t[4]=i*2+2;t[5]=i*2+3;}
             }
-            SDL_RenderGeometry(r,texture,vertices,(segments+1)*2,triangles,segments*6);
+            PerspectiveGeometry::Draw(r,texture,vertices,w,(segments+1)*2,triangles,segments*6);
         }
     }else{
-        const float left=branded?-.36f:-.48f;
+        const float left=branded?-.36f:-.395f;
         const Face cover{{{{left,-.48f,.48f},front.u0,1},{{.49f,-.48f,.48f},front.u1,1},{{.49f,.48f,.48f},front.u1,0},{{left,.48f,.48f},front.u0,0}},0};
         quad(cover,front.texture,front.texture?SDL_Color{255,255,255,alpha}:tint({48,50,54,alpha}));
     }
@@ -79,7 +104,18 @@ void Draw(SDL_Renderer *r,Project project,Materials &materials,bool media,Art fr
         // The transparent front/back windows sit over artwork: keep them neutral.
         const bool window=i==1||i==2;
         if(branded)quad(Faces[i],materials.Shell(r),window?SDL_Color{255,255,255,alpha}:tint({255,255,255,alpha}));
-        else quad(Faces[i],nullptr,window?SDL_Color{205,224,234,Uint8(alpha*.10f)}:tint({205,224,234,Uint8(alpha*(tinted?.65f:.10f))}));
+        else {
+            auto face=Faces[i];
+            // Use local lid coordinates, not the PlayStation artwork atlas.
+            if(window){
+                for(auto &c:face.c){c.u=i==1?.5f-c.p.x:c.p.x+.5f;c.v=.5f-c.p.y;}
+                quad(face,materials.PlainShell(r),{255,255,255,alpha});
+            }else {
+                // Reuse the neutral molded rim strip for the narrow edges.
+                for(int k=0;k<4;++k){face.c[k].u=(k==0||k==3)?0.f:.02f;face.c[k].v=(k<2)?0.f:1.f;}
+                quad(face,materials.PlainShell(r),tint({230,230,230,alpha}));
+            }
+        }
     }
     SDL_SetRenderDrawBlendMode(r,old);
 }

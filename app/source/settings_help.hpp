@@ -34,6 +34,7 @@ inline std::string Text(const std::string &label){
         {"DISPLAY","Choose how the library is presented. Layout, spacing, artwork and animation settings affect browsing; they do not change your game files."},
         {"CONTROLS","Select an action to remap it. Hold the desired buttons together and release to assign a combination. Help defaults to Minus and can be remapped here."},
         {"LAUNCHERS","Choose how games are started. Point each launcher at its installed executable or core and assign compatible file extensions. Removing an entry does not delete the emulator or games."},
+        {"AUTOMATIC UPDATE CHECKS","Checks for a new uFlow version on startup. OFF skips online version checks on future starts. Updates still ask before installing; interrupted-update recovery remains available."},
         {"SKIN HELP","Install standalone skin packages manually under wiiu/apps/uFlow/skins on the SD card, then choose them using Skin. Existing skins are preserved on reinstall."},
         {"SKIN","Changes the interface appearance. Layout and artwork settings remain available within the selected skin."},
         {"START VIEW","Chooses the library shown when uFlow starts. Select All to browse every enabled library."},

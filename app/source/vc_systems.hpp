@@ -12,10 +12,10 @@
 namespace VCSystems {
 struct Definition {const char *id,*name,*extensions;};
 inline constexpr Definition all[]={
-    {"ds","Nintendo DS",".nds,.srl"}, {"nes","NES",".nes,.unf,.unif,.zip"},
-    {"snes","SNES",".sfc,.smc"}, {"gba","Game Boy Advance",".gba"},
+    {"ds","Nintendo DS",".nds,.srl"}, {"nes","Nintendo Entertainment System",".nes,.unf,.unif,.zip"},
+    {"snes","Super Nintendo Entertainment System",".sfc,.smc"}, {"gba","Nintendo Game Boy Advance",".gba"},
     {"n64","Nintendo 64",".z64,.v64,.n64"},
-    {"pce","TurboGrafx-16 / PC Engine",".pce"}, {"msx","MSX",".rom,.mx1,.mx2"}
+    {"pce","NEC TurboGrafx-16",".pce"}, {"msx","Microsoft MSX",".rom,.mx1,.mx2"}
 };
 inline const Definition *Find(const std::string &id){for(const auto &s:all)if(id==s.id)return &s;return nullptr;}
 inline std::string Protocol(const std::string &p){for(const auto &s:all)if(p==std::string("vc-")+s.id+"-v1")return s.id;return {};}

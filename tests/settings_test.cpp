@@ -9,12 +9,15 @@ int main() {
     assert(!std::filesystem::exists(root));
     assert(LoadSettings().bindings[int(ControlAction::SettingsHelp)]==4);
     assert(LoadSettings().freezeNotifications);
+    assert(LoadSettings().automaticUpdateChecks);
     assert(LoadSettings().backgroundTransparency==50);
     assert(LoadSettings().menuSoundsEnabled && LoadSettings().menuSoundsVolume==35);
     std::filesystem::create_directories(root);
     const auto path=root+"/uflow.cfg";
     std::ofstream(path)<<"alphabet_filter_mode=1\nskin=1\nuse_backgrounds=1\nstartup_video=0\npreload_builtin_covers=0\n";
     auto legacy=LoadSettings();assert(!legacy.alphabetFilterMode); // Old temporary Filter mode is not a default choice.
+    assert(legacy.automaticUpdateChecks);legacy.automaticUpdateChecks=false;SaveSettings(legacy);assert(!LoadSettings().automaticUpdateChecks);
+    legacy.automaticUpdateChecks=true;SaveSettings(legacy);assert(LoadSettings().automaticUpdateChecks);
     legacy.menuSoundsEnabled=false;legacy.menuSoundsVolume=65;SaveSettings(legacy);
     assert(!LoadSettings().menuSoundsEnabled && LoadSettings().menuSoundsVolume==65);
     assert(!legacy.demoMode && legacy.demoIdleSeconds==30);

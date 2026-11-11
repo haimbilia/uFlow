@@ -74,7 +74,7 @@
         FillRoundedRect(renderer_,{40,100,4,320},0,accent);
         DrawFittedText(renderer_,game->publisher.empty()?LibraryLabel(game->libraryId):game->publisher,66,124,410,1,{175,191,163,255});
         UForceLines(game->name,66,155,454,4,2,43,ink);
-        DrawFittedText(renderer_,PlatformName(game->platform)+(game->releaseYear.empty()?std::string():"  /  "+game->releaseYear)+(game->genre.empty()?std::string():"  /  "+game->genre),66,252,455,1,{185,195,177,255});
+        DrawFittedText(renderer_,GameSystemLabel(*game)+(game->releaseYear.empty()?std::string():"  /  "+game->releaseYear)+(game->genre.empty()?std::string():"  /  "+game->genre),66,252,455,1,{185,195,177,255});
         UForceLines(game->description.empty()?"Select a game from your library to play.":game->description,66,281,453,1,2,23,{195,203,189,255});
         FillRoundedRect(renderer_,{66,350,146,44},2,accent);
         DrawText(renderer_,std::string(ActionButton(ControlAction::Launch))+"  PLAY",139,362,2,{14,24,8,255},true);

@@ -1,0 +1,27 @@
+{
+  "envelope_mm": [
+    115.5,
+    75.96896,
+    18.6
+  ],
+  "label_mm": {
+    "width": 55,
+    "height": 62.5,
+    "top_radius": 4,
+    "bottom_radius": 3,
+    "crown_diameter": 325
+  },
+  "basis": "Existing STL shell envelope; owner label dimension drawing and front photographs.",
+  "levels": [
+    {
+      "lod": "near",
+      "vertices": 751,
+      "triangles": 1181
+    },
+    {
+      "lod": "-small",
+      "vertices": 653,
+      "triangles": 841
+    }
+  ]
+}

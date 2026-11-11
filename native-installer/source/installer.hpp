@@ -22,13 +22,13 @@ constexpr uint32_t Core=1u<<31, All=(1u<<18)-1;
 constexpr int PlayStation=13,SnesRetroArch=14,NesRetroArch=15,GbaRetroArch=16,TitleInstaller=17;
 struct Component {const char *id,*name;};
 inline constexpr Component components[]={
-    {"wiiu","Wii U - installed and raw games"},{"wii","Wii - WiiFlow / USB Loader GX"},
-    {"gamecube","GameCube - Nintendont"},{"ds","Nintendo DS - Virtual Console"},
-    {"nes","NES - Virtual Console"},{"snes","SNES - Virtual Console"},{"gba","Game Boy Advance - Virtual Console"},
-    {"n64","Nintendo 64 - Virtual Console"},{"pce","TurboGrafx-16 / PC Engine - Virtual Console"},{"msx","MSX - Virtual Console"},{"noods","NooDS - alternative DS emulator"},
+    {"wiiu","Nintendo Wii U - installed and raw games"},{"wii","Nintendo Wii - WiiFlow / USB Loader GX"},
+    {"gamecube","Nintendo GameCube - Nintendont"},{"ds","Nintendo DS - Virtual Console"},
+    {"nes","Nintendo Entertainment System - Virtual Console"},{"snes","Super Nintendo Entertainment System - Virtual Console"},{"gba","Nintendo Game Boy Advance - Virtual Console"},
+    {"n64","Nintendo 64 - Virtual Console"},{"pce","NEC TurboGrafx-16 - Virtual Console"},{"msx","Microsoft MSX - Virtual Console"},{"noods","NooDS - alternative DS emulator"},
     {"startup","Start-on-boot support (initially OFF)"},{"vwii-tools","vWii console setup (automatic for Wii / GC)"},
-    {"ps1","PlayStation - RetroArch (PCSX ReARMed)"},{"snes-retroarch","SNES - RetroArch (Snes9x)"},
-    {"nes-retroarch","NES - RetroArch (Nestopia UE)"},{"gba-retroarch","Game Boy Advance - RetroArch (mGBA)"},{"title-installer","Wii U title installer - optional"}};
+    {"ps1","Sony PlayStation - RetroArch (PCSX ReARMed)"},{"snes-retroarch","Super Nintendo Entertainment System - RetroArch (Snes9x)"},
+    {"nes-retroarch","Nintendo Entertainment System - RetroArch (Nestopia UE)"},{"gba-retroarch","Nintendo Game Boy Advance - RetroArch (mGBA)"},{"title-installer","Wii U title installer - optional"}};
 inline constexpr int ComponentCount=static_cast<int>(sizeof(components)/sizeof(components[0]));
 inline bool On(uint32_t bits,int i){return (bits&(1u<<i))!=0;}
 struct FileDef {std::string path,hash;uint64_t size;uint32_t mask;char mode;}; // r=replace, k=keep, b=base
@@ -66,7 +66,7 @@ inline bool Allowed(const std::string &p){
     if(p=="wiiu/environments/aroma/modules/setup/30_bloopair.rpx"||p=="wiiu/bloopair/LICENSE")return true;
     if(p=="wiiu/apps/WiiFlow.wuhb")return true;
     if(p=="wiiu/apps/retroarch.wuhb")return true;
-    for(const char *core:{"pcsx_rearmed","snes9x","nestopia","mgba","genesis_plus_gx_wide","genesis_plus_gx"})
+    for(const char *core:{"pcsx_rearmed","snes9x","nestopia","mgba","genesis_plus_gx_wide","genesis_plus_gx","mednafen_wswan"})
         if(p==std::string("retroarch/cores/")+core+"_libretro.rpx"||p==std::string("retroarch/cores/info/")+core+"_libretro.info")return true;
     for(const char *prefix:{"wiiu/apps/uFlow/","wiiu/apps/noods/","wiiu/vc-bases/","apps/wiiflow/","apps/usbloader_gx/","apps/nintendont/","apps/d2x-cios-installer-vwii/","apps/wiiflow_channel_installer/","wiiflow/"})if(p.rfind(prefix,0)==0)return true;
     return p=="wiiu/apps/compat_installer.wuhb"||p=="wiiu/environments/aroma/modules/RPXLoadingModule.wms"||p=="wiiu/environments/aroma/modules/PluginBackend.wms"||p=="wiiu/environments/aroma/modules/ContentRedirectionModule.wms"||p=="wiiu/environments/aroma/modules/MemoryMappingModule.wms"||
@@ -97,7 +97,7 @@ inline std::vector<std::pair<std::string,std::string>> Configs(uint32_t bits,std
     std::string libraries,content,media;
     auto add=[&](int i,const std::string &parser,const std::string &ext,const std::string &folder,const std::string &launcher){
         std::string id=components[i].id;
-        const char *names[]={"Wii U","Wii","GameCube","Nintendo DS","NES","SNES","GBA","N64","PC Engine","MSX"};
+        const char *names[]={"Nintendo Wii U","Nintendo Wii","Nintendo GameCube","Nintendo DS","Nintendo Entertainment System","Super Nintendo Entertainment System","Nintendo Game Boy Advance","Nintendo 64","NEC TurboGrafx-16","Microsoft MSX"};
         const auto size=CaseProfiles::For(id,launcher,ext);
         const auto models=PreparedModels::For(id,launcher,ext);
         libraries+=id+"\t"+names[i]+"\t"+parser+"\twiiflow\t"+ext+"\t1\t"+std::to_string(i)+"\t"+launcher+"\t"+std::to_string(size.width)+"\t"+std::to_string(size.height)+"\t"+std::to_string(size.thickness)+"\t1\t0\t"+models.box+"\t"+models.media+"\t-1\t0\t-1\n";
@@ -124,7 +124,7 @@ inline std::vector<std::pair<std::string,std::string>> Configs(uint32_t bits,std
     if(On(bits,PlayStation)) {
         // CD jewel case, launched one-press through the retroarch-ps1 module.
         const std::string id=components[PlayStation].id,folder="wiiu/roms/ps1";
-        libraries+=id+"\tPlayStation\tfiles\twiiflow\t.cue,.chd,.pbp\t1\t"+std::to_string(PlayStation)+"\tps1\t142\t125\t10\t1\t0\tps1-jewel\tps1-jewel\t-1\t0\t-1\n";
+        libraries+=id+"\tSony PlayStation\tfiles\twiiflow\t.cue,.chd,.pbp\t1\t"+std::to_string(PlayStation)+"\tps1\t142\t125\t10\t1\t0\tps1-jewel\tps1-jewel\t-1\t0\t-1\n";
         content+="files\t1\t3\tfs:/vol/external01/"+folder+"\twiiflow\t"+id+"\tps1\n";dirs.push_back(folder);
         for(const char *kind:{"front","back","spine","fullcovers","backgrounds","logos","previews","metadata","media","labels"}){
             std::string path="wiiu/apps/uFlow/media/"+id+"/"+kind;dirs.push_back(path);
@@ -139,7 +139,7 @@ inline std::vector<std::pair<std::string,std::string>> Configs(uint32_t bits,std
     }
     // The legacy key now controls all cover preloading; retain it so existing
     // ON/OFF choices survive upgrades and keep-mode reinstalls.
-    std::string settings="bind_19=4\nalphabet_default_filter=0\nfreeze_notifications=1\nbind_18=0\ndemo_mode=0\ndemo_idle_seconds=30\nstart_library=__all\ncover_type=0\nlogo_layout=0\nmedia_layout=0\nthumbnail_layout=0\ncover_spacing_percent=100\nsort_mode=0\ntheme=0\nstartup_video=1\npreload_builtin_covers=1\nbackground_transparency=50\ncover_zoom=120\ninspection_zoom=4\nauto_sort_installed_vc=0\nshow_installed="+std::to_string(On(bits,0))+"\nshow_raw_wiiu="+std::to_string(On(bits,0))+"\nshow_wii="+std::to_string(On(bits,1))+"\nshow_gamecube="+std::to_string(On(bits,2))+"\n";
+    std::string settings="automatic_update_checks=1\nbind_19=4\nalphabet_default_filter=0\nfreeze_notifications=1\nbind_18=0\ndemo_mode=0\ndemo_idle_seconds=30\nstart_library=__all\ncover_type=0\nlogo_layout=0\nmedia_layout=0\nthumbnail_layout=0\ncover_spacing_percent=100\nsort_mode=0\ntheme=0\nstartup_video=1\npreload_builtin_covers=1\nbackground_transparency=50\ncover_zoom=120\ninspection_zoom=4\nauto_sort_installed_vc=0\nshow_installed="+std::to_string(On(bits,0))+"\nshow_raw_wiiu="+std::to_string(On(bits,0))+"\nshow_wii="+std::to_string(On(bits,1))+"\nshow_gamecube="+std::to_string(On(bits,2))+"\n";
     settings+="title_installer_enabled="+std::to_string(On(bits,TitleInstaller))+"\n";
     return {{"libraries.cfg",libraries},{"content_sources.cfg",content},{"media_sources.cfg",media},{"uflow.cfg",settings}};
 }

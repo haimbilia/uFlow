@@ -1,0 +1,102 @@
+[
+  {
+    "id": "nes",
+    "w": 384,
+    "h": 704,
+    "desc": "NES / Nintendo Entertainment System. Tall narrow silver, black and red label. Upper 10.85% is a separate black top-edge title strip with small white NINTENDO NES text, all comfortably within that strip. Remaining 89.15% is the complete front label, with large Nintendo red oval and ENTERTAINMENT SYSTEM wordmark arranged vertically. Fine silver grid and restrained red accent. No cropping.",
+    "source": "sources/nes.png",
+    "prompt": "Create ONE standalone flat print texture for a default retro cartridge label. Canvas aspect ratio exactly 384:704 (384 x 704 intended export). Edge-to-edge printed sticker art; no margin outside label, no cartridge, no shadows, no physical mockup, no rounded outer corners. Reuse the attractive era-appropriate branding style from the reference but REDESIGN the composition to fill this specific shape, not a square artwork pasted into a larger canvas. NES / Nintendo Entertainment System. Tall narrow silver, black and red label. Upper 10.85% is a separate black top-edge title strip with small white NINTENDO NES text, all comfortably within that strip. Remaining 89.15% is the complete front label, with large Nintendo red oval and ENTERTAINMENT SYSTEM wordmark arranged vertically. Fine silver grid and restrained red accent. No cropping. Generic system branding only; no invented game, no barcode, no missing artwork notice. Sharp readable print, clean professional design. Top-edge strip if specified must stay separate from main front art; no text straddling the boundary."
+  },
+  {
+    "id": "snes",
+    "w": 768,
+    "h": 357,
+    "desc": "SUPER NINTENDO ENTERTAINMENT SYSTEM. Landscape silver and purple US-style label. Upper 17% is a separate purple top-edge band with small white SUPER NINTENDO title printed upside down (180 degrees), all within band. Lower 83% is complete wide front sticker with big purple SUPER NINTENDO wordmark and four-color button motif on the right. Fill width.",
+    "source": "sources/snes.png",
+    "prompt": "Create ONE standalone flat print texture for a default retro cartridge label. Canvas aspect ratio exactly 768:357 (768 x 357 intended export). Edge-to-edge printed sticker art; no margin outside label, no cartridge, no shadows, no physical mockup, no rounded outer corners. Reuse the attractive era-appropriate branding style from the reference but REDESIGN the composition to fill this specific shape, not a square artwork pasted into a larger canvas. SUPER NINTENDO ENTERTAINMENT SYSTEM. Landscape silver and purple US-style label. Upper 17% is a separate purple top-edge band with small white SUPER NINTENDO title printed upside down (180 degrees), all within band. Lower 83% is complete wide front sticker with big purple SUPER NINTENDO wordmark and four-color button motif on the right. Fill width. Generic system branding only; no invented game, no barcode, no missing artwork notice. Sharp readable print, clean professional design. Top-edge strip if specified must stay separate from main front art; no text straddling the boundary."
+  },
+  {
+    "id": "genesis",
+    "w": 768,
+    "h": 638,
+    "desc": "SEGA GENESIS. Near-square landscape black label with silver wordmark, black graph grid and red stripe. Upper 7.5% is a separate red wraparound top-edge title band with small white SEGA GENESIS text completely inside band. Lower 92.5% contains complete large blue SEGA and silver GENESIS logo design. Fill the label.",
+    "source": "sources/genesis.png",
+    "prompt": "Create ONE standalone flat print texture for a default retro cartridge label. Canvas aspect ratio exactly 768:638 (768 x 638 intended export). Edge-to-edge printed sticker art; no margin outside label, no cartridge, no shadows, no physical mockup, no rounded outer corners. Reuse the attractive era-appropriate branding style from the reference but REDESIGN the composition to fill this specific shape, not a square artwork pasted into a larger canvas. SEGA GENESIS. Near-square landscape black label with silver wordmark, black graph grid and red stripe. Upper 7.5% is a separate red wraparound top-edge title band with small white SEGA GENESIS text completely inside band. Lower 92.5% contains complete large blue SEGA and silver GENESIS logo design. Fill the label. Generic system branding only; no invented game, no barcode, no missing artwork notice. Sharp readable print, clean professional design. Top-edge strip if specified must stay separate from main front art; no text straddling the boundary."
+  },
+  {
+    "id": "n64",
+    "w": 550,
+    "h": 625,
+    "desc": "Portrait Nintendo 64 label, crown diameter325mm, upper R4 and lower R3. Shape clipped by model.",
+    "source": "sources/n64.png",
+    "prompt": "Portrait offwhite Nintendo 64 default sticker, large wordmark and multicolored N emblem, small red Nintendo oval, sparse pale geometric accents. Full front artwork; no top strip. Exported to 550x625 for owner 55x62.5 mm outline.",
+    "physical_mm": [
+      55,
+      62.5
+    ]
+  },
+  {
+    "id": "gba",
+    "w": 768,
+    "h": 360,
+    "desc": "GAME BOY ADVANCE. Very wide landscape sticker, dark indigo navy with silver sweeping borders, bold white italic GAME BOY ADVANCE centered horizontally across most of width. Full front sticker; no edge strip.",
+    "source": "sources/gba.png",
+    "prompt": "Create ONE standalone flat print texture for a default retro cartridge label. Canvas aspect ratio exactly 768:360 (768 x 360 intended export). Edge-to-edge printed sticker art; no margin outside label, no cartridge, no shadows, no mockup, no rounded outer corners. Reuse era-appropriate branding style from the reference but redesign to fill this specific shape rather than a square image inside a bigger canvas. GAME BOY ADVANCE. Very wide landscape sticker, dark indigo navy with silver sweeping borders, bold white italic GAME BOY ADVANCE centered horizontally across most of width. Full front sticker; no edge strip. Generic system branding only; no invented game, barcode or missing-art notice. Sharp readable professional print."
+  },
+  {
+    "id": "gb",
+    "w": 564,
+    "h": 432,
+    "desc": "GAME BOY. Landscape silver sticker, classic purple GAME BOY wordmark across width, fine purple lines and pale gray square pattern. Full front sticker; no edge strip.",
+    "source": "sources/gb.png",
+    "prompt": "Create ONE standalone flat print texture for a default retro cartridge label. Canvas aspect ratio exactly 564:432 (564 x 432 intended export). Edge-to-edge printed sticker art; no margin outside label, no cartridge, no shadows, no mockup, no rounded outer corners. Reuse era-appropriate branding style from the reference but redesign to fill this specific shape rather than a square image inside a bigger canvas. GAME BOY. Landscape silver sticker, classic purple GAME BOY wordmark across width, fine purple lines and pale gray square pattern. Full front sticker; no edge strip. Generic system branding only; no invented game, barcode or missing-art notice. Sharp readable professional print."
+  },
+  {
+    "id": "gbc",
+    "w": 564,
+    "h": 432,
+    "desc": "GAME BOY COLOR. Landscape white sticker with dark blue GAME BOY and large multicolored COLOR below; sparse multicolored checker corner accents. Full front sticker; no edge strip.",
+    "source": "sources/gbc.png",
+    "prompt": "Create ONE standalone flat print texture for a default retro cartridge label. Canvas aspect ratio exactly 564:432 (564 x 432 intended export). Edge-to-edge printed sticker art; no margin outside label, no cartridge, no shadows, no mockup, no rounded outer corners. Reuse era-appropriate branding style from the reference but redesign to fill this specific shape rather than a square image inside a bigger canvas. GAME BOY COLOR. Landscape white sticker with dark blue GAME BOY and large multicolored COLOR below; sparse multicolored checker corner accents. Full front sticker; no edge strip. Generic system branding only; no invented game, barcode or missing-art notice. Sharp readable professional print."
+  },
+  {
+    "id": "ds",
+    "w": 597,
+    "h": 507,
+    "desc": "Nintendo DS. Landscape near-square white silver sticker with large black Nintendo DS wordmark, red and gray dual-screen emblem, thin red sweep lower edge. Full front sticker; no edge strip.",
+    "source": "sources/ds.png",
+    "prompt": "Create ONE standalone flat print texture for a default retro cartridge label. Canvas aspect ratio exactly 597:507 (597 x 507 intended export). Edge-to-edge printed sticker art; no margin outside label, no cartridge, no shadows, no mockup, no rounded outer corners. Reuse era-appropriate branding style from the reference but redesign to fill this specific shape rather than a square image inside a bigger canvas. Nintendo DS. Landscape near-square white silver sticker with large black Nintendo DS wordmark, red and gray dual-screen emblem, thin red sweep lower edge. Full front sticker; no edge strip. Generic system branding only; no invented game, barcode or missing-art notice. Sharp readable professional print."
+  },
+  {
+    "id": "pce",
+    "w": 583,
+    "h": 504,
+    "desc": "PC Engine. Landscape cream sticker with large black PC Engine wordmark and orange elliptical swoosh, fine orange square detail upper left and orange diagonal accents lower right. Full front sticker; no contacts or black HuCard block.",
+    "source": "sources/pce.png",
+    "prompt": "Create ONE standalone flat print texture for a default retro cartridge label. Canvas aspect ratio exactly 583:504 (583 x 504 intended export). Edge-to-edge printed sticker art; no margin outside label, no cartridge, no shadows, no mockup, no rounded outer corners. Reuse era-appropriate branding style from the reference but redesign to fill this specific shape rather than a square image inside a bigger canvas. PC Engine. Landscape cream sticker with large black PC Engine wordmark and orange elliptical swoosh, fine orange square detail upper left and orange diagonal accents lower right. Full front sticker; no contacts or black HuCard block. Generic system branding only; no invented game, barcode or missing-art notice. Sharp readable professional print."
+  },
+  {
+    "id": "wonderswan",
+    "w": 804,
+    "h": 300,
+    "desc": "WonderSwan. Very wide horizontal white sticker with navy title and red WonderSwan swirl arranged SIDE BY SIDE, large and filling horizontal width. Fine navy sweeping edge accents. No small centered square design. Full front sticker; no edge title.",
+    "source": "sources/wonderswan.png",
+    "prompt": "Create ONE standalone flat print texture for a default retro cartridge label. Canvas aspect ratio exactly 804:300 (804 x 300 intended export). Edge-to-edge printed sticker art; no margin outside label, no cartridge, no shadows, no mockup, no rounded outer corners. Reuse era-appropriate branding style from the reference but redesign to fill this specific shape rather than a square image inside a bigger canvas. WonderSwan. Very wide horizontal white sticker with navy title and red WonderSwan swirl arranged SIDE BY SIDE, large and filling horizontal width. Fine navy sweeping edge accents. No small centered square design. Full front sticker; no edge title. Generic system branding only; no invented game, barcode or missing-art notice. Sharp readable professional print."
+  },
+  {
+    "id": "wsc",
+    "w": 804,
+    "h": 300,
+    "desc": "WonderSwan Color. Very wide horizontal white sticker with red WonderSwan swirl on left and navy WonderSwan above colorful Color wordmark on right, filling most horizontal width. Blue and cyan sweeping border accents. No small centered square design. Full front sticker; no edge title.",
+    "source": "sources/wsc.png",
+    "prompt": "Create ONE standalone flat print texture for a default retro cartridge label. Canvas aspect ratio exactly 804:300 (804 x 300 intended export). Edge-to-edge printed sticker art; no margin outside label, no cartridge, no shadows, no mockup, no rounded outer corners. Reuse era-appropriate branding style from the reference but redesign to fill this specific shape rather than a square image inside a bigger canvas. WonderSwan Color. Very wide horizontal white sticker with red WonderSwan swirl on left and navy WonderSwan above colorful Color wordmark on right, filling most horizontal width. Blue and cyan sweeping border accents. No small centered square design. Full front sticker; no edge title. Generic system branding only; no invented game, barcode or missing-art notice. Sharp readable professional print."
+  },
+  {
+    "id": "msx",
+    "w": 768,
+    "h": 420,
+    "desc": "MSX. Wide silver white sticker with large black MSX wordmark filling horizontal center and red diagonal edge accents. Full front sticker; no edge strip.",
+    "source": "sources/msx.png",
+    "prompt": "Create ONE standalone flat print texture for a default retro cartridge label. Canvas aspect ratio exactly 768:420 (768 x 420 intended export). Edge-to-edge printed sticker art; no margin outside label, no cartridge, no shadows, no mockup, no rounded outer corners. Reuse era-appropriate branding style from the reference but redesign to fill this specific shape rather than a square image inside a bigger canvas. MSX. Wide silver white sticker with large black MSX wordmark filling horizontal center and red diagonal edge accents. Full front sticker; no edge strip. Generic system branding only; no invented game, barcode or missing-art notice. Sharp readable professional print."
+  }
+]

@@ -23,7 +23,7 @@ class PayloadSyncTest(unittest.TestCase):
         adapter = self.project / sync.H264_ADAPTER
         adapter.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(Path(__file__).resolve().parents[1] / sync.H264_ADAPTER, adapter)
-        for name in sync.COVER_CACHE_INPUTS | sync.VIDEO_COLOUR_INPUTS | sync.VIDEO_NV12_INPUTS:
+        for name in sync.WONDERSWAN_INPUTS | sync.COVER_CACHE_INPUTS | sync.VIDEO_COLOUR_INPUTS | sync.VIDEO_NV12_INPUTS | sync.HANDOFF_INPUTS | sync.CARTRIDGE_INPUTS | sync.RETROARCH_LAUNCHER_INPUTS | sync.PREPARED_MODEL_INPUTS | sync.GLASS_POPUP_INPUTS | sync.CONTENT_TYPE_SAVE_INPUTS | sync.BROWSER_PATH_INPUTS | sync.SCOPED_MEDIA_INPUTS | sync.SKIN_PACKAGE_INPUTS | sync.NUMBER_DEFAULT_INPUTS | sync.VWII_DIAGNOSTIC_INPUTS | sync.CONTROLLER_INPUTS:
             dependency = self.project / name
             dependency.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(Path(__file__).resolve().parents[1] / name, dependency)
@@ -41,10 +41,10 @@ class PayloadSyncTest(unittest.TestCase):
         unmanaged.parent.mkdir(parents=True)
         unmanaged.write_bytes(b"base fixture")
         rows.append(f'    {{"wiiu/vc-bases/nes/default/meta/meta.xml","{sync.digest(unmanaged)}",12ULL,16u,\'b\'}},')
-        self.manifest.parent.mkdir(parents=True)
+        self.manifest.parent.mkdir(parents=True, exist_ok=True)
         self.manifest.write_text("return {\n" + "\n".join(rows) + "\n};\n")
         font = self.project / "app/data/glass.ttf"
-        font.parent.mkdir(parents=True)
+        font.parent.mkdir(parents=True, exist_ok=True)
         font.write_bytes(b"font")
         shutil.copyfile(font, self.project / "native-installer/content/font.ttf")
         original_network = dict(sync.NETWORK_DISABLED_INPUTS)
@@ -76,6 +76,9 @@ class PayloadSyncTest(unittest.TestCase):
         original_ftp = sync.FTPIIU_PATCH_HASH
         self.addCleanup(setattr, sync, "FTPIIU_PATCH_HASH", original_ftp)
         sync.FTPIIU_PATCH_HASH = sync.digest(self.sources / "ftpiiu_plugin/ftpiiu.wps")
+        original_bloopair = sync.BLOOPAIR_HASH
+        self.addCleanup(setattr, sync, "BLOOPAIR_HASH", original_bloopair)
+        sync.BLOOPAIR_HASH = sync.digest(sync.inputs(self.project, self.sources)[sync.BLOOPAIR])
 
     def test_network_debug_modules_are_core_replacements_and_pinned(self):
         self.run_sync(True)
@@ -95,7 +98,8 @@ class PayloadSyncTest(unittest.TestCase):
         self.run_sync(True)
         self.run_sync()
         entries = [m for m in sync.ENTRY.finditer(self.manifest.read_text()) if m[1].startswith(prefix)]
-        self.assertEqual(len(entries), 16)
+        self.assertEqual({entry[1] for entry in entries},
+                         {path for path in sync.inputs(self.project, self.sources) if path.startswith(prefix)})
         for entry in entries:
             self.assertEqual((entry[4], entry[5]), (str(1 << 31), "k"))
 
@@ -138,7 +142,7 @@ class PayloadSyncTest(unittest.TestCase):
             self.run_sync(True)
 
     def test_renderer_dependencies_pinned(self):
-        for name in sync.COVER_CACHE_INPUTS | sync.VIDEO_COLOUR_INPUTS | sync.VIDEO_NV12_INPUTS:
+        for name in sync.WONDERSWAN_INPUTS | sync.COVER_CACHE_INPUTS | sync.VIDEO_COLOUR_INPUTS | sync.VIDEO_NV12_INPUTS | sync.HANDOFF_INPUTS | sync.CARTRIDGE_INPUTS | sync.RETROARCH_LAUNCHER_INPUTS | sync.PREPARED_MODEL_INPUTS | sync.GLASS_POPUP_INPUTS | sync.CONTENT_TYPE_SAVE_INPUTS | sync.BROWSER_PATH_INPUTS | sync.SCOPED_MEDIA_INPUTS | sync.SKIN_PACKAGE_INPUTS | sync.NUMBER_DEFAULT_INPUTS | sync.VWII_DIAGNOSTIC_INPUTS | sync.CONTROLLER_INPUTS:
             with self.subTest(name=name):
                 dependency = self.project / name
                 original = dependency.read_bytes()
@@ -338,6 +342,9 @@ class DefaultCoverGeometryTest(unittest.TestCase):
             "nes": (130, 178, 25), "snes": (178, 125, 25),
             "n64": (178, 125, 30), "gba": (127, 127, 25),
             "pce": (142, 125, 10), "msx": (135, 190, 25),
+            # Custom sleeves use the measured panel widths of the artwork.
+            "gb": (844, 849, 164), "genesis": (695, 1027, 142),
+            "ps1": (913, 819, 95), "wsc": (716, 1024, 105),
         }
         root = Path(__file__).resolve().parents[1] / "native-installer/assets/default-covers"
         self.assertEqual(set(profiles), set(sync.DEFAULT_COVERS))

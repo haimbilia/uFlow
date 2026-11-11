@@ -44,13 +44,14 @@ struct Client::Impl {
         Setup::Need(status==200,"Update server returned HTTP "+std::to_string(status));
         if(!path.empty())Setup::Need(t.size==limit,"Incomplete download");return t.text;
     }
-    void Check(){
+    void Check(bool checkVersion){
         Join();cancel=false;Set(State::Checking);
-        worker=std::thread([this]{try {
+        worker=std::thread([this,checkVersion]{try {
             Transaction tx(sd,PublicKey,channel);bool recovered=tx.Recover();
             uint64_t current=BuildSequence;auto installed=ReadSmall(tx.receipt);
             if(!installed.empty()){auto r=Parse(installed,PublicKey,channel);current=std::max(current,r.sequence);
                 if(recovered&&ReadSmall(tx.receipt+".shown")!=std::to_string(r.sequence)){release=r;{std::lock_guard<std::mutex> g(lock);state.version=r.version;state.notes=r.notes;}Set(State::Success);return;}}
+            if(!checkVersion){Set(State::Idle);return;}
             envelope=Fetch(channel+".json",32768);release=Parse(envelope,PublicKey,channel);
             if(release.sequence<=current){Set(State::Idle);return;}
             {std::lock_guard<std::mutex> g(lock);state.version=release.version;state.notes=release.notes;state.done=0;state.total=release.size;}
@@ -73,7 +74,7 @@ struct Client::Impl {
 Client::Client():impl(std::make_unique<Impl>()){curl_global_init(CURL_GLOBAL_DEFAULT);}
 Client::~Client(){Stop();}
 Snapshot Client::Poll(){std::lock_guard<std::mutex> g(impl->lock);return impl->state;}
-void Client::Check(){if(Poll().state==State::Idle)impl->Check();}
+void Client::Check(bool checkVersion){if(Poll().state==State::Idle)impl->Check(checkVersion);}
 void Client::Accept(){if(Poll().state==State::Available)impl->Install();}
 void Client::Dismiss(){auto s=Poll().state;
     if(s==State::Success){impl->Join();try{Transaction tx(impl->sd,PublicKey,impl->channel);Durable(tx.receipt+".shown",std::to_string(impl->release.sequence));}catch(const std::exception &e){std::fprintf(stderr,"uFlow update acknowledgement: %s\n",e.what());}}

@@ -194,3 +194,4 @@ void SaveFavorites(const std::vector<GameEntry> &games);
 
 // Read a title's own metadata without scanning the library; call on a worker.
 std::string ReadGameRegion(const GameEntry&game);
+std::string ReadROMRegion(const GameEntry&game); // Source evidence only; never downloaded metadata.

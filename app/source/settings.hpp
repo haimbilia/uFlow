@@ -39,6 +39,7 @@ struct UserSettings {
     bool backgroundMotion = true;
     bool preloadBuiltInCovers = true;
     bool startupVideo = true;
+    bool automaticUpdateChecks = true;
     bool demoMode = false;
     bool freezeNotifications = true;
     int demoIdleSeconds = DemoMode::DefaultSeconds;

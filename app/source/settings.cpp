@@ -33,6 +33,7 @@ void SetValue(UserSettings &settings, const std::string &key, int value) {
     else if (key == "show_gamecube") settings.showGameCube = enabled;
     else if (key == "background_motion") settings.backgroundMotion = enabled;
     else if (key == "startup_video") settings.startupVideo = enabled;
+    else if (key == "automatic_update_checks") settings.automaticUpdateChecks = enabled;
     else if (key == "demo_mode") settings.demoMode = enabled;
     else if (key == "freeze_notifications") settings.freezeNotifications = enabled;
     else if (key == "demo_idle_seconds") settings.demoIdleSeconds = std::clamp(value,DemoMode::MinSeconds,DemoMode::MaxSeconds);
@@ -152,6 +153,7 @@ bool SaveSettingsChecked(const UserSettings &settings) {
     output << "show_gamecube=" << settings.showGameCube << '\n';
     output << "background_motion=" << settings.backgroundMotion << '\n';
     output << "startup_video=" << settings.startupVideo << '\n';
+    output << "automatic_update_checks=" << settings.automaticUpdateChecks << '\n';
     output << "demo_mode=" << settings.demoMode << '\n';
     output << "freeze_notifications=" << settings.freezeNotifications << '\n';
     output << "demo_idle_seconds=" << std::clamp(settings.demoIdleSeconds,DemoMode::MinSeconds,DemoMode::MaxSeconds) << '\n';

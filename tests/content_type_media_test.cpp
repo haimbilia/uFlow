@@ -53,11 +53,14 @@ int main(){
         auto type=snes;type.id=id;type.mediaByContentType=own;
         const auto folder=root+"/defaults/"+id;Put(folder+"/Default.png");
         MediaSource fallback{MediaType::FullCover,-1,folder,true,0,id};fallback.defaultFile="Default.png";
-        assert(SaveMediaSources({sources.back(),fallback}));
+        Put(folder+"/labels/Default.png");
+        MediaSource label{MediaType::CartridgeLabel,-1,folder+"/labels",true,0,id};label.defaultFile="Default.png";
+        assert(SaveMediaSources({sources.back(),fallback,label}));
         games={g};games[0].navigationLibraryId=id;games[0].coverPath.clear();games[0].backCoverPath.clear();
         games[0].fullCoverPath=games[0].defaultSleevePath=nativeDefault;
         ApplyContentTypeMedia(games,{libraries[0],type});
         assert(games[0].defaultSleevePath==folder+"/Default.png");
+        assert(games[0].cartridgeLabelPath==folder+"/labels/Default.png");
         assert(games[0].fullCoverPath!=nativeDefault&&!ContentTypeMediaNeeded(games[0],{libraries[0],type}));
     }
     std::map<std::string,GameMedia> defaults;defaults["wiiu"].sleeve=nativeDefault;defaults["ds"].sleeve="ds-default.png";

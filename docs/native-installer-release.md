@@ -1,6 +1,6 @@
-# Edition-specific installer releases
+# Installer releases
 
-For 2026.11.7, GitHub attachments must be built from this public checkout. Never attach the private Karo app or Setup here. Karo installer and auto-update use the full edition. Both installers bundle only Glass Flow and Retro Deck, preserving existing SD settings, skins, games and saves.
+Build the app and Setup from the reviewed source checkout. Check fresh installation and preservation of existing settings, skins, games and saves.
 
 Release 2026.10.23.3 (2026102303), authorized 2026-10-23: publish About & Support
 app, Setup, signed stable update, GitHub release and Karotech page links/history.

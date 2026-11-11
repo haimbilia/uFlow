@@ -1,5 +1,7 @@
 #include "prepared_models.hpp"
 #include "library.hpp"
+#include "system_names.hpp"
+#include "media_name_match.hpp"
 #include "cover_presentation.hpp"
 #include "console_language.hpp"
 #include "browser_path.hpp"
@@ -594,18 +596,28 @@ bool ReadCacheGame(CacheReader &reader, GameEntry &game,std::uint32_t version) {
 
 } // namespace
 
-std::string ReadGameRegion(const GameEntry&game){
-    if(!game.region.empty())return game.region;
-    if(game.platform!=Platform::WiiU||game.absolutePath.empty())return "";
-    return WiiURegion(ReadTextFile(game.absolutePath+"/meta/meta.xml"));
+std::string ReadROMRegion(const GameEntry&game){
+    // ROM identity takes precedence over downloaded metadata, including old caches.
+    if((game.platform==Platform::Wii||game.platform==Platform::GameCube)&&game.titleId.size()==6){
+        switch(game.titleId[3]){case 'E':return "USA";case 'P':case 'D':case 'F':case 'I':case 'S':case 'H':case 'X':case 'Y':return "Europe";case 'J':return "Japan";case 'K':return "Korea";}
+    }
+    if(game.platform==Platform::WiiU&&!game.absolutePath.empty()){
+        const auto native=WiiURegion(ReadTextFile(game.absolutePath+"/meta/meta.xml"));if(!native.empty())return native;
+    }
+    const auto at=game.absolutePath.find_last_of("/\\");
+    auto mask=MediaNameMatch::RegionMask(game.absolutePath.substr(at==std::string::npos?0:at+1));
+    if(!mask)mask=MediaNameMatch::RegionMask(game.name);
+    if(mask){std::string result;for(const auto&[bit,label]:std::vector<std::pair<unsigned,std::string>>{{1,"USA"},{2,"Europe"},{4,"Japan"},{8,"Korea"}})if(mask&bit){if(!result.empty())result+=" / ";result+=label;}return result;}
+    return "";
 }
+std::string ReadGameRegion(const GameEntry&game){const auto region=ReadROMRegion(game);return region.empty()?game.region:region;}
 
 
 const char *PlatformName(Platform platform) {
     switch (platform) {
-        case Platform::WiiU: return "WII U";
-        case Platform::Wii: return "WII";
-        case Platform::GameCube: return "GAMECUBE";
+        case Platform::WiiU: return "Nintendo Wii U";
+        case Platform::Wii: return "Nintendo Wii";
+        case Platform::GameCube: return "Nintendo GameCube";
         case Platform::Files: return "FILES";
     }
     return "UNKNOWN";
@@ -671,6 +683,7 @@ std::vector<LibraryDefinition> LoadLibraries() {
         if(!library.id.empty()&&!library.name.empty()) libraries.push_back(std::move(library));
     }
     if(!input.is_open()) libraries={{"wiiu","Wii U",Platform::WiiU,GameLauncher::WiiFlow,".rpx",true,0},{"wii","Wii",Platform::Wii,GameLauncher::WiiFlow,".wbfs",true,1},{"gamecube","GameCube",Platform::GameCube,GameLauncher::WiiFlow,".iso,.gcm",true,2}};
+    for(auto &library:libraries) library.name=SystemNames::Display(library.id,library.name);
     if(!input.is_open())for(auto &library:libraries){const auto models=PreparedModels::For(library.id);library.boxModel=models.box;library.mediaModel=models.media;}
     if(TitleInstall::Available()&&std::none_of(libraries.begin(),libraries.end(),[](const auto&l){return l.id=="install";}))
         libraries.push_back({"install","Install Content",Platform::WiiU,GameLauncher::WiiFlow,".tmd",true,100,"title-installer"});

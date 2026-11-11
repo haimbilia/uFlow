@@ -15,7 +15,7 @@ inline const char *LayoutName(int type,int layout) {
     layout=std::clamp(layout,0,LayoutCount(type)-1);
     return type==Thumbnails?ThumbnailLayouts[layout]:type==Logo?LogoLayouts[layout]:type==Media?MediaLayouts[layout]:BoxLayouts[layout];
 }
-enum class MediaShape { Disc, MiniDisc, NES, SNES, N64, GBA, DS, HuCard, Cartridge, GB, Genesis };
+enum class MediaShape { Disc, MiniDisc, NES, SNES, N64, GBA, DS, HuCard, Cartridge, GB, Genesis, WonderSwan };
 inline MediaShape Shape(std::string id,std::string path={}) {
     for(auto *s:{&id,&path})for(char &c:*s)c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     const auto ext=path.substr(path.find_last_of('.')==std::string::npos?path.size():path.find_last_of('.'));
@@ -26,6 +26,7 @@ inline MediaShape Shape(std::string id,std::string path={}) {
     if(id=="gba" || ext==".gba")return MediaShape::GBA;
     if(id=="gb" || id=="gbc" || id=="gameboy" || id=="gameboycolor" || ext==".gb" || ext==".gbc")return MediaShape::GB;
     if(id=="genesis"||id=="megadrive"||id=="md"||ext==".md"||ext==".gen"||ext==".smd")return MediaShape::Genesis;
+    if(id=="wonderswan"||id=="wonderswancolor"||id=="ws"||id=="wsc"||ext==".ws"||ext==".wsc")return MediaShape::WonderSwan;
     if(id=="hucard" || id=="pce" || ext==".pce")return MediaShape::HuCard;
     if(id=="mini-disc" || id=="gamecube" || id=="gc" || ext==".gcm")return MediaShape::MiniDisc;
     if(id=="wiiu" || id=="wii" || id=="ps1" || id=="playstation" || ext==".iso" || ext==".chd" || ext==".cue" || ext==".wbfs")return MediaShape::Disc;

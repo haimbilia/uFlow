@@ -1,4 +1,5 @@
 #pragma once
+#include "perspective_geometry.hpp"
 #include "snes_cartridge_data.hpp"
 #include "nes_back_label.hpp"
 #include <SDL2/SDL.h>
@@ -92,6 +93,7 @@ inline void Draw(SDL_Renderer *renderer,SDL_Rect rect,SDL_Texture *label,Materia
     std::array<Point,maxPoints> transformed{};for(size_t i=0;i<count;++i)transformed[i]=view.Rotate(points[i]);
     // Heap-backed reusable draw buffer avoids a large Wii U stack allocation.
     auto &vertices=material.Vertices();vertices.clear();vertices.reserve(maxFaces*3);const auto &normals=material.Normals(near);
+    static std::vector<float> clipW;clipW.clear();clipW.reserve(maxFaces*3);
     const auto emit=[&](unsigned i){
         auto f=faces[i];auto a=transformed[f.a],b=transformed[f.b],c=transformed[f.c];
         const Point u{b.x-a.x,b.y-a.y,b.z-a.z},v{c.x-a.x,c.y-a.y,c.z-a.z};
@@ -105,13 +107,14 @@ inline void Draw(SDL_Renderer *renderer,SDL_Rect rect,SDL_Texture *label,Materia
             const float diffuse=std::max(0.f,-.38f*q.x+.48f*q.y+.79f*q.z);
             const float sheen=std::pow(std::max(0.f,-.20f*q.x+.25f*q.y+.947f*q.z),20.f)*.12f;
             const Uint8 l=Uint8(255*std::clamp(.56f+.40f*diffuse+sheen,.36f,1.f));
+            clipW.push_back(2.8f-transformed[k].z);
             vertices.push_back({view.Project(transformed[k]),{l,l,l,alpha},
                 {(std::clamp(points[k].x/Width+.5f,0.f,1.f)+(back?1.f:0.f))*.5f,std::clamp(.5f-points[k].y,0.f,1.f)}});
         }
     };
     const auto visit=[&](auto &&self,int i)->void{if(i<0)return;const auto &n=nodes[i];const bool front=n.normal.x*eye.x+n.normal.y*eye.y+n.normal.z*eye.z>=n.distance;
         self(self,front?n.back:n.front);for(unsigned k=0;k<n.count;++k)emit(n.start+k);self(self,front?n.front:n.back);};visit(visit,0);
-    SDL_RenderGeometry(renderer,material.Get(renderer),vertices.data(),int(vertices.size()),nullptr,0);
+    PerspectiveGeometry::Draw(renderer,material.Get(renderer),vertices.data(),clipW.data(),int(vertices.size()));
     SDL_BlendMode oldBlend;SDL_GetRenderDrawBlendMode(renderer,&oldBlend);SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_BLEND);
     const auto quad=[&](const std::array<Point,4>&p,SDL_Texture *texture,float v0,float v1,SDL_Color color){
         const Point u{p[1].x-p[0].x,p[1].y-p[0].y,p[1].z-p[0].z},v{p[3].x-p[0].x,p[3].y-p[0].y,p[3].z-p[0].z};
@@ -119,7 +122,7 @@ inline void Draw(SDL_Renderer *renderer,SDL_Rect rect,SDL_Texture *label,Materia
         const Point n{v.y*u.z-v.z*u.y,v.z*u.x-v.x*u.z,v.x*u.y-v.y*u.x};
         if(n.x*(eye.x-p[0].x)+n.y*(eye.y-p[0].y)+n.z*(eye.z-p[0].z)<=0)return;
         const SDL_FPoint uv[]={{0,v0},{1,v0},{1,v1},{0,v1}};SDL_Vertex verts[4];const int indices[]={0,1,2,0,2,3};
-        for(int i=0;i<4;++i)verts[i]={view.Project(view.Rotate(p[i])),color,uv[i]};SDL_RenderGeometry(renderer,texture,verts,4,indices,6);
+        float w[4];for(int i=0;i<4;++i){auto q=view.Rotate(p[i]);w[i]=2.8f-q.z;verts[i]={view.Project(q),color,uv[i]};}PerspectiveGeometry::Draw(renderer,texture,verts,w,4,indices,6);
     };
     int tw=0,th=0;float start=0.f,width=83.f,height=32.f,edge=0.f;
     if(label&&SDL_QueryTexture(label,nullptr,nullptr,&tw,&th)==0&&tw>0&&th>0){

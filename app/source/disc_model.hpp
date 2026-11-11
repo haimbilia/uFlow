@@ -1,4 +1,5 @@
 #pragma once
+#include "perspective_geometry.hpp"
 #include <SDL2/SDL.h>
 #include <algorithm>
 #include <cmath>
@@ -19,6 +20,7 @@ inline void Draw(SDL_Renderer *renderer,SDL_Rect rect,SDL_Texture *label,bool mi
         const float scale=radius*camera/(camera-zp);
         return SDL_FPoint{rect.x+rect.w*.5f+(xx*cr-yy*sr)*scale,rect.y+rect.h*.5f-(xx*sr+yy*cr)*scale};
     };
+    const auto clip=[&](float x,float y,float z){return camera-(y*sp+(-x*sy+z*cy)*cp);};
     const auto color=[&](float r,float angle){
         float red=215,green=227,blue=230;
         if(r<.34f){
@@ -43,7 +45,7 @@ inline void Draw(SDL_Renderer *renderer,SDL_Rect rect,SDL_Texture *label,bool mi
         const float a=i*2*pi/segments;cosine[i]=std::cos(a);sine[i]=std::sin(a);
         if(!front)reflection[i]=color(.8f,a);
     }
-    SDL_Vertex vertices[(segments+1)*2];int indices[segments*6];
+    SDL_Vertex vertices[(segments+1)*2];float w[(segments+1)*2];int indices[segments*6];
     for(int i=0;i<segments;++i){int *t=indices+i*6;t[0]=i*2;t[1]=i*2+2;t[2]=i*2+1;t[3]=i*2+1;t[4]=i*2+2;t[5]=i*2+3;}
     // Outer edge and the wall of the centre hole remain visible edge-on.
     for(float r:{1.f,hole}){
@@ -62,9 +64,10 @@ inline void Draw(SDL_Renderer *renderer,SDL_Rect rect,SDL_Texture *label,bool mi
             const float r=side?next:previous,x=cosine[i]*r,y=sine[i]*r;
             SDL_Color ink=front?SDL_Color{255,255,255,Uint8(255*opacity)}:r>=.34f?reflection[i]:color(r,0);
             if(!front&&r>.99f){ink.r=Uint8(ink.r*.65f);ink.g=Uint8(ink.g*.65f);ink.b=Uint8(ink.b*.65f);}
+            w[i*2+side]=clip(x,y,front?depth:-depth);
             vertices[i*2+side]={project(x,y,front?depth:-depth),ink,{.5f+x*.5f*fit,.5f-y*.5f*fit}};
         }
-        SDL_RenderGeometry(renderer,front?label:nullptr,vertices,(segments+1)*2,indices,segments*6);
+        PerspectiveGeometry::Draw(renderer,front?label:nullptr,vertices,w,(segments+1)*2,indices,segments*6);
         previous=next;
     }
 }

@@ -134,6 +134,7 @@ std::string Find(const Index &index,MediaType type,const GameEntry &game) {
     return winner;
 }
 void Metadata(GameEntry &game,const std::string &path,bool missingOnly=false) {
+    const auto romRegion=ReadGameRegion(game);
     std::ifstream input(path,std::ios::binary);
     if(Lower(path).ends_with(".json")) {
         // Bound external metadata before parsing; malformed input leaves fields intact.
@@ -170,7 +171,9 @@ void Metadata(GameEntry &game,const std::string &path,bool missingOnly=false) {
         };
         if(game.name.empty()){auto it=root.find("title");if(it!=root.end())game.name=text(it->second);}
         assign(game.description,{"description"});assign(game.publisher,{"publisher"});assign(game.developer,{"developer"});
-        assign(game.genre,{"genres","genre"});assign(game.region,{"region"});assign(game.rating,{"age_rating","rating"});
+        assign(game.genre,{"genres","genre"});
+        if(romRegion.empty())assign(game.region,{"region"});else game.region=romRegion;
+        assign(game.rating,{"age_rating","rating"});
         assign(game.releaseYear,{"release_date","year"},true);assign(game.players,{"max_players","players"});
         return;
     }
@@ -187,12 +190,13 @@ void Metadata(GameEntry &game,const std::string &path,bool missingOnly=false) {
         else if (key=="developer") target=&game.developer;
         else if (key=="description") target=&game.description;
         else if (key=="genre") target=&game.genre;
-        else if (key=="region") target=&game.region;
+        else if (key=="region" && romRegion.empty()) target=&game.region;
         else if (key=="rating") target=&game.rating;
         else if (key=="year") target=&game.releaseYear;
         else if (key=="players") target=&game.players;
         if(target && (!missingOnly || target->empty())) *target=value;
     }
+    if(!romRegion.empty())game.region=romRegion;
 }
 }
 
@@ -264,7 +268,7 @@ std::vector<MediaSource> LoadMediaSources() {
     std::vector<MediaSource> result;
     if (!input) {
         for (int i=0;i<kMediaTypeCount;++i) result.push_back({static_cast<MediaType>(i),-1,std::string(kRoot)+"/media/"+kKinds[i],true,0});
-        for(auto &source:result) if(IsCoverMedia(source.type) || source.type==MediaType::PhysicalMedia)source.defaultFile=FindDefaultMediaFile(source);
+        for(auto &source:result) if(IsCoverMedia(source.type) || source.type==MediaType::PhysicalMedia || source.type==MediaType::CartridgeLabel)source.defaultFile=FindDefaultMediaFile(source);
         return result; // existing media keeps working without migration writes
     }
     std::string line;
@@ -304,7 +308,7 @@ std::vector<MediaSource> LoadMediaSources() {
             video.volume = integer(70,0,100);
             std::string fallback;
             if(std::getline(row,fallback,'\t')) result.back().defaultFile=Trim(fallback);
-            if((IsCoverMedia(result.back().type) || result.back().type==MediaType::PhysicalMedia) && result.back().defaultFile.empty())
+            if((IsCoverMedia(result.back().type) || result.back().type==MediaType::PhysicalMedia || result.back().type==MediaType::CartridgeLabel) && result.back().defaultFile.empty())
                 result.back().defaultFile=FindDefaultMediaFile(result.back());
             video.foregroundOpacity=integer(100,0,100);
         } catch (...) {}
@@ -465,6 +469,7 @@ void EnrichLibraryMedia(std::vector<GameEntry> &games,const ScanObserver &progre
         if (!background.empty()) game.backgroundPath=background;
         game.logoPath=Find(index,MediaType::Logo,game);
         game.cartridgeLabelPath=Find(index,MediaType::CartridgeLabel,game);
+        if(game.cartridgeLabelPath.empty())game.cartridgeLabelPath=FindAsset(defaults[static_cast<int>(MediaType::CartridgeLabel)],game);
         game.physicalMediaPath=Find(index,MediaType::PhysicalMedia,game);
         if(game.physicalMediaPath.empty())game.physicalMediaPath=FindAsset(defaults[static_cast<int>(MediaType::PhysicalMedia)],game);
         game.previewPath=Find(index,MediaType::Preview,game);
@@ -512,6 +517,16 @@ void ApplyContentTypeMedia(std::vector<GameEntry> &games,const std::vector<Libra
             for(auto i:indices){auto &game=games[i];
                 game.sourceMedia=std::make_shared<GameMedia>(CaptureGameMedia(game));
                 game.defaultMediaLibraryId=id;
+                // A platform placeholder is not real game artwork. Keep real
+                // labels, but resolve placeholders for the displayed system.
+                for(const auto &source:sources)if(source.type==MediaType::CartridgeLabel){
+                    const auto path=DefaultPath(source);
+                    if(!path.empty()&&game.cartridgeLabelPath==path)game.cartridgeLabelPath.clear();
+                }
+                if(game.cartridgeLabelPath.empty())for(const auto &source:scoped)if(source.type==MediaType::CartridgeLabel){
+                    const auto path=DefaultPath(source);struct stat info{};
+                    if(!path.empty()&&!stat(path.c_str(),&info)&&S_ISREG(info.st_mode)){game.cartridgeLabelPath=path;break;}
+                }
                 if(!game.defaultSleevePath.empty())for(auto *part:{&game.coverPath,&game.fullCoverPath,&game.backCoverPath,&game.spinePath})
                     if(*part==game.defaultSleevePath)part->clear();
                 for(const auto &source:sources)if(source.enabled&&SourceMatches(source,game)&&IsCoverMedia(source.type)){

@@ -12,6 +12,16 @@ void Write(const std::string &path,const std::string &data="image") {
 }
 int main() {
     assert(!fs::exists(root)); // run only in the disposable test directory
+    const auto canonical=root+"/canonical.json";
+    Write(canonical,R"({"title":"Lost in Shadow","details":{"region":"USA","description":"Shared description"}})");
+    GameEntry european;european.platform=Platform::Wii;european.titleId="SDWP18";european.name="A Shadow's Tale";european.region="USA";
+    ReadMediaFile(european,MediaType::Metadata,canonical);
+    assert(european.name=="A Shadow's Tale"&&european.region=="Europe"&&european.description=="Shared description");
+    GameEntry tagged;tagged.platform=Platform::Files;tagged.name="European original";tagged.absolutePath=root+"/roms/Original (Europe).sfc";tagged.region="USA";
+    ReadMediaFile(tagged,MediaType::Metadata,canonical);assert(tagged.region=="Europe"&&tagged.name=="European original");
+    assert(ReadROMRegion(tagged)=="Europe");tagged.absolutePath=root+"/roms/Original.sfc";assert(ReadROMRegion(tagged).empty()); // Metadata region is not ROM evidence.
+    Write(root+"/canonical.ini","title=Lost in Shadow\nregion=USA\n");
+    ReadMediaFile(european,MediaType::Metadata,root+"/canonical.ini");assert(european.region=="Europe"&&european.name=="A Shadow's Tale");
     const auto regionRoot=root+"/regional-sleeves";
     Write(regionRoot+"/Disney's Aladdin (Japan).jpg");
     Write(regionRoot+"/Disney's Aladdin.jpg");
@@ -276,6 +286,14 @@ int main() {
     // Label artwork is independent of a full cartridge image and survives cache reload.
     const auto labelsPath=root+"/ds/labels";
     Write(labelsPath+"/Actual.jpg");
+    Write(labelsPath+"/Default.png");
+    auto missingLabel=dsGame;missingLabel.name="Missing label";
+    games={missingLabel};EnrichLibraryMedia(games);
+    assert(games[0].cartridgeLabelPath==labelsPath+"/Default.png");
+    auto disabledLabels=LoadMediaSources();
+    for(auto &source:disabledLabels)if(source.type==MediaType::CartridgeLabel)source.enabled=false;
+    games={missingLabel};EnrichLibraryMedia(games,{},&disabledLabels);
+    assert(games[0].cartridgeLabelPath.empty());
     games={dsGame};EnrichLibraryMedia(games);
     assert(games[0].cartridgeLabelPath==labelsPath+"/Actual.jpg");
     assert(games[0].physicalMediaPath==mediaPath+"/Actual.png");
