@@ -106,3 +106,5 @@ for name,filename in [("Near",system+"-cart.obj"),("Far",system+"-cart-small.obj
  lines.append("inline constexpr BspNode "+name+"Nodes[]={")
  lines.extend("{{"+",".join(f"{x:.9f}f" for x in n)+"},"+f"{d:.9f}f,{fi},{bi},{start},{count}"+"}," for n,d,fi,bi,start,count in nodes);lines.append("};")
 lines.append("}");args.output.write_text("\n".join(lines)+"\n")
+
+

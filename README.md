@@ -9,12 +9,13 @@ uFlow is mostly vibecoded, download at your own risk.
 
 **[Downloads, setup guides and showcase videos](https://karotech.io/uflow/)**
 
-Latest release: **2026.10.23.3 - About & Support**. A small Settings info button
-opens problem recording and **Send report**, with Yes/No confirmation and an SD
-copy if uploading fails. See the [release notes](docs/releases/2026.10.23.3.md).
-**If you have not applied the previous security fix through Setup, run the latest
-Setup and restart; app-only updates do not replace boot modules.** Settings,
-games and saves are preserved. Console upload confirmation remains pending.
+Latest release: **2026.11.27 — Wii U updates and DLC**. Keep matching decrypted
+updates and DLC in separate folders beside the base game. Run the matching Setup
+with Wii U support selected and restart to update the runtime modules. See the
+[Updates & DLC guide](https://karotech.io/uflow/#guide-updates-dlc).
+
+GitHub source and binaries exclude Karo Cloud and the skin downloader. Official
+auto-updates remain available and install the full official edition.
 
 uFlow requires a Wii U running Aroma. Copy `uFlow-Setup.wuhb` to
 `SD:/wiiu/apps/`, launch Setup from Wii U Menu, review the selected components,

@@ -66,7 +66,7 @@ else
 .PHONY: all
 DEPENDS := $(OFILES:.o=.d)
 all: $(OUTPUT).wuhb
-$(OUTPUT).wuhb: $(OUTPUT).rpx $(wildcard ../content/controllers/*) ../content/ui/logo.png ../content/ui/startup.mp4 $(wildcard ../content/skins/glass/background.mp4) $(wildcard ../content/sounds/*) ../content/updates/cacert.pem ../content/updates/install-helper.rpx
+$(OUTPUT).wuhb: $(OUTPUT).rpx $(wildcard ../content/controllers/*) ../content/ui/logo.png $(wildcard ../content/ui/toggle-*.png) ../content/ui/selector-chevron.png ../content/ui/startup.mp4 $(wildcard ../content/skins/glass/background.mp4) $(wildcard ../content/sounds/*) ../content/updates/cacert.pem ../content/updates/install-helper.rpx
 $(OUTPUT).rpx: $(OUTPUT).elf
 $(OUTPUT).elf: $(OFILES) $(foreach dir,$(LIBDIRS),$(wildcard $(dir)/lib/libSDL2.a))
 $(OFILES_SOURCES): $(HFILES)

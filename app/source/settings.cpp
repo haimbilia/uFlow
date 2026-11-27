@@ -101,6 +101,12 @@ UserSettings LoadSettings() {
             if(settings.musicTrack.find_first_of("/\\\r\n")!=std::string::npos) settings.musicTrack.clear();
             continue;
         }
+        if(line.substr(0,separator)=="system_artwork_directory"){
+            auto path=line.substr(separator+1);
+            if(!path.empty() && path.back()=='\r')path.pop_back();
+            if(!path.empty() && path.find_first_of("\r\n\t")==std::string::npos)settings.systemArtworkDirectory=path;
+            continue;
+        }
         if(line.substr(0,separator)=="skin_id") {
             auto id=line.substr(separator+1);if(!id.empty()&&id.back()=='\r')id.pop_back();
             if(id.size()<128&&id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")==std::string::npos)settings.skinId=id;
@@ -171,6 +177,7 @@ bool SaveSettingsChecked(const UserSettings &settings) {
     output << "cover_layout=" << settings.coverLayout << '\n';
     output << "alphabet_default_filter=" << settings.alphabetFilterMode << '\n';
     output << "sort_mode=" << settings.sortMode << '\n';
+    output << "system_artwork_directory=" << settings.systemArtworkDirectory << '\n';
     output << "skin_id=" << settings.skinId << '\n';
     output << "skin=" << settings.skin << '\n';
     output << "welcome_dismissed=" << settings.welcomeDismissed << '\n';

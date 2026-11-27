@@ -44,7 +44,7 @@
         gridTargetX_+=horizontal;gridTargetY_+=vertical;gridSelection_=selected_;
     }
     void UpdateGridCamera(float seconds) {
-        if(SceneSkin()||!WallLayout()){gridCameraReady_=false;return;}
+        if(!WallLayout() || (SceneSkin() && !UsesSelectedPresentation())){gridCameraReady_=false;return;}
         EnsureGridSelection();
         const float blend=1.f-std::exp(-std::max(0.f,seconds)*24.f);
         const float x=gridTargetX_,y=gridTargetY_;
@@ -246,6 +246,12 @@
     }
     bool HomeTouch(int x,int y) {
         if(LayoutSkin())return LayoutTouch(x,y);
+        const auto &avatar=SkinSpec();
+        const bool switchHeader=SwitchSkin()&&!UForceSkin();
+        const int avatarX=UForceSkin()?1186:avatar.avatarX;
+        const int avatarY=UForceSkin()?20:switchHeader?(WiiUMenuLayout()?16:avatar.avatarY):avatar.avatarY+(preferences_.skin==1?-20:-26);
+        const int size=UForceSkin()?36:switchHeader&&WiiUMenuLayout()?44:avatar.avatarSize;
+        if(x>=avatarX && x<avatarX+size && y>=avatarY && y<avatarY+size){OpenProfilePicker();return true;}
         if(UForceSkin()&&UForceTouch(x,y))return true;
         if(GlassFooterAvailable())for(int i=0;i<7;++i){const auto r=GlassFooterRect(i);if(x>=r.x&&x<r.x+r.w&&y>=r.y&&y<r.y+r.h){ActivateDock(i);return true;}}
 
@@ -334,13 +340,13 @@
     void CancelHomeSwipe(bool force=false){homeSwipe_.Cancel(force);}
     bool HomeSwipeInput(bool sample,bool valid,bool down,int x,int y){
         if(OverlayOpen()){homeSwipe_.Cancel();return false;}
-        if(SceneSkin()){
+        if(SceneSkin() && !UsesSelectedPresentation()){
             const auto *library=SceneLibrary();
             const bool inside=library&&x>=library->x&&x<library->x+library->w&&y>=library->y&&y<library->y+library->h;
             const bool grid=library&&(library->mode=="grid"||library->mode=="shelf");
-            const auto event=homeSwipe_.Update(sample,valid,down,x,y,inside,inside&&grid,
+            const auto event=homeSwipe_.Update(sample,valid,down,x,y,inside && (!library||library->mode!="wheel-vertical"),inside && (grid||library->mode=="wheel-vertical"),
                 library?float(library->w)/library->columns:120.f,library?float(library->h)/library->rows:100.f);
-            if(event.dx||event.dy){sceneButtonFocus_=-1;dockFocus_=-1;DismissVideo();Move(event.dx+(grid?event.dy*library->columns:0));}
+            if(event.dx||event.dy){sceneButtonFocus_=-1;dockFocus_=-1;DismissVideo();if(InSystemView())ChangeTab(event.dx);else Move(event.dx+(grid?event.dy*library->columns:event.dy));}
             if(event.tap)HomeTouch(event.x,event.y);
             return event.consumed;
         }

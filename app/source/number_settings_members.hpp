@@ -2,7 +2,7 @@
     NumberRepeat::Hold numberHold_,numberTouchHold_;
     int numberTouchField_=0,numberTouchTop_=0,numberTouchHeight_=0,numberTouchLeft_=0,numberTouchSplit_=0;
     int NumericSettingsField(bool requireEditing=true) const {
-        if(!settings_||settingsSidebar_||settingsAction_>=0||settingsHelpOpen_||draftExit_!=DraftExit::None||typeText_||directoryBrowser_||launcherBrowse_||vcMapMode_||supportOpen_)return 0;
+        if(profilePicker_||!settings_||settingsSidebar_||settingsAction_>=0||settingsHelpOpen_||draftExit_!=DraftExit::None||typeText_||directoryBrowser_||launcherBrowse_||vcMapMode_||supportOpen_)return 0;
         if(boxColorOpen_)return boxColorRow_>=1&&boxColorRow_<=3?800+boxColorRow_:0;
         if(requireEditing&&!settingsEditing_)return 0;
         if(typeEditor_)return (typeRow_==5||(typeRow_>=11&&typeRow_<=13))?100+typeRow_:0;
@@ -11,7 +11,7 @@
         if(sourceManager_||typeManager_||mediaHelp_)return 0;
         if(audioSettings_)return settingsRow_==2||settingsRow_==5?400+settingsRow_:0;
         if(settingsCategory_==0)return preferences_.demoMode&&settingsRow_==10?510:0;
-        if(settingsCategory_==3)return settingsRow_==3||settingsRow_==4||settingsRow_==5||settingsRow_==12||settingsRow_==16?600+settingsRow_:0;
+        if(settingsCategory_==3)return settingsRow_==4||settingsRow_==5||settingsRow_==6||settingsRow_==13||settingsRow_==17?599+settingsRow_:0;
         return 0;
     }
     int SettingsHeldHorizontal(int direction,bool edge,Uint32 now){
@@ -22,7 +22,7 @@
         if(boxColorOpen_)return false;
         if(begin){
             numberTouchHold_.Reset();numberTouchField_=0;
-            if(!settings_||settingsProgress_<.95f)return false;
+            if(profilePicker_||!settings_||settingsProgress_<.95f)return false;
             int *selection=&settingsRow_,first=SettingsFirstRow(),count=SettingsRowCount(),visible=6;
             int top=187,pitch=audioSettings_?48:62,height=audioSettings_?46:57,split=990,left=860,bottom=574;
             if(typeEditor_){selection=&typeRow_;first=std::max(0,typeRow_-5);count=TypeRowCount()-2;visible=8;top=260;pitch=height=40;split=760;left=390;bottom=548;}

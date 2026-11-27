@@ -94,6 +94,8 @@ inline std::string HashFile(const std::string &path,const Progress &p,const std:
 }
 inline void Write(const std::string &path,const std::string &text){std::ofstream f(path,std::ios::binary|std::ios::trunc);f.write(text.data(),text.size());f.flush();bool ok=bool(f);f.close();Need(ok&&!f.fail(),"Write failed: "+path);}
 inline std::vector<std::pair<std::string,std::string>> Configs(uint32_t bits,std::vector<std::string> &dirs,const std::vector<FileDef> &files={}){
+    const std::string artwork="wiiu/apps/uFlow/media/System Artwork";
+    dirs.push_back(artwork);
     std::string libraries,content,media;
     auto add=[&](int i,const std::string &parser,const std::string &ext,const std::string &folder,const std::string &launcher){
         std::string id=components[i].id;
@@ -140,6 +142,7 @@ inline std::vector<std::pair<std::string,std::string>> Configs(uint32_t bits,std
     // The legacy key now controls all cover preloading; retain it so existing
     // ON/OFF choices survive upgrades and keep-mode reinstalls.
     std::string settings="automatic_update_checks=1\nbind_19=4\nalphabet_default_filter=0\nfreeze_notifications=1\nbind_18=0\ndemo_mode=0\ndemo_idle_seconds=30\nstart_library=__all\ncover_type=0\nlogo_layout=0\nmedia_layout=0\nthumbnail_layout=0\ncover_spacing_percent=100\nsort_mode=0\ntheme=0\nstartup_video=1\npreload_builtin_covers=1\nbackground_transparency=50\ncover_zoom=120\ninspection_zoom=4\nauto_sort_installed_vc=0\nshow_installed="+std::to_string(On(bits,0))+"\nshow_raw_wiiu="+std::to_string(On(bits,0))+"\nshow_wii="+std::to_string(On(bits,1))+"\nshow_gamecube="+std::to_string(On(bits,2))+"\n";
+    settings+="system_artwork_directory=fs:/vol/external01/"+artwork+"\n";
     settings+="title_installer_enabled="+std::to_string(On(bits,TitleInstaller))+"\n";
     return {{"libraries.cfg",libraries},{"content_sources.cfg",content},{"media_sources.cfg",media},{"uflow.cfg",settings}};
 }

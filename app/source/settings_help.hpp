@@ -28,14 +28,14 @@ inline std::string ContentTypeText(int row) {
 }
 inline std::string Text(const std::string &label){
     static const std::pair<const char*,const char*> entries[]={
-        {"GENERAL","Choose the skin, startup library, navigation behavior and default A-Z mode. Audio settings are also here."},
+        {"GENERAL","Choose your Wii U profile, startup library, navigation behavior and default A-Z mode. Audio settings are also here."},
         {"LIBRARY","Add folders containing games, choose their content type and launcher, then scan. Add new games keeps existing catalog entries; a complete scan rebuilds the catalog."},
         {"MEDIA","Configure folders for covers, logos, backgrounds and previews. Match artwork by title ID or game name. A library-specific folder takes priority over an all-libraries folder."},
         {"DISPLAY","Choose how the library is presented. Layout, spacing, artwork and animation settings affect browsing; they do not change your game files."},
         {"CONTROLS","Select an action to remap it. Hold the desired buttons together and release to assign a combination. Help defaults to Minus and can be remapped here."},
         {"LAUNCHERS","Choose how games are started. Point each launcher at its installed executable or core and assign compatible file extensions. Removing an entry does not delete the emulator or games."},
-        {"AUTOMATIC UPDATE CHECKS","Checks for a new uFlow version on startup. OFF skips online version checks on future starts. Updates still ask before installing; interrupted-update recovery remains available."},
         {"SKIN HELP","Install standalone skin packages manually under wiiu/apps/uFlow/skins on the SD card, then choose them using Skin. Existing skins are preserved on reinstall."},
+        {"PROFILE","Switch the active Wii U user and continue in uFlow."},
         {"SKIN","Changes the interface appearance. Layout and artwork settings remain available within the selected skin."},
         {"START VIEW","Chooses the library shown when uFlow starts. Select All to browse every enabled library."},
         {"WRAP NAVIGATION","When enabled, browsing past the first or last game continues from the other end of the library."},
@@ -61,7 +61,7 @@ inline std::string Text(const std::string &label){
         {"INSPECTION ZOOM","Sets the magnification used when inspecting a cover."},
         {"BACKGROUND MOTION","Enables animated background movement while browsing."},
         {"REFLECTIONS","Shows reflections beneath artwork in layouts that support them."},
-        {"ACCENT COLOR","Choose the highlight color used by the interface."},
+        {"ACCENT COLOR","Skin Default uses the current skin's highlight color. Choose a color to use it across skins."},
         {"BACKGROUNDS","Shows matching game backgrounds when available in your media folders."},
         {"TITLE LOGOS","Shows matching game logos when available."},
         {"VIDEO PREVIEWS","Allows matching preview videos to play while browsing."},
@@ -74,6 +74,7 @@ inline std::string Text(const std::string &label){
         {"CONTENT TYPE","Assigns games from this folder to a system or custom library."},
         {"MEDIA TYPE","Choose the artwork stored in this folder, such as covers, backgrounds, logos or videos."},
         {"SCAN DEPTH","Controls how many levels of subfolders are searched. Larger values include deeper folders and can take longer to scan."},
+        {"AUTOMATIC UPDATE CHECKS","Checks for a new uFlow version on startup. OFF skips online version checks on future starts. Updates still ask before installing; interrupted-update recovery remains available."},
         {"ENABLED","Includes this entry in scanning or launcher selection. Disabling it does not delete its files."},
         {"LAUNCHER","Choose the installed emulator or launch method used for games in this source."},
         {"AUTO SORT VC BY SYSTEM","Separates supported Virtual Console content into its original systems during scanning."},
@@ -98,9 +99,9 @@ inline std::string Text(const std::string &label){
         {"SAVE LAUNCHER","Saves the edited launcher configuration."},
         {"REMOVE ENTRY","Removes this configuration entry. Its game or emulator files are not deleted."},
         {"SETTINGS HELP","Opens help about the currently selected Settings item. Minus is the default; assign another button or combination in Controls."},
-        {"SAVE REPORT","Saves a redacted diagnostic report on your SD card. You can share that file manually when requesting support. Nothing is uploaded."},
-        {"PROBLEM RECORDING","Records recent app status events to help diagnose a problem. Start recording, reproduce the issue, then send a report."},
-        {"CRASH REPORT NOTIFICATIONS","Offers to send saved diagnostic evidence after a suspected crash or freeze and restart. Disabling notifications does not send or delete local reports."}
+        {"SAVE REPORT","Saves a redacted diagnostic report on your SD card. You can share it manually; nothing is uploaded."},
+        {"PROBLEM RECORDING","Records recent app status events to help diagnose a problem. Start recording, reproduce the issue, then save a report."},
+        {"CRASH REPORT NOTIFICATIONS","Offers to save diagnostic evidence after a suspected crash or freeze and restart. Disabling notifications does not upload or delete local reports."}
     };
     for(const auto&e:entries)if(label==e.first)return e.second;
     return "Select this entry to edit its configuration. Save to keep your changes, or use Back to return. Changing configuration does not move your game files.";

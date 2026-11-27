@@ -2,6 +2,7 @@
 #include "RPXLoading.h"
 #include "RawSourcePath.h"
 #include "RawExitTrace.h"
+#include "RawPerformanceTrace.h"
 #include "../../app/source/usb_storage.hpp"
 #include "RawTitleKernel.h"
 #include "RawHai.h"
@@ -24,7 +25,7 @@
 #include <wuhb_utils/utils.h>
 #include <wums.h>
 
-#define VERSION "v0.3.6-raw-port18-dot-paths"
+#define VERSION "v0.3.6-raw-port28-local-dlc"
 
 static void RawLauncherTrace(const char *message) {
     FILE *file = fopen("fs:/vol/external01/wiiu/raw-launcher.log", "a");
@@ -41,6 +42,22 @@ WUMS_DEPENDS_ON(homebrew_content_redirection);
 WUMS_DEPENDS_ON(homebrew_wuhb_utils);
 WUMS_DEPENDS_ON(homebrew_functionpatcher);
 
+static void RegisterFunctionPatches() {
+    for (uint32_t i = 0; i < rpx_utils_function_replacements_size; i++) {
+        bool wasPatched = false;
+        const auto status = FunctionPatcher_AddFunctionPatch(&rpx_utils_function_replacements[i], nullptr, &wasPatched);
+        // SUCCESS means registered. Dynamic RPLs (including nn_aoc/nn_acp)
+        // need not be loaded at module initialization; FunctionPatcher applies
+        // these registered hooks when their library is loaded into the game.
+        if (status != FUNCTION_PATCHER_RESULT_SUCCESS) {
+            char message[160];
+            snprintf(message,sizeof(message),"homebrew_rpx_loader: hook %u registration failed (%d)",i,static_cast<int>(status));
+            OSFatal(message);
+        }
+        if (!wasPatched) OSReport("uFlow: hook %u registered, awaiting target library/process\n",i);
+    }
+}
+
 WUMS_INITIALIZE() {
     initLogging();
 
@@ -49,12 +66,7 @@ WUMS_INITIALIZE() {
     }
 
     DEBUG_FUNCTION_LINE("Patch functions");
-    for (uint32_t i = 0; i < rpx_utils_function_replacements_size; i++) {
-        bool wasPatched = false;
-        if (FunctionPatcher_AddFunctionPatch(&rpx_utils_function_replacements[i], nullptr, &wasPatched) != FUNCTION_PATCHER_RESULT_SUCCESS || !wasPatched) {
-            OSFatal("homebrew_rpx_loader: Failed to patch function");
-        }
-    }
+    RegisterFunctionPatches();
     DEBUG_FUNCTION_LINE("Patch functions finished");
     gReplacementInfo = {};
 
@@ -88,12 +100,15 @@ WUMS_INITIALIZE() {
 }
 
 WUMS_APPLICATION_ENDS() {
+    RawPerformanceWrite();
     RawExitTracePoint("module-end-enter");
     RL_UnmountCurrentRunningBundle();
     RawExitTracePoint("bundle-layers-released");
 
     gReplacementInfo.rpxReplacementInfo.isRPXReplaced = false;
 
+    gRawAssetCache.Clear();
+    gRawUpdateFiles.Clear();
     RPXLoadingCleanUp();
     RawExitTracePoint("file-readers-released");
     // Raw FSA clients belong to the outgoing process; reopen on game start.
@@ -123,6 +138,7 @@ WUMS_ALL_APPLICATION_ENDS_DONE() {
 }
 
 WUMS_APPLICATION_STARTS() {
+    RawPerformanceBegin(gLooseTitleInfo.pending);
     RawExitTraceBegin(gLooseTitleInfo.pending);
     OSReport("uFlow loader: application-start entry pid=%u\n", OSGetUPID());
     UFlowReturnApplicationStarts();
@@ -167,7 +183,7 @@ WUMS_APPLICATION_STARTS() {
         }
         std::string contentPath = RawSourcePath(gLooseTitleInfo.contentPath);
         std::string codePath    = RawSourcePath(gLooseTitleInfo.codePath);
-        std::string metaPath    = codePath.substr(0, codePath.size() - strlen("code")) + "meta";
+        std::string metaPath    = contentPath.substr(0, contentPath.size() - strlen("content")) + "meta";
         std::string savePath    = std::string("fs:/vol/external01/") + gLooseTitleInfo.savePath;
         std::string commonPath  = savePath + "/common";
         std::string userPath    = savePath + string_format("/%08X", 0x80000000 | persistentId);
@@ -184,6 +200,19 @@ WUMS_APPLICATION_STARTS() {
                                                          "/vol/code",
                                                          codePath.c_str(),
                                                          FS_LAYER_TYPE_EX_REPLACE_DIRECTORY);
+        ContentRedirectionStatus updateResult=CONTENT_REDIRECTION_RESULT_SUCCESS;
+        ContentRedirectionStatus dlcResult=CONTENT_REDIRECTION_RESULT_SUCCESS;
+        if(gLooseTitleInfo.updateContentPath[0]) {
+            const auto update=RawSourcePath(gLooseTitleInfo.updateContentPath);
+            // Newer layers run first; missing update files continue to base.
+            updateResult=ContentRedirection_AddFSLayer(&updateLayerHandle,"Raw title update",
+                update.c_str(),FS_LAYER_TYPE_CONTENT_MERGE);
+        }
+        if(gLooseTitleInfo.dlcPath[0]) {
+            const auto dlc=RawSourcePath(gLooseTitleInfo.dlcPath);
+            dlcResult=ContentRedirection_AddFSLayerEx(&dlcLayerHandle,"Raw title DLC",
+                gLooseTitleInfo.dlcVolume,dlc.c_str(),FS_LAYER_TYPE_EX_REPLACE_DIRECTORY);
+        }
         ContentRedirectionStatus metaResult = CONTENT_REDIRECTION_RESULT_SUCCESS;
         struct stat metaInfo {};
         if (stat(metaPath.c_str(), &metaInfo) == 0 && S_ISDIR(metaInfo.st_mode)) {
@@ -202,6 +231,8 @@ WUMS_APPLICATION_STARTS() {
                  contentResult, codeResult, metaResult, saveResult);
         RawLauncherTrace(traceLine);
         if (contentResult != CONTENT_REDIRECTION_RESULT_SUCCESS ||
+            updateResult != CONTENT_REDIRECTION_RESULT_SUCCESS ||
+            dlcResult != CONTENT_REDIRECTION_RESULT_SUCCESS ||
             codeResult != CONTENT_REDIRECTION_RESULT_SUCCESS ||
             metaResult != CONTENT_REDIRECTION_RESULT_SUCCESS ||
             saveResult != CONTENT_REDIRECTION_RESULT_SUCCESS) {
@@ -210,6 +241,22 @@ WUMS_APPLICATION_STARTS() {
             OSFatal("Wii U Raw Launcher: failed to install filesystem redirection");
         }
 
+        RawLauncherTrace("update index load begin");
+        if(gLooseTitleInfo.updateContentPath[0] &&
+           !gRawUpdateFiles.Load(codePath+"/uflow-update-index.txt",gLooseTitleInfo.updateContentPath)) {
+            RawLauncherTrace("update index load FAILED");
+            OSFatal("uFlow: unable to read the prepared update index. Relaunch from uFlow.");
+        }
+        snprintf(traceLine,sizeof(traceLine),"update index ready: files=%u",static_cast<unsigned>(gRawUpdateFiles.Size()));
+        RawLauncherTrace(traceLine);
+        gRawAssetCache.Clear();
+        if(!RawSourceUSB(gLooseTitleInfo.contentPath)) {
+            const auto identity=RawAssetHex(gLooseTitleInfo.assetFingerprint);
+            const auto cache=std::string("wiiu/cache/raw-assets/")+RawAssetHex(gLooseTitleInfo.baseTitleId)+"/"+identity;
+            const bool loaded=gRawAssetCache.Load(RawSourcePath(cache.c_str()),cache,identity);
+            snprintf(traceLine,sizeof(traceLine),"asset cache: loaded=%d files=%u",loaded,static_cast<unsigned>(gRawAssetCache.Size()));
+            RawLauncherTrace(traceLine);
+        }
         RawHai::InstallCompanionPatch();
         gLooseTitleInfo.pending = false;
         gLooseTitleInfo.active  = true;

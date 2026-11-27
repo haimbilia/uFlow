@@ -53,7 +53,7 @@ struct Client::Impl {
                 if(recovered&&ReadSmall(tx.receipt+".shown")!=std::to_string(r.sequence)){release=r;{std::lock_guard<std::mutex> g(lock);state.version=r.version;state.notes=r.notes;}Set(State::Success);return;}}
             if(!checkVersion){Set(State::Idle);return;}
             envelope=Fetch(channel+".json",32768);release=Parse(envelope,PublicKey,channel);
-            if(release.sequence<=current){Set(State::Idle);return;}
+            if(release.sequence<=current||tx.IsSkipped(release.sequence)){Set(State::Idle);return;}
             {std::lock_guard<std::mutex> g(lock);state.version=release.version;state.notes=release.notes;state.done=0;state.total=release.size;}
             Set(State::Available);
         }catch(const std::exception &e){std::fprintf(stderr,"uFlow update check: %s\n",e.what());Set(State::Idle);}});
@@ -76,7 +76,12 @@ Client::~Client(){Stop();}
 Snapshot Client::Poll(){std::lock_guard<std::mutex> g(impl->lock);return impl->state;}
 void Client::Check(bool checkVersion){if(Poll().state==State::Idle)impl->Check(checkVersion);}
 void Client::Accept(){if(Poll().state==State::Available)impl->Install();}
-void Client::Dismiss(){auto s=Poll().state;
+void Client::Dismiss(bool skipVersion){auto s=Poll().state;
+    if(skipVersion && s==State::Available){
+        impl->Join();
+        try{Transaction(impl->sd,PublicKey,impl->channel).Skip(impl->release.sequence);}
+        catch(const std::exception &e){impl->Set(State::Error,e.what());return;}
+    }
     if(s==State::Success){impl->Join();try{Transaction tx(impl->sd,PublicKey,impl->channel);Durable(tx.receipt+".shown",std::to_string(impl->release.sequence));}catch(const std::exception &e){std::fprintf(stderr,"uFlow update acknowledgement: %s\n",e.what());}}
     if(s==State::Available||s==State::Success||s==State::Error)impl->Set(State::Idle);
 }

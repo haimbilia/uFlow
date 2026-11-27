@@ -35,6 +35,7 @@ fs*/
 # Shared-file integration still requires the mandatory source release check.
 app/source/cloud_media.cpp
 app/source/cloud_media.hpp
+tests/cloud_region_test.cpp
 app/source/cloud_settings_members.hpp
 app/content/cloud/
 docs/cloud-media.md

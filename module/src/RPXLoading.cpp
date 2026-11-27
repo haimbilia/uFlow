@@ -10,8 +10,12 @@
 #include "RawTitleProfile.h"
 #include "RawReadRange.h"
 #include "RawNativePath.h"
+#include "RawAddons.h"
+#include "RawAddonNativePath.h"
+#include "FileUtils.h"
 #include "RawNativePathStorage.h"
 #include "RawFrameStats.h"
+#include "RawPerformanceTrace.h"
 #include "../../app/source/return_to_uflow.hpp"
 #include "data/defaultIcon.h"
 #include "globals.h"
@@ -160,6 +164,16 @@ DECL_FUNCTION(void, Raw_TraceExit, int code){
 static std::atomic<uint32_t> sRawReadSamples{0};
 static std::atomic<uint32_t> sRawSlowReadSamples{0};
 static std::atomic<uint32_t> sRawNativeOpenSamples{0};
+static RawPerformanceTrace sRawPerformance;
+static OSTime sRawPerformanceStart=0, sRawPerformanceFrame=0;
+static uint32_t PerformanceMs(){return static_cast<uint32_t>(OSTicksToMilliseconds(OSGetTime()-sRawPerformanceStart));}
+void RawPerformanceBegin(bool active){sRawPerformanceStart=OSGetTime();sRawPerformanceFrame=0;sRawPerformance.Begin(active);}
+void RawPerformanceWrite(){sRawPerformance.StopAndWrite("fs:/vol/external01/wiiu/raw-performance.log");}
+static void PerformanceOpen(const char *kind,OSTime started,const char *path,int result,int handle=0){
+    if(!sRawPerformance.Enabled())return;
+    ++sRawPerformance.opens;
+    sRawPerformance.Record(kind,PerformanceMs(),OSTicksToMicroseconds(OSGetTime()-started),handle,result,0,path);
+}
 static std::atomic<uint32_t> sRawSaveOpenSamples{0};
 static std::atomic<uint32_t> sRawFlushSamples{0};
 static std::atomic<uint32_t> sRawSpaceSamples{0};
@@ -169,11 +183,58 @@ static uint32_t sRawFrameReports = 0;
 static uint32_t sRawMaxSwapUs = 0;
 static std::atomic_flag sRawFrameGuard = ATOMIC_FLAG_INIT;
 
+// Bounded in-memory timing only; never change routing or completion semantics.
+static void PerformanceOperation(const char *kind, OSTime started, int result,
+                                 FSFileHandle handle=0, const char *path="") {
+    if (!gLooseTitleInfo.active || !sRawPerformance.Enabled()) return;
+    const auto us=static_cast<uint32_t>(OSTicksToMicroseconds(OSGetTime()-started));
+    if(us>=10000 || result<0)
+        sRawPerformance.Record(kind,PerformanceMs(),us,handle,result,0,path?path:"");
+}
+
+// BEGIN RAW STALL HOOKS
+DECL_FUNCTION(FSStatus, Raw_FSGetStat, FSClient *client, FSCmdBlock *block,
+              const char *path, FSStat *stat, FSErrorFlag errorMask) {
+    const auto started=OSGetTime();
+    const auto result=real_Raw_FSGetStat(client,block,path,stat,errorMask);
+    PerformanceOperation("stat-path",started,result,0,path);
+    return result;
+}
+DECL_FUNCTION(FSStatus, Raw_FSCloseFile, FSClient *client, FSCmdBlock *block,
+              FSFileHandle handle, FSErrorFlag errorMask) {
+    const auto started=OSGetTime();
+    const auto result=real_Raw_FSCloseFile(client,block,handle,errorMask);
+    PerformanceOperation("close-file",started,result,handle);
+    return result;
+}
+DECL_FUNCTION(FSStatus, Raw_FSSetPosFile, FSClient *client, FSCmdBlock *block,
+              FSFileHandle handle, FSAFilePosition pos, FSErrorFlag errorMask) {
+    const auto started=OSGetTime();
+    const auto result=real_Raw_FSSetPosFile(client,block,handle,pos,errorMask);
+    PerformanceOperation("seek-file",started,result,handle);
+    return result;
+}
+// END RAW STALL HOOKS
+
 DECL_FUNCTION(void, Raw_GX2SwapScanBuffers) {
     const bool raw = gLooseTitleInfo.active;
     const OSTime started = raw ? OSGetTime() : 0;
     real_Raw_GX2SwapScanBuffers();
-    if (!raw || sRawFrameGuard.test_and_set(std::memory_order_acquire)) return;
+    if(raw) PerformanceOperation("swap-call",started,0);
+    if (!raw) return;
+    if(sRawPerformance.Enabled()) ++sRawPerformance.frameCalls;
+    if(sRawFrameGuard.test_and_set(std::memory_order_acquire)) {
+        if(sRawPerformance.Enabled()) ++sRawPerformance.frameGuardDrops;
+        return;
+    }
+    if(sRawPerformance.Enabled()) {
+        const auto now=OSGetTime();
+        if(sRawPerformanceFrame) {
+            const auto gap=static_cast<uint32_t>(OSTicksToMicroseconds(now-sRawPerformanceFrame));
+            if(gap>=50000)sRawPerformance.Record("frame-gap",PerformanceMs(),gap,0,0,0);
+        }
+        sRawPerformanceFrame=now;
+    }
     if (sRawFrameReports < 24) {
         const OSTime ended = OSGetTime();
         const auto swapUs = static_cast<uint32_t>(OSTicksToMicroseconds(ended - started));
@@ -194,12 +255,21 @@ DECL_FUNCTION(void, Raw_GX2SwapScanBuffers) {
 }
 
 static void FinishRawRead(void *buffer, uint32_t size, uint32_t count,
-                          FSStatus result, OSTime started) {
+                          FSStatus result, OSTime started, FSFileHandle handle) {
     const uint32_t bytes = RawReadBytes(static_cast<int32_t>(result), size, count);
+    if(sRawPerformance.Enabled()) {
+        ++sRawPerformance.syncReads;
+        const auto us=static_cast<uint32_t>(OSTicksToMicroseconds(OSGetTime()-started));
+        if(us>=10000 || result<0)sRawPerformance.Record("sync-read",PerformanceMs(),us,handle,result,bytes);
+    }
     // libmocha's unaligned head/tail reads use memcpy. Publish CPU-written
     // data before a game can submit this buffer to the GPU/DSP. No invalidation:
     // it could discard precisely the dirty bytes we need to preserve.
-    if (buffer && bytes) DCFlushRange(buffer, bytes);
+    if (buffer && bytes) {
+        const auto flushStart=OSGetTime();
+        DCFlushRange(buffer, bytes);
+        PerformanceOperation("read-buffer-flush",flushStart,0,handle);
+    }
     const auto elapsed = static_cast<uint32_t>(OSTicksToMilliseconds(OSGetTime() - started));
     sRawWindowReadCalls.fetch_add(1, std::memory_order_relaxed);
     sRawWindowReadMs.fetch_add(elapsed, std::memory_order_relaxed);
@@ -218,7 +288,7 @@ DECL_FUNCTION(FSStatus, Raw_FSReadFile, FSClient *client, FSCmdBlock *block,
     const bool raw = gLooseTitleInfo.active;
     const OSTime started = raw ? OSGetTime() : 0;
     const auto result = real_Raw_FSReadFile(client, block, buffer, size, count, handle, flags, errorMask);
-    if (raw) FinishRawRead(buffer, size, count, result, started);
+    if (raw) FinishRawRead(buffer, size, count, result, started, handle);
     return result;
 }
 
@@ -228,7 +298,33 @@ DECL_FUNCTION(FSStatus, Raw_FSReadFileWithPos, FSClient *client, FSCmdBlock *blo
     const bool raw = gLooseTitleInfo.active;
     const OSTime started = raw ? OSGetTime() : 0;
     const auto result = real_Raw_FSReadFileWithPos(client, block, buffer, size, count, pos, handle, flags, errorMask);
-    if (raw) FinishRawRead(buffer, size, count, result, started);
+    if (raw) FinishRawRead(buffer, size, count, result, started, handle);
+    return result;
+}
+
+DECL_FUNCTION(FSStatus, Raw_FSReadFileAsync, FSClient *client, FSCmdBlock *block,
+              uint8_t *buffer,uint32_t size,uint32_t count, FSFileHandle handle,
+              uint32_t flags,FSErrorFlag errorMask,FSAsyncData *asyncData) {
+    const auto started=OSGetTime();
+    const auto result=real_Raw_FSReadFileAsync(client,block,buffer,size,count, handle,flags,errorMask,asyncData);
+    if(gLooseTitleInfo.active && sRawPerformance.Enabled()) {
+        ++sRawPerformance.asyncSubmits;
+        const auto us=static_cast<uint32_t>(OSTicksToMicroseconds(OSGetTime()-started));
+        if(us>=10000 || result<0)sRawPerformance.Record("read-async-submit",PerformanceMs(),us,handle,result,RawReadBytes(count,size,count));
+    }
+    return result;
+}
+
+DECL_FUNCTION(FSStatus, Raw_FSReadFileWithPosAsync, FSClient *client, FSCmdBlock *block,
+              uint8_t *buffer,uint32_t size,uint32_t count, uint32_t pos, FSFileHandle handle,
+              uint32_t flags,FSErrorFlag errorMask,FSAsyncData *asyncData) {
+    const auto started=OSGetTime();
+    const auto result=real_Raw_FSReadFileWithPosAsync(client,block,buffer,size,count, pos, handle,flags,errorMask,asyncData);
+    if(gLooseTitleInfo.active && sRawPerformance.Enabled()) {
+        ++sRawPerformance.asyncSubmits;
+        const auto us=static_cast<uint32_t>(OSTicksToMicroseconds(OSGetTime()-started));
+        if(us>=10000 || result<0)sRawPerformance.Record("read-async-submit",PerformanceMs(),us,handle,result,RawReadBytes(count,size,count));
+    }
     return result;
 }
 
@@ -241,6 +337,7 @@ DECL_FUNCTION(FSStatus, Raw_FSGetStatFile, FSClient *client, FSCmdBlock *block,
     if (!gLooseTitleInfo.active) {
         return real_Raw_FSGetStatFile(client, block, handle, stat, errorMask);
     }
+    const auto measuredStart=OSGetTime();
     OSMessageQueue queue;
     OSMessage slot;
     OSInitMessageQueue(&queue, &slot, 1);
@@ -251,6 +348,7 @@ DECL_FUNCTION(FSStatus, Raw_FSGetStatFile, FSClient *client, FSCmdBlock *block,
 #endif
     auto result = FSGetStatFileAsync(client, block, handle, stat, errorMask, &async);
     if (result != FS_STATUS_OK) {
+        PerformanceOperation("stat-file",measuredStart,result,handle);
         OSReport("uFlow raw: stat submit=%d\n", result);
         return result;
     }
@@ -258,6 +356,7 @@ DECL_FUNCTION(FSStatus, Raw_FSGetStatFile, FSClient *client, FSCmdBlock *block,
     OSReceiveMessage(&queue, &message, OS_MESSAGE_FLAGS_BLOCKING);
     auto *completed = FSGetAsyncResult(reinterpret_cast<FSMessage *>(&message));
     result = completed->status;
+    PerformanceOperation("stat-file",measuredStart,result,handle);
 #ifdef UFLOW_RAW_TRACE
     OSReport("uFlow raw: stat complete handle=%08X result=%d size=%u\n",
              (uint32_t) handle, result, result == FS_STATUS_OK ? stat->size : 0);
@@ -271,13 +370,13 @@ DECL_FUNCTION(FSStatus, Raw_FSGetStatFile, FSClient *client, FSCmdBlock *block,
 
 DECL_FUNCTION(FSStatus, Raw_FSOpenFile, FSClient *client, FSCmdBlock *block,
               const char *path, const char *mode, FSFileHandle *handle, FSErrorFlag errorMask) {
+    const auto measuredStart=OSGetTime();
     RawNativePathStorage storage(gLooseTitleInfo.active);
     char *nativePath = storage.get();
     // Allocation failure must not fall back to the wrapper title's save.
     if (gLooseTitleInfo.active && !nativePath) return FS_STATUS_FATAL_ERROR;
-    const bool native = RawNativeOpenPath(nativePath, RawNativePathStorage::Capacity, gLooseTitleInfo.active,
-                                          path, mode, gLooseTitleInfo.contentPath, gLooseTitleInfo.codePath,
-                                          gLooseTitleInfo.savePath);
+    const bool native = gRawAssetCache.Resolve(nativePath,RawNativePathStorage::Capacity,path,mode,gLooseTitleInfo.active) || RawAddonNativeOpenPath(nativePath, RawNativePathStorage::Capacity, gLooseTitleInfo,
+                                          path, mode, [](const std::string &p){return gRawUpdateFiles.Contains(p);});
     auto result = real_Raw_FSOpenFile(client, block, native ? nativePath : path, mode, handle, errorMask);
     if (native && std::strncmp(path, "/vol/save/", 10) == 0 &&
         sRawSaveOpenSamples.fetch_add(1, std::memory_order_relaxed) < 16) {
@@ -295,23 +394,26 @@ DECL_FUNCTION(FSStatus, Raw_FSOpenFile, FSClient *client, FSCmdBlock *block,
                  result == FS_STATUS_OK && handle ? (uint32_t) *handle : 0);
     }
 #endif
+    PerformanceOpen("open-sync",measuredStart,native?nativePath:path,result,(result==FS_STATUS_OK && handle?*handle:0));
     return result;
 }
 
 DECL_FUNCTION(FSStatus, Raw_FSOpenFileAsync, FSClient *client, FSCmdBlock *block,
               const char *path, const char *mode, FSFileHandle *handle,
               FSErrorFlag errorMask, FSAsyncData *asyncData) {
+    const auto measuredStart=OSGetTime();
     RawNativePathStorage storage(gLooseTitleInfo.active);
     char *nativePath = storage.get();
     // Allocation failure must not fall back to the wrapper title's save.
     if (gLooseTitleInfo.active && !nativePath) return FS_STATUS_FATAL_ERROR;
-    const bool native = RawNativeOpenPath(nativePath, RawNativePathStorage::Capacity, gLooseTitleInfo.active,
-                                          path, mode, gLooseTitleInfo.contentPath, gLooseTitleInfo.codePath,
-                                          gLooseTitleInfo.savePath);
+    const bool native = gRawAssetCache.Resolve(nativePath,RawNativePathStorage::Capacity,path,mode,gLooseTitleInfo.active) || RawAddonNativeOpenPath(nativePath, RawNativePathStorage::Capacity, gLooseTitleInfo,
+                                          path, mode, [](const std::string &p){return gRawUpdateFiles.Contains(p);});
     // Native FS copies the path into the command block during submission;
     // the caller's async queue/callback and completion status stay unchanged.
-    return real_Raw_FSOpenFileAsync(client, block, native ? nativePath : path,
+    const auto result=real_Raw_FSOpenFileAsync(client, block, native ? nativePath : path,
                                     mode, handle, errorMask, asyncData);
+    PerformanceOpen("open-async-submit",measuredStart,native?nativePath:path,result);
+    return result;
 }
 
 // Games may use either standard or extended opens, synchronously or
@@ -320,13 +422,13 @@ DECL_FUNCTION(FSStatus, Raw_FSOpenFileEx, FSClient *client, FSCmdBlock *block,
               const char *path, const char *mode, FSMode createMode,
               FSOpenFileFlags openFlag, uint32_t preallocSize,
               FSFileHandle *handle, FSErrorFlag errorMask) {
+    const auto measuredStart=OSGetTime();
     RawNativePathStorage storage(gLooseTitleInfo.active);
     char *nativePath = storage.get();
     // Allocation failure must not fall back to the wrapper title's save.
     if (gLooseTitleInfo.active && !nativePath) return FS_STATUS_FATAL_ERROR;
-    const bool native = RawNativeOpenPath(nativePath, RawNativePathStorage::Capacity, gLooseTitleInfo.active,
-                                          path, mode, gLooseTitleInfo.contentPath, gLooseTitleInfo.codePath,
-                                          gLooseTitleInfo.savePath);
+    const bool native = gRawAssetCache.Resolve(nativePath,RawNativePathStorage::Capacity,path,mode,gLooseTitleInfo.active) || RawAddonNativeOpenPath(nativePath, RawNativePathStorage::Capacity, gLooseTitleInfo,
+                                          path, mode, [](const std::string &p){return gRawUpdateFiles.Contains(p);});
     const auto result = real_Raw_FSOpenFileEx(client, block, native ? nativePath : path, mode,
                                               createMode, openFlag, preallocSize, handle, errorMask);
     if (native && std::strncmp(path, "/vol/save/", 10) == 0 &&
@@ -334,6 +436,7 @@ DECL_FUNCTION(FSStatus, Raw_FSOpenFileEx, FSClient *client, FSCmdBlock *block,
         OSReport("uFlow raw-port10: native save open-ex result=%d handle=%08X mode=%s path=%s\n",
                  result, result == FS_STATUS_OK && handle ? (uint32_t)*handle : 0, mode, nativePath);
     }
+    PerformanceOpen("open-ex-sync",measuredStart,native?nativePath:path,result,(result==FS_STATUS_OK && handle?*handle:0));
     return result;
 }
 
@@ -341,13 +444,13 @@ DECL_FUNCTION(FSStatus, Raw_FSOpenFileExAsync, FSClient *client, FSCmdBlock *blo
               const char *path, const char *mode, FSMode createMode,
               FSOpenFileFlags openFlag, uint32_t preallocSize,
               FSFileHandle *handle, FSErrorFlag errorMask, FSAsyncData *asyncData) {
+    const auto measuredStart=OSGetTime();
     RawNativePathStorage storage(gLooseTitleInfo.active);
     char *nativePath = storage.get();
     // Allocation failure must not fall back to the wrapper title's save.
     if (gLooseTitleInfo.active && !nativePath) return FS_STATUS_FATAL_ERROR;
-    const bool native = RawNativeOpenPath(nativePath, RawNativePathStorage::Capacity, gLooseTitleInfo.active,
-                                          path, mode, gLooseTitleInfo.contentPath, gLooseTitleInfo.codePath,
-                                          gLooseTitleInfo.savePath);
+    const bool native = gRawAssetCache.Resolve(nativePath,RawNativePathStorage::Capacity,path,mode,gLooseTitleInfo.active) || RawAddonNativeOpenPath(nativePath, RawNativePathStorage::Capacity, gLooseTitleInfo,
+                                          path, mode, [](const std::string &p){return gRawUpdateFiles.Contains(p);});
     // Do not replace or wait on the caller's callback/queue. In particular,
     // never inspect *handle until the caller receives the async completion.
     const auto result = real_Raw_FSOpenFileExAsync(client, block, native ? nativePath : path, mode,
@@ -358,6 +461,7 @@ DECL_FUNCTION(FSStatus, Raw_FSOpenFileExAsync, FSClient *client, FSCmdBlock *blo
         OSReport("uFlow raw-port10: native save open-ex async submit=%d mode=%s path=%s\n",
                  result, mode, nativePath);
     }
+    PerformanceOpen("open-ex-async-submit",measuredStart,native?nativePath:path,result,0);
     return result;
 }
 
@@ -464,7 +568,68 @@ DECL_FUNCTION(void, _SYSLaunchTitleWithStdArgsInNoSplash, uint64_t titleId, void
     real__SYSLaunchTitleWithStdArgsInNoSplash(titleId, u1);
 }
 
+// Only the active raw title's locally discovered DLC is exposed. The AOC
+// descriptor layout matches Cafe's 0x68-byte ABI (also used by Loadiine).
+struct RawAOCTitle {
+    uint64_t titleId;
+    uint32_t groupId;
+    uint16_t version;
+    char path[88];
+    uint8_t padding[2];
+};
+static_assert(sizeof(RawAOCTitle)==0x68);
+static bool RawLocalDLC(uint64_t title) {
+    return gLooseTitleInfo.active && gLooseTitleInfo.dlcPath[0] &&
+        title==((gLooseTitleInfo.baseTitleId&0xffffffffULL)|0x0005000c00000000ULL);
+}
+DECL_FUNCTION(int, Raw_ACPGetAddOnUniqueId, unsigned int *ids, int size) {
+    if(gLooseTitleInfo.active && gLooseTitleInfo.dlcPath[0] && ids && size>0) {
+        ids[0]=(gLooseTitleInfo.baseTitleId>>8)&0xffff;return 0;
+    }
+    return real_Raw_ACPGetAddOnUniqueId(ids,size);
+}
+DECL_FUNCTION(int, Raw_AOC_ListTitle, uint32_t *count, RawAOCTitle *titles, uint32_t capacity, void *buffer, uint32_t size) {
+    if(gLooseTitleInfo.active && gLooseTitleInfo.dlcPath[0] && count && (titles || !capacity)) {
+        *count=capacity?1:0;
+        if(capacity) {
+            titles[0]={};
+            titles[0].titleId=(gLooseTitleInfo.baseTitleId&0xffffffffULL)|0x0005000c00000000ULL;
+            titles[0].groupId=(gLooseTitleInfo.baseTitleId>>8)&0xffff;
+            titles[0].version=gLooseTitleInfo.dlcVersion;
+            strcpy(titles[0].path,gLooseTitleInfo.dlcVolume);
+        }
+        return 0;
+    }
+    return real_Raw_AOC_ListTitle(count,titles,capacity,buffer,size);
+}
+DECL_FUNCTION(int, Raw_AOC_GetPurchaseInfo, uint32_t *owned, uint64_t title, uint16_t *ids, uint32_t count, void *buffer, uint32_t size) {
+    if(RawLocalDLC(title) && owned && ids) {
+        for(uint32_t i=0;i<count;++i) {
+            owned[i]=0;
+            for(unsigned j=0;j<gLooseTitleInfo.dlcContentCount;++j)
+                if(ids[i]==gLooseTitleInfo.dlcContentIds[j]) {owned[i]=1;break;}
+        }
+        return 0;
+    }
+    return real_Raw_AOC_GetPurchaseInfo(owned,title,ids,count,buffer,size);
+}
+DECL_FUNCTION(int, Raw_AOC_OpenTitle, char *path, RawAOCTitle *target, void *buffer, unsigned int size) {
+    if(target && path && RawLocalDLC(target->titleId)) {
+        strcpy(path,gLooseTitleInfo.dlcVolume);return 0;
+    }
+    return real_Raw_AOC_OpenTitle(path,target,buffer,size);
+}
+DECL_FUNCTION(int, Raw_AOC_CloseTitle, RawAOCTitle *target) {
+    if(target && RawLocalDLC(target->titleId))return 0;
+    return real_Raw_AOC_CloseTitle(target);
+}
+
 function_replacement_data_t rpx_utils_function_replacements[] = {
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_AOC_ListTitle, LIBRARY_NN_AOC, AOC_ListTitle, FP_TARGET_PROCESS_GAME),
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_AOC_GetPurchaseInfo, LIBRARY_NN_AOC, AOC_GetPurchaseInfo, FP_TARGET_PROCESS_GAME),
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_AOC_CloseTitle, LIBRARY_NN_AOC, AOC_CloseTitle, FP_TARGET_PROCESS_GAME),
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_ACPGetAddOnUniqueId, LIBRARY_NN_ACP, ACPGetAddOnUniqueId, FP_TARGET_PROCESS_GAME),
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_AOC_OpenTitle, LIBRARY_NN_AOC, AOC_OpenTitle, FP_TARGET_PROCESS_GAME),
         REPLACE_FUNCTION_FOR_PROCESS(UFlow_ProcUIProcessMessages, LIBRARY_PROC_UI, ProcUIProcessMessages, FP_TARGET_PROCESS_WII_U_MENU),
         REPLACE_FUNCTION_FOR_PROCESS(Raw_TraceProcUIProcessMessages, LIBRARY_PROC_UI, ProcUIProcessMessages, FP_TARGET_PROCESS_GAME),
         REPLACE_FUNCTION_FOR_PROCESS(Raw_TraceProcUIShutdown, LIBRARY_PROC_UI, ProcUIShutdown, FP_TARGET_PROCESS_GAME),
@@ -478,7 +643,12 @@ function_replacement_data_t rpx_utils_function_replacements[] = {
         REPLACE_FUNCTION_FOR_PROCESS(Raw_GX2SwapScanBuffers, LIBRARY_GX2, GX2SwapScanBuffers, FP_TARGET_PROCESS_GAME),
         REPLACE_FUNCTION_FOR_PROCESS(Raw_FSReadFile, LIBRARY_COREINIT, FSReadFile, FP_TARGET_PROCESS_GAME),
         REPLACE_FUNCTION_FOR_PROCESS(Raw_FSReadFileWithPos, LIBRARY_COREINIT, FSReadFileWithPos, FP_TARGET_PROCESS_GAME),
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_FSReadFileAsync, LIBRARY_COREINIT, FSReadFileAsync, FP_TARGET_PROCESS_GAME),
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_FSReadFileWithPosAsync, LIBRARY_COREINIT, FSReadFileWithPosAsync, FP_TARGET_PROCESS_GAME),
         REPLACE_FUNCTION_FOR_PROCESS(Raw_FSGetStatFile, LIBRARY_COREINIT, FSGetStatFile, FP_TARGET_PROCESS_GAME),
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_FSGetStat, LIBRARY_COREINIT, FSGetStat, FP_TARGET_PROCESS_GAME),
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_FSCloseFile, LIBRARY_COREINIT, FSCloseFile, FP_TARGET_PROCESS_GAME),
+        REPLACE_FUNCTION_FOR_PROCESS(Raw_FSSetPosFile, LIBRARY_COREINIT, FSSetPosFile, FP_TARGET_PROCESS_GAME),
         REPLACE_FUNCTION_FOR_PROCESS(Raw_FSOpenFile, LIBRARY_COREINIT, FSOpenFile, FP_TARGET_PROCESS_GAME),
         REPLACE_FUNCTION_FOR_PROCESS(Raw_FSOpenFileAsync, LIBRARY_COREINIT, FSOpenFileAsync, FP_TARGET_PROCESS_GAME),
         REPLACE_FUNCTION_FOR_PROCESS(Raw_FSOpenFileEx, LIBRARY_COREINIT, FSOpenFileEx, FP_TARGET_PROCESS_GAME),
@@ -709,7 +879,7 @@ static uint64_t XmlU64(const std::string &xml, const char *tag, int base, uint64
     return end == value.c_str() ? fallback : static_cast<uint64_t>(parsed);
 }
 
-static bool SendRawTitleProfile(const char *codePath, const char *rpxPath, bool enabled) {
+static bool SendRawTitleProfile(const char *codePath, const char *rpxPath, bool enabled, const char *baseCodePath = nullptr) {
     RawTitleProfile profile {};
     profile.magic          = RAW_TITLE_PROFILE_MAGIC;
     profile.profileVersion = RAW_TITLE_PROFILE_VERSION;
@@ -730,6 +900,13 @@ static bool SendRawTitleProfile(const char *codePath, const char *rpxPath, bool 
         profile.titleVersion = XmlU32(appXml, "title_version", 16, 0);
         profile.sdkVersion   = XmlU32(appXml, "sdk_version", 10, 20909);
         profile.appType      = XmlU32(appXml, "app_type", 16, 0x80000000);
+        // An update supplies executable settings/version, but is not a launchable
+        // title. Keep the base identity for ACP, saves, and add-on discovery.
+        if(baseCodePath) {
+            const auto baseXml=ReadTextFile(RawSourcePath(baseCodePath)+"/app.xml");
+            profile.titleId=XmlU64(baseXml,"title_id",16,0);
+            profile.appType=XmlU32(baseXml,"app_type",16,0x80000000);
+        }
         profile.groupId      = XmlU32(appXml, "group_id", 16, 0);
         profile.cmdFlags     = XmlU32(cosXml, "cmdFlags", 10, 0);
         profile.maxSize      = XmlU32(cosXml, "max_size", 16, 0x40000000);
@@ -814,6 +991,8 @@ static bool SendRawTitleProfile(const char *codePath, const char *rpxPath, bool 
     return success;
 }
 
+bool RL_SupportsRawAddons() { return true; }
+
 bool RL_SupportsWiiVCHai() {
     return true;
 }
@@ -838,6 +1017,7 @@ RPXLoaderStatus RL_PrepareLaunchFromLooseDirectory(const char *rpxPath,
     sRawWindowReadCalls.store(0, std::memory_order_relaxed);
     sRawWindowReadMs.store(0, std::memory_order_relaxed);
     sRawFrames = {};
+    sRawFrameGuard.clear(std::memory_order_release);
     sRawFrameReports = sRawMaxSwapUs = 0;
     if (!IsSafeRelativePath(rpxPath) || !IsSafeRelativePath(contentPath) ||
         !IsSafeRelativePath(codePath) || !IsSafeRelativePath(savePath) ||
@@ -854,12 +1034,57 @@ RPXLoaderStatus RL_PrepareLaunchFromLooseDirectory(const char *rpxPath,
         return RPX_LOADER_RESULT_NOT_FOUND;
     }
 
-    if (!SendRawTitleProfile(codePath, rpxPath, true)) {
+    const std::string baseCodePath=codePath;
+    const std::string baseRoot=RawSourcePath(codePath).substr(0,RawSourcePath(codePath).size()-5);
+    const auto addons=RawAddons::Discover(baseRoot);
+    const std::string relativeRoot=std::string(codePath).substr(0,strlen(codePath)-5);
+    const auto relativeAddon=[&](const std::string &p) {
+        return p.empty()?std::string():relativeRoot+p.substr(baseRoot.size());
+    };
+    const std::string updateContent=addons.update.empty()?std::string():relativeAddon(addons.update)+"/content";
+    const std::string dlcPath=relativeAddon(addons.dlc);
+    if(updateContent.size()>=sizeof(gLooseTitleInfo.updateContentPath) || dlcPath.size()>=sizeof(gLooseTitleInfo.dlcPath))
+        return RPX_LOADER_RESULT_INVALID_ARGUMENT;
+    std::string stagedCode,stagedRpx;
+    if(!addons.update.empty()) {
+        stagedCode="wiiu/cache/raw-code/"+RawAddons::Id(addons.title);
+        const auto cache=RawSourcePath(stagedCode.c_str());
+        CreateSubfolder(cache.c_str());
+        if(!RawAddons::StageCode(RawSourcePath(codePath),addons.update+"/code",cache))
+            return RPX_LOADER_RESULT_UNKNOWN_ERROR;
+        // Enumerate while the launching application still owns its normal FS
+        // environment. Never walk the update tree during application-start.
+        if(FILE *log=fopen("fs:/vol/external01/wiiu/raw-launcher.log","a")) {
+            fprintf(log,"native update scan begin\n"); fclose(log);
+        }
+        RawUpdateFileIndex preparedIndex;
+        if(!preparedIndex.Build(addons.update+"/content",updateContent) ||
+           !preparedIndex.Save(cache+"/uflow-update-index.txt",updateContent))
+            return RPX_LOADER_RESULT_UNKNOWN_ERROR;
+        if(FILE *log=fopen("fs:/vol/external01/wiiu/raw-launcher.log","a")) {
+            fprintf(log,"native update scan complete: files=%u\n",static_cast<unsigned>(preparedIndex.Size())); fclose(log);
+        }
+        auto filename=XmlValue(ReadTextFile(addons.update+"/code/cos.xml"),"argstr");
+        filename=filename.substr(0,filename.find_first_of(" \t\r\n"));
+        filename=filename.substr(filename.find_last_of("/\\")+1);
+        if(filename.empty())filename=std::string(rpxPath).substr(std::string(rpxPath).find_last_of('/')+1);
+        stagedRpx=stagedCode+"/"+filename;
+        if(!RawAddons::File(RawSourcePath(stagedRpx.c_str())))return RPX_LOADER_RESULT_NOT_FOUND;
+        codePath=stagedCode.c_str();rpxPath=stagedRpx.c_str();
+    }
+    if(FILE *log=fopen("fs:/vol/external01/wiiu/raw-launcher.log","a")) {
+        fprintf(log,"addons base=%016llx update=%s version=%u dlc=%s code=%s\n",
+            (unsigned long long)addons.title,addons.update.c_str(),addons.version,addons.dlc.c_str(),codePath);
+        fclose(log);
+    }
+    if (!SendRawTitleProfile(codePath, rpxPath, true, baseCodePath.c_str())) {
         DEBUG_FUNCTION_LINE_ERR("Custom Mocha raw-title support is unavailable or the XML profile is invalid");
         return RPX_LOADER_RESULT_UNSUPPORTED_COMMAND;
     }
 
-    if(RawSourceUSB(rpxPath)&&!USBStorage::PrepareCode(codePath)) {
+    // Even when updated code is staged on SD, retain the USB source identity
+    // needed to remount its base/update content in the game's process.
+    if(RawSourceUSB(baseCodePath.c_str())&&!USBStorage::PrepareCode(baseCodePath.c_str())) {
         RL_ClearRawTitleProfile();USBStorage::Unmount();
         return RPX_LOADER_RESULT_UNSUPPORTED_COMMAND;
     }
@@ -884,6 +1109,18 @@ RPXLoaderStatus RL_PrepareLaunchFromLooseDirectory(const char *rpxPath,
     strncpy(gLooseTitleInfo.contentPath, contentPath, sizeof(gLooseTitleInfo.contentPath) - 1);
     strncpy(gLooseTitleInfo.codePath, codePath, sizeof(gLooseTitleInfo.codePath) - 1);
     strncpy(gLooseTitleInfo.savePath, savePath, sizeof(gLooseTitleInfo.savePath) - 1);
+    strncpy(gLooseTitleInfo.updateContentPath,updateContent.c_str(),sizeof(gLooseTitleInfo.updateContentPath)-1);
+    strncpy(gLooseTitleInfo.dlcPath,dlcPath.c_str(),sizeof(gLooseTitleInfo.dlcPath)-1);
+    gLooseTitleInfo.dlcVersion=addons.dlcVersion;
+    gLooseTitleInfo.dlcContentCount=std::min<size_t>(addons.dlcContentIds.size(),256);
+    for(unsigned i=0;i<gLooseTitleInfo.dlcContentCount;++i)
+        gLooseTitleInfo.dlcContentIds[i]=addons.dlcContentIds[i];
+    gLooseTitleInfo.baseTitleId=addons.title;
+    gLooseTitleInfo.assetFingerprint=RawAssetFingerprint(std::string(contentPath)+"\n"+updateContent+"\n"+
+        RawAddons::Read(baseRoot+"/code/app.xml")+"\n"+
+        (addons.update.empty()?std::string():RawAddons::Read(addons.update+"/code/app.xml")));
+    if(!dlcPath.empty())snprintf(gLooseTitleInfo.dlcVolume,sizeof(gLooseTitleInfo.dlcVolume),
+        "/vol/aoc0005000c%08x",(unsigned)(addons.title&0xffffffff));
     gLooseTitleInfo.pending = true;
 
     snprintf(gReplacementInfo.rpxReplacementInfo.metaInformation.shortname,
@@ -938,35 +1175,21 @@ RPXLoaderStatus RL_LaunchHomebrew(const char *bundle_path) {
 
 std::mutex mutex;
 
-RPXLoaderStatus RL_DisableContentRedirection() {
-    std::lock_guard<std::mutex> lock(mutex);
-    if (contentLayerHandle != 0) {
-        if (ContentRedirection_SetActive(contentLayerHandle, false) != CONTENT_REDIRECTION_RESULT_SUCCESS) {
-            return RPX_LOADER_RESULT_UNKNOWN_ERROR;
-        }
-    }
-    if (codeLayerHandle != 0) {
-        if (ContentRedirection_SetActive(codeLayerHandle, false) != CONTENT_REDIRECTION_RESULT_SUCCESS) {
-            ContentRedirection_SetActive(contentLayerHandle, true);
-            return RPX_LOADER_RESULT_UNKNOWN_ERROR;
-        }
-    }
-    if (metaLayerHandle != 0) {
-        if (ContentRedirection_SetActive(metaLayerHandle, false) != CONTENT_REDIRECTION_RESULT_SUCCESS) {
-            ContentRedirection_SetActive(contentLayerHandle, true);
-            ContentRedirection_SetActive(codeLayerHandle, true);
-            return RPX_LOADER_RESULT_UNKNOWN_ERROR;
-        }
-    }
-    if (saveLayerHandle != 0) {
-        if (ContentRedirection_SetActive(saveLayerHandle, false) != CONTENT_REDIRECTION_RESULT_SUCCESS) {
-            ContentRedirection_SetActive(contentLayerHandle, true);
-            ContentRedirection_SetActive(codeLayerHandle, true);
-            ContentRedirection_SetActive(metaLayerHandle, true);
+static RPXLoaderStatus SetRawLayersActive(bool active) {
+    const CRLayerHandle handles[]={contentLayerHandle,codeLayerHandle,metaLayerHandle,
+                                   saveLayerHandle,updateLayerHandle,dlcLayerHandle};
+    for(size_t i=0;i<sizeof(handles)/sizeof(handles[0]);++i) {
+        if(handles[i] && ContentRedirection_SetActive(handles[i],active)!=CONTENT_REDIRECTION_RESULT_SUCCESS) {
+            for(size_t j=0;j<i;++j)if(handles[j])ContentRedirection_SetActive(handles[j],!active);
             return RPX_LOADER_RESULT_UNKNOWN_ERROR;
         }
     }
     return RPX_LOADER_RESULT_SUCCESS;
+}
+
+RPXLoaderStatus RL_DisableContentRedirection() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return SetRawLayersActive(false);
 }
 
 RPXLoaderStatus RL_LaunchLooseDirectory(const char *rpxPath,
@@ -1000,33 +1223,7 @@ RPXLoaderStatus RL_LaunchLooseDirectory(const char *rpxPath,
 
 RPXLoaderStatus RL_EnableContentRedirection() {
     std::lock_guard<std::mutex> lock(mutex);
-    if (contentLayerHandle != 0) {
-        if (ContentRedirection_SetActive(contentLayerHandle, true) != CONTENT_REDIRECTION_RESULT_SUCCESS) {
-            return RPX_LOADER_RESULT_UNKNOWN_ERROR;
-        }
-    }
-    if (codeLayerHandle != 0) {
-        if (ContentRedirection_SetActive(codeLayerHandle, true) != CONTENT_REDIRECTION_RESULT_SUCCESS) {
-            ContentRedirection_SetActive(contentLayerHandle, false);
-            return RPX_LOADER_RESULT_UNKNOWN_ERROR;
-        }
-    }
-    if (metaLayerHandle != 0) {
-        if (ContentRedirection_SetActive(metaLayerHandle, true) != CONTENT_REDIRECTION_RESULT_SUCCESS) {
-            ContentRedirection_SetActive(contentLayerHandle, false);
-            ContentRedirection_SetActive(codeLayerHandle, false);
-            return RPX_LOADER_RESULT_UNKNOWN_ERROR;
-        }
-    }
-    if (saveLayerHandle != 0) {
-        if (ContentRedirection_SetActive(saveLayerHandle, true) != CONTENT_REDIRECTION_RESULT_SUCCESS) {
-            ContentRedirection_SetActive(contentLayerHandle, false);
-            ContentRedirection_SetActive(codeLayerHandle, false);
-            ContentRedirection_SetActive(metaLayerHandle, false);
-            return RPX_LOADER_RESULT_UNKNOWN_ERROR;
-        }
-    }
-    return RPX_LOADER_RESULT_SUCCESS;
+    return SetRawLayersActive(true);
 }
 
 RPXLoaderStatus RL_UnmountCurrentRunningBundle() {
@@ -1035,7 +1232,7 @@ RPXLoaderStatus RL_UnmountCurrentRunningBundle() {
     RawExitTracePoint("bundle-lock-acquired");
     const bool bundleMounted = gReplacementInfo.contentReplacementInfo.bundleMountInformation.isMounted;
     const bool looseActive   = gLooseTitleInfo.active;
-    const bool hasLayers     = contentLayerHandle != 0 || codeLayerHandle != 0 || metaLayerHandle != 0 || saveLayerHandle != 0;
+    const bool hasLayers     = updateLayerHandle != 0 || dlcLayerHandle != 0 || contentLayerHandle != 0 || codeLayerHandle != 0 || metaLayerHandle != 0 || saveLayerHandle != 0;
     if (!bundleMounted && !looseActive && !hasLayers) {
         return RPX_LOADER_RESULT_SUCCESS;
     }
@@ -1052,6 +1249,11 @@ RPXLoaderStatus RL_UnmountCurrentRunningBundle() {
     }
 
     RPXLoaderStatus res = RPX_LOADER_RESULT_SUCCESS;
+    for(auto *handle:{&updateLayerHandle,&dlcLayerHandle}) {
+        if(*handle && ContentRedirection_RemoveFSLayer(*handle)!=CONTENT_REDIRECTION_RESULT_SUCCESS)
+            res=RPX_LOADER_RESULT_UNKNOWN_ERROR;
+        *handle=0;
+    }
 
     if (contentLayerHandle != 0) {
         RawExitTracePoint("content-layer-remove-enter");
@@ -1135,6 +1337,7 @@ WUMS_EXPORT_FUNCTION(RL_PrepareLaunchFromSD);
 WUMS_EXPORT_FUNCTION(RL_PrepareLaunchFromLooseDirectory);
 WUMS_EXPORT_FUNCTION(RL_LaunchLooseDirectory);
 WUMS_EXPORT_FUNCTION(RL_SupportsWiiVCHai);
+WUMS_EXPORT_FUNCTION(RL_SupportsRawAddons);
 WUMS_EXPORT_FUNCTION(RL_LaunchPreparedHomebrew);
 WUMS_EXPORT_FUNCTION(RL_LaunchHomebrew);
 

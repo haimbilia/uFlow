@@ -23,7 +23,7 @@ class PayloadSyncTest(unittest.TestCase):
         adapter = self.project / sync.H264_ADAPTER
         adapter.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(Path(__file__).resolve().parents[1] / sync.H264_ADAPTER, adapter)
-        for name in sync.WONDERSWAN_INPUTS | sync.COVER_CACHE_INPUTS | sync.VIDEO_COLOUR_INPUTS | sync.VIDEO_NV12_INPUTS | sync.HANDOFF_INPUTS | sync.CARTRIDGE_INPUTS | sync.RETROARCH_LAUNCHER_INPUTS | sync.PREPARED_MODEL_INPUTS | sync.GLASS_POPUP_INPUTS | sync.CONTENT_TYPE_SAVE_INPUTS | sync.BROWSER_PATH_INPUTS | sync.SCOPED_MEDIA_INPUTS | sync.SKIN_PACKAGE_INPUTS | sync.NUMBER_DEFAULT_INPUTS | sync.VWII_DIAGNOSTIC_INPUTS | sync.CONTROLLER_INPUTS:
+        for name in sync.WONDERSWAN_INPUTS | sync.COVER_CACHE_INPUTS | sync.VIDEO_COLOUR_INPUTS | sync.VIDEO_NV12_INPUTS | sync.HANDOFF_INPUTS | sync.CARTRIDGE_INPUTS | sync.RETROARCH_LAUNCHER_INPUTS | sync.PREPARED_MODEL_INPUTS | sync.GLASS_POPUP_INPUTS | sync.CONTENT_TYPE_SAVE_INPUTS | sync.BROWSER_PATH_INPUTS | sync.SCOPED_MEDIA_INPUTS | sync.SKIN_PACKAGE_INPUTS | sync.NUMBER_DEFAULT_INPUTS | sync.VWII_DIAGNOSTIC_INPUTS | sync.CONTROLLER_INPUTS | sync.RAW_ADDON_INPUTS:
             dependency = self.project / name
             dependency.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(Path(__file__).resolve().parents[1] / name, dependency)
@@ -142,7 +142,7 @@ class PayloadSyncTest(unittest.TestCase):
             self.run_sync(True)
 
     def test_renderer_dependencies_pinned(self):
-        for name in sync.WONDERSWAN_INPUTS | sync.COVER_CACHE_INPUTS | sync.VIDEO_COLOUR_INPUTS | sync.VIDEO_NV12_INPUTS | sync.HANDOFF_INPUTS | sync.CARTRIDGE_INPUTS | sync.RETROARCH_LAUNCHER_INPUTS | sync.PREPARED_MODEL_INPUTS | sync.GLASS_POPUP_INPUTS | sync.CONTENT_TYPE_SAVE_INPUTS | sync.BROWSER_PATH_INPUTS | sync.SCOPED_MEDIA_INPUTS | sync.SKIN_PACKAGE_INPUTS | sync.NUMBER_DEFAULT_INPUTS | sync.VWII_DIAGNOSTIC_INPUTS | sync.CONTROLLER_INPUTS:
+        for name in sync.WONDERSWAN_INPUTS | sync.COVER_CACHE_INPUTS | sync.VIDEO_COLOUR_INPUTS | sync.VIDEO_NV12_INPUTS | sync.HANDOFF_INPUTS | sync.CARTRIDGE_INPUTS | sync.RETROARCH_LAUNCHER_INPUTS | sync.PREPARED_MODEL_INPUTS | sync.GLASS_POPUP_INPUTS | sync.CONTENT_TYPE_SAVE_INPUTS | sync.BROWSER_PATH_INPUTS | sync.SCOPED_MEDIA_INPUTS | sync.SKIN_PACKAGE_INPUTS | sync.NUMBER_DEFAULT_INPUTS | sync.VWII_DIAGNOSTIC_INPUTS | sync.CONTROLLER_INPUTS | sync.RAW_ADDON_INPUTS:
             with self.subTest(name=name):
                 dependency = self.project / name
                 original = dependency.read_bytes()
@@ -182,7 +182,7 @@ class PayloadSyncTest(unittest.TestCase):
         self.assertEqual((entry[4], entry[5]), (str(1 << 31), "r"))
         before = self.manifest.read_bytes()
         (self.sources / "ContentRedirectionModule/ContentRedirectionModule.wms").write_bytes(b"stock build")
-        with self.assertRaisesRegex(ValueError, "tested missing-file removal build"):
+        with self.assertRaisesRegex(ValueError, "tested removal/native-handle fast-path build"):
             self.run_sync(True)
         self.assertEqual(before, self.manifest.read_bytes())
 

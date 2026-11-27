@@ -1,5 +1,6 @@
 #pragma once
 #include "update_protocol.hpp"
+#include "saved_file.hpp"
 #include <cerrno>
 #include <unistd.h>
 namespace UFlowUpdate {
@@ -24,6 +25,16 @@ struct Transaction {
         stage=Setup::Path(root,"wiiu/apps/uFlow/cache/update/download.wuhb");
         journal=Setup::Path(root,"wiiu/apps/uFlow/cache/update/pending");
         receipt=Setup::Path(root,"wiiu/apps/uFlow/cache/update/installed");
+    }
+    std::string SkipPath() const {return receipt+"."+channel+".skipped";}
+    bool IsSkipped(uint64_t sequence) const {
+        auto input=SavedFile::Open(SkipPath());std::string value;
+        return std::getline(input,value) && value==std::to_string(sequence);
+    }
+    void Skip(uint64_t sequence){
+        const auto path=SkipPath();
+        Durable(path+".tmp",std::to_string(sequence));
+        Setup::Need(SavedFile::Commit(path+".tmp",path),"Could not save the update reminder preference.");
     }
     std::string Hash(const std::string &path){return Setup::HashFile(path,{},"");}
     void Move(const std::string &a,const std::string &b){if(std::rename(a.c_str(),b.c_str())!=0){const int code=errno;throw std::runtime_error("Cannot move "+a+" -> "+b+" (errno "+std::to_string(code)+": "+std::strerror(code)+")");}}

@@ -33,8 +33,34 @@
     Color SwitchBackground() const {return SkinColor(SkinSpec().background);}
     Color SwitchInk() const {return SkinColor(SkinSpec().ink);}
     Color SwitchMuted() const {return SkinColor(SkinSpec().muted);}
-    Color SwitchAccent() const {return SkinColor(SkinSpec().accent);}
+    Color SwitchAccent() const {
+        const int theme=preferences_.theme;
+        if(theme<=0 || theme>=AccentThemes::Count)return SkinColor(SkinSpec().accent);
+        const auto &color=AccentThemes::Presets[theme];
+        return {color.r,color.g,color.b,255};
+    }
+#ifndef UFLOW_HOST_PREVIEW
+    SDL_Texture *LoadProfilePortrait(uint8_t slot){
+        std::vector<unsigned char> data(65554);
+        size_t size=0;
+        if(!nn::act::GetMiiImageEx(&size,data.data(),data.size(),0,slot).IsSuccess() ||
+           size>data.size())return nullptr;
+        auto *surface=DecodeProfileAvatar(data.data(),size);
+        if(!surface)return nullptr;
+        auto *texture=SDL_CreateTextureFromSurface(renderer_,surface);
+        SDL_FreeSurface(surface);
+        if(texture){
+            SDL_SetTextureBlendMode(texture,SDL_BLENDMODE_BLEND);
+            SDL_SetTextureScaleMode(texture,SDL_ScaleModeLinear);
+        }
+        return texture;
+    }
+#endif
     void LoadProfile() {
+        SDL_DestroyTexture(profileTexture_);
+        profileTexture_=nullptr;
+        profileName_="Player";
+        nativeStats_.clear();
 #ifndef UFLOW_HOST_PREVIEW
         nn::act::Initialize();
         profileId_=nn::act::GetPersistentId();profileSlot_=nn::act::GetSlotNo();
@@ -48,21 +74,7 @@
                 else {profileName_+=char(0xe0|(c>>12));profileName_+=char(0x80|((c>>6)&63));profileName_+=char(0x80|(c&63));}
             }
         }
-        std::vector<unsigned char> data(65554);size_t size=0;
-        if(nn::act::GetMiiImageEx(&size,data.data(),data.size(),0,nn::act::GetSlotNo()).IsSuccess() && size>=128*128*4) {
-            auto *surface=SDL_CreateRGBSurfaceWithFormat(0,128,128,32,SDL_PIXELFORMAT_RGBA32);
-            if(surface) {
-                for(int y=0;y<128;++y)for(int x=0;x<128;++x) {
-                    const auto *src=&data[((127-y)*128+x)*4];
-                    const float radius=std::sqrt((x-63.5f)*(x-63.5f)+(y-63.5f)*(y-63.5f));
-                    const auto alpha=Uint8(src[0]*std::clamp(64.f-radius,0.f,1.f));
-                    auto *pixel=reinterpret_cast<Uint32*>(static_cast<Uint8*>(surface->pixels)+y*surface->pitch)+x;
-                    *pixel=SDL_MapRGBA(surface->format,src[1],src[2],src[3],alpha);
-                }
-                profileTexture_=SDL_CreateTextureFromSurface(renderer_,surface);SDL_FreeSurface(surface);
-                if(profileTexture_){SDL_SetTextureBlendMode(profileTexture_,SDL_BLENDMODE_BLEND);SDL_SetTextureScaleMode(profileTexture_,SDL_ScaleModeLinear);}
-            }
-        }
+        profileTexture_=LoadProfilePortrait(profileSlot_);
         nn::act::Finalize();
         if(nn::pdm::Initialize()==0){
             uint32_t count=0;
@@ -74,6 +86,7 @@
             nn::pdm::Finalize();
         }
 #endif
+        userStats_.Load("fs:/vol/external01/wiiu/apps/uFlow/user-stats-"+std::to_string(profileId_)+".cfg");
     }
     UserStatistics::Store userStats_;
     uint32_t profileId_=0,profileSlot_=1;
@@ -89,15 +102,18 @@
         }
         return "Time played: "+time+"\nTimes played: "+plays+"\nYour rating: "+(own.rating?std::to_string(own.rating)+" / 5":"Not rated")+"\nA: change your rating (0-5)\n";
     }
-    void DrawProfile(int x,int y,int size,bool label) {
-        const Color ink=SwitchSkin()?SwitchInk():preferences_.skin==1?Color{48,61,71,255}:Color{237,244,255,255};
+    void DrawProfilePortrait(SDL_Texture *portrait,int x,int y,int size) {
         FillSmoothDot(renderer_,x+size*.5f,y+size*.5f,size*.5f+3,{255,255,255,230});
         FillSmoothDot(renderer_,x+size*.5f,y+size*.5f,size*.5f,UForceSkin()?SwitchMuted():Color{66,103,132,255});
-        if(profileTexture_){SDL_Rect rect{x,y,size,size};SDL_RenderCopy(renderer_,profileTexture_,nullptr,&rect);}
+        if(portrait){SDL_Rect rect{x,y,size,size};SDL_RenderCopy(renderer_,portrait,nullptr,&rect);}
         else {
             FillSmoothDot(renderer_,x+size*.5f,y+size*.37f,size*.17f,{239,244,249,255});
             FillEllipse(renderer_,{x+size*.23f,y+size*.57f,size*.54f,size*.30f},{239,244,249,255});
         }
+    }
+    void DrawProfile(int x,int y,int size,bool label) {
+        const Color ink=SwitchSkin()?SwitchInk():preferences_.skin==1?Color{48,61,71,255}:Color{237,244,255,255};
+        DrawProfilePortrait(profileTexture_,x,y,size);
         if(label)DrawFittedText(renderer_,profileName_,x+size+20,y+size/2-10,210,2,ink);
     }
     void DrawWallChromeShade(bool top) {

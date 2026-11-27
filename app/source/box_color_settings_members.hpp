@@ -43,13 +43,13 @@
         DrawText(renderer_,"BOX COLOR",x,205,3,ink);
         DrawText(renderer_,"Case material only - artwork keeps its colors",x,249,1,ink);
         for(int i=0;i<int(BoxColors.size());++i){const int rgb=BoxColors[i];const Color c=rgb<0?Color{130,140,150,255}:Color{Uint8(rgb>>16),Uint8(rgb>>8),Uint8(rgb),255};
-            if(boxColorRow_==0&&i==boxColorPreset_)FillRoundedRect(renderer_,{x+i*42-3,282,40,48},7,accent);
+            if(boxColorRow_==0&&i==boxColorPreset_)DrawFocusFrame({x+i*42-3,282,40,48},7,accent);
             FillRoundedRect(renderer_,{x+i*42,285,34,42},5,c);
             if(i==0)DrawText(renderer_,"A",x+9,295,1,{255,255,255,255});
         }
         const int rgb=typeDraft_.boxColor<0?0x808080:typeDraft_.boxColor;
         for(int i=0;i<3;++i){const int y=350+i*45,value=(rgb>>((2-i)*8))&255;
-            if(boxColorRow_==i+1)FillRoundedRect(renderer_,{x-8,y-3,505,40},7,{accent.r,accent.g,accent.b,65});
+            if(boxColorRow_==i+1)DrawFocusFrame({x-8,y-3,505,40},7,accent);
             DrawText(renderer_,std::string(i==0?"RED":i==1?"GREEN":"BLUE"),x,y+5,1,ink);
             FillRoundedRect(renderer_,{500,y+12,360,10},5,{105,112,120,255});
             FillRoundedRect(renderer_,{500,y+12,std::max(1,value*360/255),10},5,accent);

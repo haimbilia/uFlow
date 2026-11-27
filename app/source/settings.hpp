@@ -61,6 +61,7 @@ struct UserSettings {
     int sortMode = 0;
     bool alphabetFilterMode = false;
     int skin = 1;
+    std::string systemArtworkDirectory="fs:/vol/external01/wiiu/apps/uFlow/media/System Artwork";
     std::string skinId;
     bool welcomeDismissed = false;
     int theme = 0;

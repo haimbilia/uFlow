@@ -38,7 +38,7 @@
         else if(controllerRow_==1)controllers_.Submit(!state.active?Controllers::Command::Install:state.pairing?Controllers::Command::Cancel:Controllers::Command::Pair);
         else if(controllerRow_==2&&controllerSelected_<int(state.devices.size())&&state.devices[controllerSelected_].channel>=0)controllers_.Submit(Controllers::Command::Disconnect,state.devices[controllerSelected_].address);
         else if(controllerRow_==3){controllersConfirm_=true;controllersYes_=false;}
-
+        
     }
     void ControllerTouch(int x,int y,int drag){
         if(std::abs(drag)>=30)return;
@@ -46,7 +46,7 @@
         if(controllersConfirm_){if(y>=445&&y<493&&x>=390&&x<1125){controllersYes_=x>=760;ControllerInput(0,0,true,false);}return;}
         const auto state=ControllerState();
         if(y>=258&&y<362&&x>=390&&x<1122){const int index=(controllerSelected_/4)*4+(x-390)/183;if(index<int(state.devices.size())){if(index==controllerSelected_&&controllerRow_==0)controllerTest_=true;controllerSelected_=index;controllerRow_=0;}return;}
-        if(y>=366&&y<395){controllerRow_=0;if(x>=390&&x<500)ControllerInput(-1,0,false,false);else if(x>=1000&&x<1125)ControllerInput(1,0,false,false);return;}
+        if(y>=366&&y<395){controllerRow_=0;if((x>=390&&x<500)||(x>=990&&x<1055))ControllerInput(-1,0,false,false);else if(x>=1055&&x<1125)ControllerInput(1,0,false,false);return;}
         if(x>=390&&x<1125&&y>=400&&y<520){controllerRow_=1+(y-400)/40;ControllerInput(0,0,true,false);}
     }
     void DrawControllerGlyph(int x,int y,int size,Color color){
@@ -81,12 +81,13 @@
             DrawText(renderer_,"This removes saved Wii Remote, Pro and Bloopair pairings.",x,333,1,muted);
             DrawText(renderer_,"You will need to pair those controllers again.",x,360,1,muted);
             DrawText(renderer_,"The Wii U GamePad is not affected.",x,387,1,muted);
-            for(int i=0;i<2;++i){FillRoundedRect(renderer_,{x+i*370,445,360,48},8,controllersYes_==(i==1)?Color{accent.r,accent.g,accent.b,100}:Color{80,100,120,35});DrawText(renderer_,i?"UNPAIR ALL":"CANCEL",x+18+i*370,460,2,ink);}
+            for(int i=0;i<2;++i){DrawFocusButton({x+i*370,445,360,48},8,controllersYes_==(i==1),accent);DrawText(renderer_,i?"UNPAIR ALL":"CANCEL",x+18+i*370,460,2,ink);}
         }else{
             controllerSelected_=std::clamp(controllerSelected_,0,std::max(0,int(state.devices.size())-1));
             const int page=controllerSelected_/4;
             for(int slot=0;slot<4;++slot){const int index=page*4+slot,left=x+slot*183;const bool selected=index==controllerSelected_&&index<int(state.devices.size());
                 FillRoundedRect(renderer_,{left,258,173,104},8,selected?Color{accent.r,accent.g,accent.b,85}:Color{110,130,145,25});
+                if(selected && controllerRow_==0 && settingsAction_<0)DrawFocusFrame({left,258,173,104},8,accent);
                 if(index>=int(state.devices.size())){DrawText(renderer_,"--",left+76,297,2,muted);continue;}
                 const auto& device=state.devices[index];DrawControllerGlyph(left+86,283,32,device.channel>=0?accent:muted);
                 DrawFittedText(renderer_,device.name,left+8,307,157,1,ink);
@@ -94,10 +95,11 @@
                 if(device.channel>=0)for(int bar=0;bar<4;++bar)FillRoundedRect(renderer_,{left+110+bar*12,335,9,12},1,bar<device.battery?accent:Color{110,130,145,80});
 
             }
-            DrawFittedText(renderer_,state.devices.empty()?"No controllers found. Pair a controller below.":"<  Select controller  >   "+std::to_string(controllerSelected_+1)+" / "+std::to_string(state.devices.size())+"    A: input test",x,373,730,1,muted);
+            DrawFittedText(renderer_,state.devices.empty()?"No controllers found. Pair a controller below.":"Select controller   "+std::to_string(controllerSelected_+1)+" / "+std::to_string(state.devices.size())+"    A: input test",x,373,730,1,muted);
+            if(controllerRow_==0 && settingsAction_<0 && state.devices.size()>1)DrawChoiceChevrons(x+630,x+700,379,accent,ink);
             const std::string labels[]={!state.active?"Install controller support":state.pairing?"Cancel pairing":"Pair new controller","Disconnect selected","Unpair all controllers"};
             for(int i=0;i<3;++i){const bool enabled=!state.busy&&(i!=1||(!state.devices.empty()&&state.devices[controllerSelected_].channel>=0));
-                if(controllerRow_==i+1&&settingsAction_<0)FillRoundedRect(renderer_,{x-8,400+i*40,746,37},8,{accent.r,accent.g,accent.b,65});
+                if(controllerRow_==i+1&&settingsAction_<0)DrawFocusFrame({x-8,400+i*40,746,37},8,accent);
                 DrawText(renderer_,labels[i],x+8,409+i*40,2,enabled?ink:muted);
             }
         }

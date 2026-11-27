@@ -4,9 +4,9 @@
 
 namespace AccentThemes {
 struct Preset { const char *name; std::uint8_t r,g,b; };
-// Keep IDs 0..3 stable so existing PLATFORM/CYAN/VIOLET/AMBER settings survive.
+// Keep explicit color IDs stable. The legacy platform setting uses the active skin default.
 inline constexpr std::array<Preset,17> Presets{{
-    {"PLATFORM",0,0,0},
+    {"SKIN DEFAULT",0,0,0},
     {"CYAN",0,208,230}, {"VIOLET",168,112,255}, {"AMBER",255,166,58},
     {"BLUE",66,142,255}, {"TEAL",26,187,169}, {"GREEN",64,190,103},
     {"LIME",159,203,55}, {"YELLOW",241,207,61}, {"ORANGE",255,126,49},

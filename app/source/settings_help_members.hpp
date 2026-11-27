@@ -3,10 +3,10 @@
     void ToggleSettingsHelp(){
         if(settingsHelpOpen_){settingsHelpOpen_=false;return;}
         if(!settings_||bindingCapture_>=0)return;
-
+        
         static const char* categories[]={"GENERAL","LIBRARY","MEDIA","DISPLAY","CONTROLS","LAUNCHERS"};
         std::string label=settingsHelpLabel_;
-
+        
         if(supportOpen_)label=supportRow_==2?"CRASH REPORT NOTIFICATIONS":supportRow_==1?"SAVE REPORT":"PROBLEM RECORDING";
         else if(supportFocus_)label="SAVE REPORT";
         else if(typeEditor_)label=SettingsHelp::ContentTypeLabel(typeRow_);

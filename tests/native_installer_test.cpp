@@ -52,6 +52,9 @@ int main(int argc,char **argv){
         assert(found);
     }
     {std::vector<std::string> dirs;const auto cfg=Configs(1,dirs);
+     assert(cfg[2].second.find("system-artwork")==std::string::npos);
+     assert(cfg[3].second.find("system_artwork_directory=fs:/vol/external01/wiiu/apps/uFlow/media/System Artwork\n")!=std::string::npos);
+     assert(std::find(dirs.begin(),dirs.end(),"wiiu/apps/uFlow/media/System Artwork")!=dirs.end());
      assert(cfg[1].second.find("\twiiu\tnative\t0\n")!=std::string::npos);
      assert(cfg[2].second.find("media\tid:wiiu\t")!=std::string::npos);
      assert(std::find(dirs.begin(),dirs.end(),"wiiu/apps/uFlow/media/wiiu/media")!=dirs.end());}
@@ -153,7 +156,7 @@ int main(int argc,char **argv){
     auto preserved=Prepare(sd,bundle,defs,All,{});assert(preserved.bytes==0&&preserved.preserved==2);
     assert(HashFile(sd+"/"+dsCover,{},"")==Hash("user custom sleeve"));
     auto fresh=root+"/fresh";Aroma(fresh);
-    auto minimal=Prepare(fresh,bundle,defs,0,{});assert(minimal.items.size()==14&&minimal.dirs.empty());
+    auto minimal=Prepare(fresh,bundle,defs,0,{});assert(minimal.items.size()==14&&minimal.dirs==std::vector<std::string>{"wiiu/apps/uFlow/media/System Artwork"});
     Install(fresh,bundle,minimal,"minimal",{});assert(Size(fresh+"/wiiu/apps/uFlow/libraries.cfg")==0);
     Put(fresh+"/wiiu/apps/uFlow/uflow.cfg","automatic_update_checks=0\nbind_19=16\nalphabet_default_filter=1\nfreeze_notifications=0\ndemo_mode=1\ndemo_idle_seconds=75\nsort_mode=2\ntheme=12\npreload_builtin_covers=0\nstartup_video=0\nbackground_transparency=65\ncover_zoom=75\nstart_library=ds\nskin=3\ncover_type=3\nthumbnail_layout=2\nlogo_layout=4\nmedia_layout=3\ncover_spacing_percent=135\ncover_layout=9\nbind_18=0\ncombo_18=48\n");
     Install(fresh,bundle,Prepare(fresh,bundle,defs,0,{}),"preload-preserved",{});
@@ -338,6 +341,8 @@ int main(int argc,char **argv){
         const uint32_t bits=argc==3?std::stoul(argv[2]):All;
         const auto actual=root+"/actual";Aroma(actual);
         Put(actual+"/wiiu/apps/uFlow/support-report.json","user diagnostic report");
+        Put(actual+"/wiiu/cache/raw-assets/test/manifest.ready","verified asset manifest");
+        Put(actual+"/wiiu/cache/raw-assets/test/data/00/00/00.bin","verified game asset");
         Put(actual+"/wiiu/apps/uFlow/support-session.log","user diagnostic log");
         Put(actual+"/wiiu/bloopair/devices/AABBCCDDEEFF.bin","user pairing fixture");
         Put(actual+"/wiiu/bloopair/configs/controller.json","user controller mapping");
@@ -459,6 +464,8 @@ int main(int argc,char **argv){
         assert(HashFile(actual+"/wiiu/apps/uFlow/skins/downloaded/releases/1.0.0-abc/layout.json",{},"")==Hash("custom downloaded layout"));
         assert(HashFile(actual+"/wiiu/apps/uFlow/user-stats-1.cfg",{},"")==Hash("user ratings and play counts"));
         assert(HashFile(actual+"/wiiu/apps/uFlow/support-report.json",{},"")==Hash("user diagnostic report"));
+        assert(HashFile(actual+"/wiiu/cache/raw-assets/test/manifest.ready",{},"")==Hash("verified asset manifest"));
+        assert(HashFile(actual+"/wiiu/cache/raw-assets/test/data/00/00/00.bin",{},"")==Hash("verified game asset"));
         assert(HashFile(actual+"/wiiu/apps/uFlow/support-session.log",{},"")==Hash("user diagnostic log"));
         assert(HashFile(actual+"/wiiu/apps/uFlow/cache/library-v1.bin",{},"")==Hash("user saved game catalog"));
         assert(HashFile(actual+"/wiiu/apps/uFlow/media-refresh.pending",{},"")==Hash("pending\n"));

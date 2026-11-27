@@ -237,7 +237,7 @@ void Client::Event(const std::string &event){std::lock_guard lock(impl->mutex);i
     impl->dirty=true;
 }
 void Client::Record(bool enabled){std::lock_guard lock(impl->mutex);impl->state.recording=enabled;
-    impl->state.message=enabled?"Recording app status. Reproduce the issue, then send a report.":"Recording stopped. Saved log is kept on SD.";}
+    impl->state.message=enabled?"Recording app status. Reproduce the issue, then save a report.":"Recording stopped. Saved log is kept on SD.";}
 void Client::Send(std::size_t g,std::size_t l,std::size_t m){std::lock_guard lock(impl->mutex);if(impl->state.busy)return;
     impl->games=g;impl->libraries=l;impl->media=m;impl->job=1;impl->state.busy=true;impl->state.saved=false;impl->state.reportId.clear();impl->state.message="Preparing report...";impl->wake.notify_all();}
 }

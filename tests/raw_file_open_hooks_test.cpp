@@ -1,11 +1,16 @@
 // tools/test-raw-file-opens.ps1 inserts the ACTUAL four production hooks below.
 #include "RawNativePath.h"
+#include "RawAddonNativePath.h"
+#include "RawAssetCache.h"
+RawAssetCache gRawAssetCache;
+#include "RawSourcePath.h"
 #include "RawNativePathStorage.h"
 #include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <fstream>
 
 using FSStatus = int;
 using FSFileHandle = int;
@@ -22,9 +27,16 @@ struct {
     const char *contentPath = "wiiu/raw-games/Yoshi/content";
     const char *codePath = "wiiu/raw-games/Yoshi/code";
     const char *savePath = "wiiu/raw-saves/0005000010184d00";
+    const char *updateContentPath = "";
+    const char *dlcPath = "";
+    const char *dlcVolume = "";
 } gLooseTitleInfo;
+struct { bool Contains(const std::string &p) const { return p.ends_with("/updated.bin"); } } gRawUpdateFiles;
 std::atomic<uint32_t> sRawSaveOpenSamples{0}, sRawNativeOpenSamples{0};
 void OSReport(const char *, ...) {}
+using OSTime=unsigned long long;
+OSTime OSGetTime(){return 1;}
+void PerformanceOpen(const char *,OSTime,const char *,int,int=0){}
 #define DECL_FUNCTION(ret, name, ...) ret name(__VA_ARGS__)
 
 FSClient client;
@@ -131,9 +143,21 @@ int main() {
               "/vol/external01/wiiu/raw-saves/0005000010184d00/80000007/file");
     }
     Check("/vol/content/movie", "rb", "/vol/external01/wiiu/raw-games/Yoshi/content/movie");
+    gLooseTitleInfo.updateContentPath="wiiu/raw-games/Yoshi/updates/latest/content";
+    Check("/vol/content/updated.bin","rb","/vol/external01/wiiu/raw-games/Yoshi/updates/latest/content/updated.bin");
+    Check("/vol/content/base.bin","r","/vol/external01/wiiu/raw-games/Yoshi/content/base.bin");
+    gLooseTitleInfo.dlcPath="wiiu/raw-games/Yoshi/aoc0005000c10184d00";
+    gLooseTitleInfo.dlcVolume="/vol/aoc0005000c10184d00";
+    Check("/vol/aoc0005000c10184d00/0010/data","r","/vol/external01/wiiu/raw-games/Yoshi/aoc0005000c10184d00/0010/data");
     Check("/vol/content/file", "w", "/vol/content/file");
     Check("/vol/save-other/file", "w", "/vol/save-other/file");
     Check("/vol/external01/native", "w", "/vol/external01/native");
+    {std::ofstream f("/tmp/manifest.ready");f<<"UFLOW-ASSET-CACHE-1\nid\n1\nupdated.bin\t000041\nEND\n";}
+    assert(gRawAssetCache.Load("/tmp","wiiu/cache/test","id"));
+    Check("/vol/content/updated.bin","r","/vol/external01/wiiu/cache/test/data/00/01/01.bin");
+    Check("/vol/content/updated.bin","w","/vol/content/updated.bin");
+    Check("/vol/content/base.bin","r","/vol/external01/wiiu/raw-games/Yoshi/content/base.bin");
+    gRawAssetCache.Clear();std::remove("/tmp/manifest.ready");
     gLooseTitleInfo.active = false;
     Check("/vol/save/common/savedata.dat", "w", "/vol/save/common/savedata.dat");
     Check("/vol/content/movie", "r", "/vol/content/movie");

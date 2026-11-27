@@ -32,6 +32,13 @@ int main(int argc,char **argv){
         assert(tx.Hash(tx.target)==Setup::Hash(interruption==1||interruption==2?"original app":binary));
         assert(ReadSmall(sd+"/wiiu/apps/uFlow/settings.cfg")=="user settings");
     }
+    {
+        fs::create_directory(root+"/skip");
+        Transaction first(root+"/skip",pk,"stable");assert(!first.IsSkipped(101));first.Skip(101);
+        Transaction restarted(root+"/skip",pk,"stable");assert(restarted.IsSkipped(101)&&!restarted.IsSkipped(102));
+        Transaction testing(root+"/skip",pk,"testing");assert(!testing.IsSkipped(101));
+        restarted.Skip(102);assert(restarted.IsSkipped(102)&&!restarted.IsSkipped(101));
+    }
     auto sd=root+"/corrupt";fs::create_directories(sd);Transaction tx(sd,pk,"stable");
     Durable(tx.target,"original app");Durable(tx.stage,"corrupt");Fails([&]{tx.Commit(envelope);});
     assert(ReadSmall(tx.target)=="original app"&&!fs::exists(tx.journal));

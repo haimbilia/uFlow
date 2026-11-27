@@ -15,7 +15,7 @@ struct Definition {
     SkinLayout::Document layout;
     int engine=2,avatarX=60,avatarY=38,avatarSize=54,dockX=350,dockY=546,dockGap=116;
     int rowX=100,rowY=322,tileSize=256,gridColumns=9,gridRows=3,gridTop=180,gridHeight=320;
-    bool gridFullscreen=true;
+    bool gridFullscreen=true, solidSettingsSelection=false;
     std::array<unsigned char,4> background{237,237,237,255},ink{45,45,45,255},muted{196,196,196,255},accent{0,166,179,255};
     std::array<std::string,6> icons;
 };
@@ -32,6 +32,7 @@ inline bool Read(const std::string &root,const std::string &id,Definition &d) {
             if(k=="version")version=v=="1";
             else if(k=="name"&&v.size()<=60)d.name=v;
             else if(k=="engine"){if(v!="layout"&&v!="pixel"&&v!="glass"&&v!="uforce"&&v!="switch-dark"&&v!="switch-light")return false;d.engine=v=="layout"?5:v=="pixel"?0:v=="glass"?1:v=="uforce"?4:v=="switch-dark"?3:2;}
+            else if(k=="settings_selection")d.solidSettingsSelection=(v=="solid");
             else if(k=="background_image"&&SafeAsset(v))d.backgroundImage=root+"/"+v;
             else if(k.rfind("icon_",0)==0){int i=std::stoi(k.substr(5));if(i>=0&&i<6&&SafeAsset(v))d.icons[i]=root+"/"+v;}
             else if(k=="background"||k=="ink"||k=="muted"||k=="accent") {

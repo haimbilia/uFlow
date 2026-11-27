@@ -56,6 +56,14 @@ typedef struct LooseTitleInformation_t {
     char contentPath[0x280];
     char codePath[0x280];
     char savePath[0x280];
+    char updateContentPath[0x280];
+    char dlcPath[0x280];
+    char dlcVolume[32];
+    uint16_t dlcVersion;
+    uint16_t dlcContentCount;
+    uint16_t dlcContentIds[256];
+    uint64_t baseTitleId;
+    uint64_t assetFingerprint;
 } LooseTitleInformation;
 
 extern RPXLoader_ReplacementInformation gReplacementInfo;
@@ -64,5 +72,13 @@ extern CRLayerHandle contentLayerHandle;
 extern CRLayerHandle codeLayerHandle;
 extern CRLayerHandle metaLayerHandle;
 extern CRLayerHandle saveLayerHandle;
+extern CRLayerHandle updateLayerHandle;
+extern CRLayerHandle dlcLayerHandle;
 extern std::string gActiveSaveRedirectionPath;
 extern LooseTitleInformation gLooseTitleInfo;
+
+#include "RawAddonNativePath.h"
+extern RawUpdateFileIndex gRawUpdateFiles;
+
+#include "RawAssetCache.h"
+extern RawAssetCache gRawAssetCache;

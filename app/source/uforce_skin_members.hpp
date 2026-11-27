@@ -62,7 +62,7 @@
         const auto ink=SwitchInk(),accent=SwitchAccent();const auto *game=Selected();
         FillRoundedRect(renderer_,{0,78,1280,596},0,SwitchBackground());
         if(!game){DrawText(renderer_,"Your library starts here",60,180,4,ink);DrawText(renderer_,"Add a game directory in Settings > Library.",60,244,2,{182,191,177,255});return;}
-
+        
         DrawUForceArt(*game,{465,100,775,320},true);
         if(videoOptions_.mode==VideoMode::Background&&video_.Ready()){
             SDL_Rect old;SDL_RenderGetViewport(renderer_,&old);SDL_Rect frame{465,100,775,320};

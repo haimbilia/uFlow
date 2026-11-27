@@ -242,6 +242,6 @@
     void DrawWiiUMenuDots(int offsetX=0) {
         const int count=WiiUMenuDotCount(),activeDot=WiiUMenuActiveDot();
         for(int i=0;i<count;++i){const bool active=i==activeDot;const int size=active?18:9;
-            FillRoundedRect(renderer_,{offsetX+468-count*23/2+i*23+(18-size)/2,1+(18-size)/2,size,size},3,active?(UForceSkin()?SwitchAccent():Color{0,190,203,255}):Color{175,183,179,255});
+            FillRoundedRect(renderer_,{offsetX+468-count*23/2+i*23+(18-size)/2,1+(18-size)/2,size,size},3,active?SwitchAccent():Color{175,183,179,255});
         }
     }

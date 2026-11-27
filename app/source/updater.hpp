@@ -7,7 +7,7 @@ class Client {
 public:
     Client();~Client();
     Snapshot Poll();
-    void Check(bool checkVersion=true);void Accept();void Dismiss();void Stop();
+    void Check(bool checkVersion=true);void Accept();void Dismiss(bool skipVersion=false);void Stop();
     void HandoffFailed(const std::string &message);
 };
 }
